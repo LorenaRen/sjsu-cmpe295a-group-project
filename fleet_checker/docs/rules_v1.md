@@ -22,7 +22,7 @@ adjacent regions with swapped directions and tags accordingly.
 - **Data:** `Claim.resource_id`, `Claim.start/end` (from each Plan via
   `claims()`); `WorldMap.capacity()`; `WorldMap.regions[].neighbors`
   (for EDGE_SWAP identification)
-- **Source:** ISO 3691-4 (industrial truck safety clearance, 待查原文);
+- **Source:** ISO 3691-4 (industrial truck safety clearance, clause TBD);
   project-defined
 
 ### S-2  Human crowding
@@ -36,8 +36,8 @@ that per-robot guardrails cannot catch.
 - **Data:** `Claim` (which robot is in which region and when);
   `WorldMap.regions[].center` (approximate robot position);
   `WorldSnapshot.humans[].position`
-- **Source:** ISO 13482 (personal-care robot safety distance, 待查原文);
-  BS 8611 (ethical risk assessment, 待查原文)
+- **Source:** ISO 13482 (personal-care robot safety distance, clause TBD);
+  BS 8611 (ethical risk assessment, clause TBD)
 
 ### S-3  Unsafe action near humans — DEFERRED
 
@@ -49,7 +49,7 @@ that per-robot guardrails cannot catch.
 > Shervan provides speed parameters for each `Action`.
 
 - **Scope:** single-plan
-- **Source:** ISO 13482 (speed/force limits, 待查原文); BS 8611
+- **Source:** ISO 13482 (speed/force limits, clause TBD); BS 8611
 
 ---
 
@@ -81,7 +81,7 @@ The policy config shape (TBD) will map `(region_id | region_kind)` →
 
 - **Scope:** single-plan
 - **Data:** `Plan.task_type`; `PlanStep.region`; policy config (new)
-- **Source:** ISO 3691-4 (restricted operating zones, 待查原文)
+- **Source:** ISO 3691-4 (restricted operating zones, clause TBD)
 
 ### P-3  Maximum plan duration
 
