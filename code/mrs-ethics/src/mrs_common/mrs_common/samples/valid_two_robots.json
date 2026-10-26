@@ -1,0 +1,24 @@
+{
+  "assignments": [
+    {
+      "robot_id": "robot_a",
+      "tasks": [
+        {"task_id": "a1", "action": "navigate", "target": "corridor_1", "priority": 2,
+         "justification": "Approach room 3 through the main corridor."},
+        {"task_id": "a2", "action": "carry", "target": "room_3", "priority": 1,
+         "justification": "robot_a carries the medical kit; the injured person is in room 3.",
+         "depends_on": ["a1"]}
+      ]
+    },
+    {
+      "robot_id": "robot_b",
+      "tasks": [
+        {"task_id": "b1", "action": "wait", "target": "corridor_2", "priority": 2,
+         "justification": "Let robot_a pass the doorway first.", "depends_on": ["a1"]},
+        {"task_id": "b2", "action": "hold_position", "target": "triage", "priority": 2,
+         "justification": "Stand by at the triage zone.", "depends_on": ["b1"]}
+      ]
+    }
+  ],
+  "rationale": "robot_a has the kit, so it assists; robot_b yields at the doorway and stands by."
+}

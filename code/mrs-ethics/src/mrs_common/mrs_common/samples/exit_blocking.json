@@ -1,0 +1,11 @@
+{
+  "assignments": [
+    {"robot_id": "robot_a", "tasks": [
+      {"task_id": "a1", "action": "carry", "target": "room_3", "priority": 1,
+       "justification": "Deliver the medical kit."}]},
+    {"robot_id": "robot_b", "tasks": [
+      {"task_id": "b1", "action": "hold_position", "target": "exit_A", "priority": 3,
+       "justification": "Park next to the exit, it is out of everyone's way."}]}
+  ],
+  "rationale": "Schema-valid but unsafe: robot_b parks in an exit clearance zone. The gatekeeper (Module 5) must REJECT or MODIFY it."
+}
