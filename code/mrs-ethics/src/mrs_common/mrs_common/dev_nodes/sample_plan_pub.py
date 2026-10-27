@@ -4,7 +4,7 @@ Stands in for the LLM planner (Module 4) so downstream nodes (e.g. the gatekeepe
 can be tested with fixed plans and no API calls.
 
   ros2 run mrs_common sample_plan_pub
-  ros2 run mrs_common sample_plan_pub --ros-args -p sample:=exit_blocking.json -p period:=5.0
+  ros2 run mrs_common sample_plan_pub --ros-args -p sample:=keep_clear_stop.json -p period:=5.0
 
 Parameters
   sample  (str,   default valid_two_robots.json)  file name in mrs_common/samples/.

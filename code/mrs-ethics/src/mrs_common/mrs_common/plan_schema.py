@@ -22,21 +22,20 @@ from typing import Iterable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"  # 1.1: navigation-only actions (assist, carry removed)
 
 _ID_PATTERN = r"^[A-Za-z][A-Za-z0-9_\-]*$"
 
 
 class Action(str, Enum):
-    NAVIGATE = "navigate"            # drive to target
-    WAIT = "wait"                    # wait at target (until depends_on tasks are done, or briefly)
-    HOLD_POSITION = "hold_position"  # stay at target until further notice
-    ASSIST = "assist"                # go to target and attend to a person there
-    CARRY = "carry"                  # transport the robot's payload to target
+    """Navigation only: robots move between graph nodes and stop; they do not manipulate or assist."""
+    NAVIGATE = "navigate"            # drive to target, then the next task starts
+    WAIT = "wait"                    # drive to target and wait there until depends_on tasks are done
+    HOLD_POSITION = "hold_position"  # drive to target and stay until further notice (also the safe fallback)
 
 
-# Actions that leave the robot standing at its target: what exit-clearance rules check.
-STATIONARY_ACTIONS = frozenset({Action.WAIT, Action.HOLD_POSITION, Action.ASSIST})
+# Actions that leave the robot standing at its target: what keep-clear rules check.
+STATIONARY_ACTIONS = frozenset({Action.WAIT, Action.HOLD_POSITION})
 
 
 class _Strict(BaseModel):
@@ -131,7 +130,7 @@ def _check_acyclic(plan: TeamPlan) -> None:
 # Constraints carried in EthicalVerdict.constraints_json (Module 5 -> Module 4)
 # --------------------------------------------------------------------------
 ConstraintKind = Literal[
-    "forbid_node",     # never stop/wait at `node` (e.g. an exit clearance node)
+    "forbid_node",     # never stop/wait at `node` (e.g. a node inside a keep-clear zone)
     "avoid_node",      # do not path through `node`
     "avoid_edge",      # do not travel edge `value` (undirected id from names.edge_id), e.g. a blocked corridor
     "replace_target",  # in task `task_id`, use `value` instead of the current target

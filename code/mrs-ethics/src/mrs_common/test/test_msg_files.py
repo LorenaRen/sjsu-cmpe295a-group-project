@@ -95,6 +95,15 @@ def test_every_event_kind_is_accepted_by_make_episode_event():
         assert f"EpisodeEvent.{const}" in kinds, f"convert.EVENT_KINDS is missing EpisodeEvent.{const}"
 
 
+def test_navigation_only_world_state():
+    fields, _ = ALL["WorldState"]
+    assert fields.get("zones") == "string[]" and fields.get("obstacles") == "PerceivedEntity[]"
+    for gone in ("battery", "payload", "zone", "nearby_humans", "hazards", "exit_ids", "exit_distances"):
+        assert gone not in fields, f"WorldState.{gone} belongs to the old hospital scope"
+    _, consts = ALL["PerceivedEntity"]
+    assert {v.strip() for _, v in consts.values()} == {"person", "obstacle"}
+
+
 def test_team_state_carries_blocked_edges():
     assert ALL["TeamState"][0].get("blocked_edges") == "string[]"
 

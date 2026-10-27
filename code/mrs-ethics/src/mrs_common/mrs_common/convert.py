@@ -108,11 +108,9 @@ def world_state_to_summary(msg: WorldState) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "robot_id": msg.robot_id,
         "at": msg.at,
-        "zone": msg.zone,
-        "battery": round(float(msg.battery), 2),
-        "payload": msg.payload or None,
+        "zones": list(msg.zones),
         "sectors": dict(zip(msg.sector_names, msg.sector_status)),
-        "perceived": [{"type": e.type, "id": e.id, "at": e.at} for e in list(msg.nearby_humans) + list(msg.hazards)],
-        "exits": {e: round(float(d), 1) for e, d in zip(msg.exit_ids, msg.exit_distances)},
+        "perceived": [{"type": e.type, "id": e.id, "at": e.at, "distance": round(float(e.distance), 1)}
+                      for e in msg.obstacles],
     }
     return summary

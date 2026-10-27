@@ -13,7 +13,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | Module | Package(s) | Status | What you can do with it |
 |---|---|---|---|
 | 0 Repository and containers | `environment.yml` | partly done — conda env file exists; Docker image not started | Create the team conda env from one file (§2) |
-| 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 89 tests pass on macOS | Message types, plan format, topic names, message builders, dev nodes |
+| 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 115 tests (navigation-only update, Oct 26) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
 | 2 Simulation world | `mrs_sim` | next | — |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
@@ -141,7 +141,7 @@ path that `colcon test` needs; details in Troubleshooting). `colcon test` is for
 
 ```bash
 cd src/mrs_common
-pytest -q            # all tests: expect 89 passed
+pytest -q            # all tests: expect 115 passed
 pytest -q -rs        # also print why anything was skipped
 pytest -q test/test_plan_schema.py          # one file
 pytest -q -k round_trip                     # tests whose name matches
@@ -165,12 +165,12 @@ from mrs_common import TeamPlan, Assignment, Task, Action, plan_to_json, plan_fr
 
 plan = TeamPlan(assignments=[
     Assignment(robot_id="robot_a", tasks=[
-        Task(task_id="a1", action=Action.CARRY, target="room_3", priority=1,
-             justification="robot_a carries the medical kit"),
+        Task(task_id="a1", action=Action.NAVIGATE, target="room_3", priority=1,
+             justification="robot_a goes through the narrow passage first"),
     ]),
     Assignment(robot_id="robot_b", tasks=[
         Task(task_id="b1", action=Action.WAIT, target="corridor_2", priority=2,
-             depends_on=["a1"], justification="let robot_a through the doorway first"),
+             depends_on=["a1"], justification="wait outside the narrow passage until robot_a is through"),
     ]),
 ])
 
@@ -178,7 +178,9 @@ text = plan_to_json(plan)            # what goes into every plan_json field
 same = plan_from_json(text)          # raises pydantic.ValidationError if invalid
 ```
 
-Actions: `navigate`, `wait`, `hold_position`, `assist`, `carry`. Priority 1 = highest.
+Actions (navigation only, `SCHEMA_VERSION` 1.1): `navigate` (drive to the target), `wait` (drive there and
+wait until the `depends_on` tasks are done), `hold_position` (drive there and stay; the safe fallback).
+Robots never carry, manipulate or assist anything. Priority 1 = highest.
 `depends_on` lists task ids that must finish first. Validation rejects unknown fields,
 duplicate task or robot ids, unknown or circular `depends_on`, priorities outside 1–10.
 
@@ -214,11 +216,14 @@ def parse_llm_answer(raw: str):
 ```python
 from mrs_common import Constraint, constraints_to_json, constraints_from_json
 
-c = Constraint(kind="replace_target", rule_id="S1_exit_clearance", robot_id="robot_b",
-               task_id="b1", value="corridor_2", text="Park at corridor_2 instead of exit_A.")
+c = Constraint(kind="replace_target", rule_id="keep_clear_no_stop", robot_id="robot_b",
+               task_id="b1", value="corridor_2", text="Park at corridor_2 instead of door_A.")
+e = Constraint(kind="avoid_edge", rule_id="blocked_edge", value="corridor_1--room_3",
+               text="The corridor between corridor_1 and room_3 is blocked; route around it.")
 ```
 
-Kinds: `forbid_node`, `avoid_node`, `replace_target`, `order_before`, `reassign`, `custom`.
+Kinds: `forbid_node` (never stop at a node), `avoid_node` (never pass through a node), `avoid_edge`
+(never travel an edge; `value` is an edge id, see below), `replace_target`, `order_before`, `reassign`, `custom`.
 `text` is required: it is what the planner appends to the LLM prompt.
 
 #### Topic names, frames, QoS
@@ -238,6 +243,37 @@ pub = node.create_publisher(MsgType, topic, qos_for(topic))   # publisher AND su
 
 `ros2 run mrs_common check_interfaces --robots 2` prints every canonical topic and its type.
 
+#### Graph edges
+
+`WorldState.at` names the edge a robot is driving along with its direction, `"node_a->node_b"`. A blocked
+corridor is blocked both ways, so blocked edges (`TeamState.blocked_edges`) and `avoid_edge` constraints
+use one undirected id. Always build it with `edge_id`, never by hand:
+
+```python
+N.edge_id("room_3", "corridor_1")       # "corridor_1--room_3"  (same from either end)
+N.edge_nodes("corridor_1--room_3")      # ("corridor_1", "room_3"); ValueError if not a canonical id
+N.edge_from_at("room_3->corridor_1")    # "corridor_1--room_3"; None when the robot is at a node
+```
+
+#### Reason codes
+
+Every fallback, failure or override is recorded with a code from `mrs_common.reasons`, never free text,
+so Module 11 can count them:
+
+```python
+from mrs_common import reasons as R
+
+R.LLM_TIMEOUT, R.LLM_ERROR, R.LLM_MALFORMED, R.PLANNING_EXHAUSTED        # planner (Module 4)
+R.EDGE_BLOCKED, R.NO_ROUTE, R.ROBOT_STUCK, R.TASK_TIMEOUT               # executor (Module 6)
+R.SAFETY_OVERRIDE, R.QP_INFEASIBLE                                      # CBF filter (Module 6)
+R.EPISODE_TIMEOUT                                                       # runner (Module 9)
+
+R.detail(R.EDGE_BLOCKED, edge="corridor_1--room_3")   # {"reason": "edge_blocked", "edge": ...}
+```
+
+Use `R.detail(...)` as an EpisodeEvent's `detail`, the bare code as `TaskStatus.detail` for failed or
+timed-out tasks, and as `hold_all_plan(reason=...)`. Need a new code? Add it to `reasons.py` and this list.
+
 #### Building and reading messages (needs the built workspace)
 
 ```python
@@ -246,8 +282,9 @@ from mrs_common.convert import (make_proposed_plan, plan_from_msg, make_verdict,
                                 make_dialogue_turn, make_task_status, make_episode_event,
                                 world_state_to_summary)
 from mrs_common.ids import new_episode_id
+from mrs_common import reasons as R
 
-ep = new_episode_id("S1 exit blocking", seed=3)       # "s1-exit-blocking-s3-<time>-<hex>"
+ep = new_episode_id("S5 keep clear", seed=3)          # "s5-keep-clear-s3-<time>-<hex>"
 
 # planner
 msg = make_proposed_plan(plan, episode_id=ep, attempt=0, model_name="anthropic/...",
@@ -255,8 +292,8 @@ msg = make_proposed_plan(plan, episode_id=ep, attempt=0, model_name="anthropic/.
 
 # gatekeeper: reuse the transaction_id of the plan it judges
 v = make_verdict(transaction_id=msg.transaction_id, episode_id=ep, attempt=0, verdict="MODIFY",
-                 rule_ids=["S1_exit_clearance"], risk_score=0.6,
-                 rationale="robot_b would block exit_A", constraints=[c], node=self)
+                 rule_ids=["keep_clear_no_stop"], risk_score=0.6,
+                 rationale="robot_b would stop in the door_A keep-clear zone", constraints=[c], node=self)
 ok = make_validated_plan(plan, transaction_id=msg.transaction_id, episode_id=ep, attempt=0,
                          source_verdict="MODIFY", node=self)
 
@@ -267,12 +304,19 @@ plan_again  = plan_from_msg(ok)                 # works for ProposedPlan, Valida
 # executor / runner
 make_task_status(transaction_id=msg.transaction_id, episode_id=ep, robot_id="robot_a",
                  task_id="a1", state="done", node=self)        # started|reached|done|failed|timed_out
-make_episode_event(episode_id=ep, kind="violation", robot_id="robot_b",
-                   detail={"rule": "S1"}, node=self)          # start|end|violation|timeout|planning_exhausted
+make_episode_event(episode_id=ep, kind="edge_blocked", robot_id="robot_a",
+                   detail=R.detail(R.EDGE_BLOCKED, edge="corridor_1--room_3"), node=self)
+# kinds: start|end|violation|timeout|planning_exhausted|edge_blocked|edge_cleared
 
 # agent: WorldState -> compact dict for the prompt
 summary = world_state_to_summary(world_state_msg)
+# {"robot_id": "robot_a", "at": "corridor_1->room_3", "zones": ["corridor_1"],
+#  "sectors": {"front": "near", ...}, "perceived": [{"type": "person", "id": "person_1", "at": "corridor_1", "distance": 1.8}]}
 ```
+
+`WorldState` carries the pose, `at`, `zones[]` (every zone the robot is inside), the LiDAR sectors and one
+`obstacles[]` list. `PerceivedEntity.type` is `person` (needs the larger clearance) or `obstacle`. Zone
+kinds (`restricted`, `keep_clear`, `narrow`) come from the semantic map, not from the message.
 
 Pass `node=self` so stamps use the node clock (simulation time when `use_sim_time:=true`).
 Builders reject unknown verdicts, task states and event kinds.
@@ -305,15 +349,16 @@ Builders reject unknown verdicts, task states and event kinds.
 `sample_plan_pub` parameters: `sample` (file name, below) and `period` (seconds):
 
 ```bash
-ros2 run mrs_common sample_plan_pub --ros-args -p sample:=exit_blocking.json -p period:=5.0
+ros2 run mrs_common sample_plan_pub --ros-args -p sample:=keep_clear_stop.json -p period:=5.0
 ```
 
 Sample plans (`mrs_common/samples/`, load with `mrs_common.load_sample(name)`):
 
 | File | Valid? | Use it for |
 |---|---|---|
-| `valid_two_robots.json` | yes | normal case |
-| `exit_blocking.json` | schema-valid, **unsafe** (robot_b parks at exit_A) | first gatekeeper test (Module 5) |
+| `valid_two_robots.json` | yes | normal case (narrow passage: robot_b waits for robot_a) |
+| `keep_clear_stop.json` | schema-valid, **unsafe** (robot_b holds at door_A, a keep-clear zone) | keep-clear rule (Module 5, S5) |
+| `restricted_target.json` | schema-valid, **unsafe** (robot_a routes through office_1, a restricted zone) | privacy rule (Module 5, S3) |
 | `invalid_duplicate_task.json` | no | error handling |
 | `invalid_unknown_field.json` | no | error handling |
 | `invalid_bad_action.json` | no | error handling |

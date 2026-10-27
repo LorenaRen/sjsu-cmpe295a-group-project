@@ -14,7 +14,9 @@ try:
 
     from mrs_common.convert import (constraints_from_verdict, make_episode_event, make_proposed_plan,
                                     make_task_status, make_validated_plan, make_verdict, plan_from_msg)
-    from mrs_msgs.msg import EpisodeEvent, EthicalVerdict, ProposedPlan, TeamState, ValidatedPlan
+    from mrs_common.convert import world_state_to_summary
+    from mrs_msgs.msg import (EpisodeEvent, EthicalVerdict, PerceivedEntity, ProposedPlan, TeamState,
+                              ValidatedPlan, WorldState)
     ROS_ERROR = None
 except ImportError as e:  # workspace not built / not sourced
     ROS_ERROR = str(e)
@@ -33,7 +35,7 @@ def wire(msg):
     return deserialize_message(serialize_message(msg), type(msg))
 
 
-@pytest.mark.parametrize("sample", ["valid_two_robots.json", "exit_blocking.json"])
+@pytest.mark.parametrize("sample", ["valid_two_robots.json", "keep_clear_stop.json", "restricted_target.json"])
 def test_team_plan_round_trip_through_proposed_plan(sample):
     plan = plan_from_json(load_sample(sample))
     msg = make_proposed_plan(plan, episode_id="ep-test", attempt=1, model_name="fake",
@@ -48,13 +50,13 @@ def test_team_plan_round_trip_through_proposed_plan(sample):
 
 
 def test_transaction_id_flows_to_verdict_and_validated_plan():
-    plan = plan_from_json(load_sample("exit_blocking.json"))
+    plan = plan_from_json(load_sample("keep_clear_stop.json"))
     proposed = wire(make_proposed_plan(plan, episode_id="ep-test"))
-    c = Constraint(kind="replace_target", rule_id="S1_exit_clearance", robot_id="robot_b", task_id="b1",
-                   value="corridor_2", text="Park at corridor_2 instead of exit_A.")
+    c = Constraint(kind="replace_target", rule_id="keep_clear_no_stop", robot_id="robot_b", task_id="b1",
+                   value="corridor_2", text="Park at corridor_2 instead of door_A.")
     verdict = wire(make_verdict(transaction_id=proposed.transaction_id, episode_id="ep-test", attempt=0,
-                                verdict=EthicalVerdict.VERDICT_MODIFY, rule_ids=["S1_exit_clearance"],
-                                risk_score=1.7, rationale="robot_b would block exit_A", constraints=[c]))
+                                verdict=EthicalVerdict.VERDICT_MODIFY, rule_ids=["keep_clear_no_stop"],
+                                risk_score=1.7, rationale="robot_b would stop in the door_A keep-clear zone", constraints=[c]))
     assert verdict.transaction_id == proposed.transaction_id
     assert verdict.risk_score == pytest.approx(1.0)          # clamped to [0, 1]
     assert constraints_from_verdict(verdict) == [c]
@@ -92,3 +94,15 @@ def test_blocked_edges_round_trip_and_event():
                                  detail=R.detail(R.EDGE_BLOCKED, edge=edge)))
     assert ev.kind == "edge_blocked" and json.loads(ev.detail_json)["edge"] == edge
     assert make_episode_event(episode_id="e", kind="edge_cleared").kind == EpisodeEvent.KIND_EDGE_CLEARED
+
+
+def test_world_state_summary_for_the_prompt():
+    ws = WorldState(robot_id="robot_a", episode_id="ep-test", x=1.0, y=2.0, at="corridor_1->room_3",
+                    zones=["corridor_1"], sector_names=["front", "left"],
+                    sector_status=[WorldState.SECTOR_BLOCKED, WorldState.SECTOR_CLEAR], sector_min_range=[0.4, 3.0],
+                    obstacles=[PerceivedEntity(id="person_1", type=PerceivedEntity.TYPE_PERSON, at="corridor_1",
+                                               distance=1.23)])
+    s = world_state_to_summary(wire(ws))
+    assert s == {"robot_id": "robot_a", "at": "corridor_1->room_3", "zones": ["corridor_1"],
+                 "sectors": {"front": "blocked", "left": "clear"},
+                 "perceived": [{"type": "person", "id": "person_1", "at": "corridor_1", "distance": 1.2}]}

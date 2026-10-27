@@ -28,7 +28,7 @@ def proposed(raw_json: str):
 def test_describe_valid_plan():
     ok, text = describe(proposed(load_sample("valid_two_robots.json")))
     assert ok and text.startswith("VALID plan")
-    assert "carry:room_3" in text
+    assert "hold_position:room_3" in text
 
 
 def test_describe_invalid_plan_points_at_the_field():

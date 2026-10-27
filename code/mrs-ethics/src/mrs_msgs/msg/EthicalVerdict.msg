@@ -8,7 +8,7 @@ string transaction_id
 string episode_id
 int32 attempt
 string verdict              # VERDICT_* constants
-string[] rule_ids           # rules that fired, e.g. ["S1_exit_clearance"]
+string[] rule_ids           # rules that fired, e.g. ["keep_clear_no_stop"]
 string[] standard_refs      # only clauses the team has actually read (see guide, Module 5)
 float32 risk_score          # 0.0 (none) .. 1.0 (severe)
 string rationale            # human/LLM-readable explanation, fed back to the planner

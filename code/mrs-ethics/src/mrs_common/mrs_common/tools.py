@@ -16,7 +16,8 @@ from pydantic import ValidationError
 from . import load_sample, names as N
 from .plan_schema import plan_from_json, team_plan_json_schema
 
-SAMPLES_VALID = ["valid_two_robots.json", "exit_blocking.json"]
+# Schema-valid samples; keep_clear_stop and restricted_target are valid but unsafe (gatekeeper tests).
+SAMPLES_VALID = ["valid_two_robots.json", "keep_clear_stop.json", "restricted_target.json"]
 SAMPLES_INVALID = ["invalid_duplicate_task.json", "invalid_unknown_field.json", "invalid_bad_action.json"]
 
 

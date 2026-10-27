@@ -24,7 +24,7 @@ def make_plan(**overrides) -> TeamPlan:
 
 
 # ---- valid plans ---------------------------------------------------------------
-@pytest.mark.parametrize("name", ["valid_two_robots.json", "exit_blocking.json"])
+@pytest.mark.parametrize("name", ["valid_two_robots.json", "keep_clear_stop.json", "restricted_target.json"])
 def test_valid_samples_parse(name):
     plan = plan_from_json(load_sample(name))
     assert len(plan.assignments) == 2
@@ -38,13 +38,13 @@ def test_json_round_trip_is_lossless():
 
 
 def test_unicode_and_quotes_survive_round_trip():
-    plan = make_plan(rationale='Robot "A" goes first — patient in room 3 ✓')
+    plan = make_plan(rationale='Robot "A" goes first — narrow passage at door_A ✓')
     assert plan_from_json(plan_to_json(plan)).rationale == plan.rationale
 
 
 def test_defaults_and_helpers():
     plan = make_plan()
-    assert plan.schema_version == "1.0"
+    assert plan.schema_version == "1.1"
     assert plan.robot_ids == ["robot_a", "robot_b"]
     assert plan.robot_of("b1") == "robot_b"
     assert plan.task("a1").action is Action.NAVIGATE
@@ -108,7 +108,7 @@ def test_llm_style_garbage_rejected():
 # ---- grounding, fallback, constraints, schema export --------------------------------
 def test_check_references():
     plan = plan_from_json(load_sample("valid_two_robots.json"))
-    nodes = ["corridor_1", "corridor_2", "room_3", "triage"]
+    nodes = ["corridor_1", "corridor_2", "room_2", "room_3"]
     assert check_references(plan, ["robot_a", "robot_b"], nodes) == []
     problems = check_references(plan, ["robot_a"], ["corridor_1"])
     assert "unknown robot 'robot_b'" in problems
@@ -122,19 +122,19 @@ def test_hold_all_plan():
 
 
 def test_constraints_round_trip():
-    cs = [Constraint(kind="replace_target", rule_id="S1_exit_clearance", robot_id="robot_b", task_id="b1",
-                     value="corridor_2", text="Park at corridor_2 instead of exit_A."),
-          Constraint(kind="forbid_node", rule_id="S1_exit_clearance", node="exit_A", text="Never stop at exit_A.")]
+    cs = [Constraint(kind="replace_target", rule_id="keep_clear_no_stop", robot_id="robot_b", task_id="b1",
+                     value="corridor_2", text="Park at corridor_2 instead of door_A."),
+          Constraint(kind="forbid_node", rule_id="keep_clear_no_stop", node="door_A", text="Never stop at door_A.")]
     text = constraints_to_json(cs)
-    assert json.loads(text)[1] == {"kind": "forbid_node", "rule_id": "S1_exit_clearance", "node": "exit_A",
-                                   "text": "Never stop at exit_A."}
+    assert json.loads(text)[1] == {"kind": "forbid_node", "rule_id": "keep_clear_no_stop", "node": "door_A",
+                                   "text": "Never stop at door_A."}
     assert constraints_from_json(text) == cs
     assert constraints_from_json("") == []
 
 
 def test_constraint_needs_text_and_known_kind():
     with pytest.raises(ValidationError):
-        Constraint(kind="forbid_node", rule_id="S1", node="exit_A", text="")
+        Constraint(kind="forbid_node", rule_id="keep_clear_no_stop", node="door_A", text="")
     with pytest.raises(ValidationError):
         Constraint.model_validate({"kind": "teleport", "rule_id": "X", "text": "no"})
 
@@ -148,8 +148,15 @@ def test_avoid_edge_constraint():
             Constraint(kind="avoid_edge", rule_id="blocked_route", value=bad, text="blocked")
 
 
+@pytest.mark.parametrize("old_action", ["assist", "carry"])
+def test_removed_actions_are_rejected(old_action):
+    data = {"task_id": "t1", "action": old_action, "target": "room_1", "priority": 1}
+    with pytest.raises(ValidationError):
+        Task.model_validate(data)
+
+
 def test_json_schema_export():
     schema = team_plan_json_schema()
     assert "assignments" in schema["properties"]
     actions = schema["$defs"]["Action"]["enum"]
-    assert set(actions) == {"navigate", "wait", "hold_position", "assist", "carry"}
+    assert set(actions) == {"navigate", "wait", "hold_position"}
