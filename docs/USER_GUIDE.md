@@ -21,6 +21,59 @@ plan is the team's *End-to-End Implementation Guide*.
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
+### How the modules fit together
+
+One episode runs top to bottom. Module 9 starts the simulation (Module 2) and sends the mission. Module 3
+turns sensor data into a short symbolic summary. The agents (Module 4) agree on a plan. The gatekeeper
+(Module 5) approves, modifies or rejects it. The executor and CBF filter (Module 6) drive the robots. A
+rejected plan, a failed task or a blocked edge sends the team back to planning. Module 7 records
+everything; Modules 8 and 11 replay and analyse the recordings. Modules 0 and 1 sit under all of them.
+
+```mermaid
+flowchart TB
+    classDef shared fill:#eef2f7,stroke:#64748b,color:#0f172a
+    classDef sim fill:#e7f1fb,stroke:#2563eb,color:#0f172a
+    classDef think fill:#efedff,stroke:#7c3aed,color:#0f172a
+    classDef gate fill:#f9eeda,stroke:#b45309,color:#0f172a
+    classDef safe fill:#e5f4e4,stroke:#15803d,color:#0f172a
+    classDef data fill:#f0efec,stroke:#57534e,color:#0f172a
+
+    M9["<b>Module 9</b> Scenarios + experiment runner<br/>scenario YAML, violation monitor"]:::data
+    M10["<b>Module 10</b> HPC<br/>Apptainer + Slurm runs Module 9 in batches"]:::data
+
+    M2["<b>Module 2</b> Simulation · mrs_sim<br/>Gazebo world, robots, ros_gz bridge"]:::sim
+    M3["<b>Module 3</b> World state · mrs_world_state<br/>symbolic summary, blocked edges"]:::sim
+    M4["<b>Module 4</b> LLM planner · mrs_llm_planner<br/>one agent per robot + coordinator"]:::think
+    M5["<b>Module 5</b> Ethical gatekeeper · mrs_ethical_gate<br/>rules → APPROVE / MODIFY / REJECT"]:::gate
+    M6["<b>Module 6</b> Executor + CBF · mrs_control_cbf<br/>graph routing, reroute, safety filter"]:::safe
+
+    M7["<b>Module 7</b> Recording · mrs_telemetry<br/>MCAP bag + Gazebo log per run"]:::data
+    M8["<b>Module 8</b> Playback + audit<br/>Foxglove, Gazebo replay, dashboard"]:::data
+    M11["<b>Module 11</b> Evaluation<br/>metrics, statistics, figures"]:::data
+
+    M10 -->|launches| M9
+    M9 -->|"/mrs/mission"| M4
+    M9 -->|starts| M2
+
+    M2 -->|"/robot_x/scan<br/>/robot_x/ground_truth"| M3
+    M3 -->|"/robot_x/world_state<br/>/mrs/team_state"| M4
+    M4 -->|"/mrs/proposed_plan"| M5
+    M5 -->|"/mrs/verdict (MODIFY / REJECT → replan)"| M4
+    M5 -->|"/mrs/validated_plan"| M6
+    M3 -->|"blocked edges"| M6
+    M6 -->|"/robot_x/cmd_vel"| M2
+    M6 -->|"/mrs/task_status (failed → replan)"| M4
+
+    M2 -.->|"all topics"| M7
+    M7 -.->|"run folder"| M8
+    M7 -.->|"results.json"| M11
+
+    M01["<b>Module 0</b> Environment: environment.yml, Docker image<br/><b>Module 1</b> Interfaces: mrs_msgs + mrs_common (used by every module)"]:::shared
+```
+
+Solid arrows are live ROS topics during a run; dotted arrows are files written after it. Topic names
+are the canonical ones from `mrs_common.names` (`robot_x` = each robot's namespace).
+
 ---
 
 ## 2. One-time setup (macOS, Apple Silicon)
