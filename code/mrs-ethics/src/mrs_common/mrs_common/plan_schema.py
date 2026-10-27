@@ -133,6 +133,7 @@ def _check_acyclic(plan: TeamPlan) -> None:
 ConstraintKind = Literal[
     "forbid_node",     # never stop/wait at `node` (e.g. an exit clearance node)
     "avoid_node",      # do not path through `node`
+    "avoid_edge",      # do not travel edge `value` (undirected id from names.edge_id), e.g. a blocked corridor
     "replace_target",  # in task `task_id`, use `value` instead of the current target
     "order_before",    # task `task_id` must finish before task `value` starts
     "reassign",        # give task `task_id` to robot `value`
@@ -148,6 +149,15 @@ class Constraint(_Strict):
     node: Optional[str] = None
     value: Optional[str] = None
     text: str = Field(min_length=1, description="plain-language version, appended to the LLM prompt")
+
+    @model_validator(mode="after")
+    def _edge_value(self) -> "Constraint":
+        if self.kind == "avoid_edge":
+            from .names import edge_nodes  # pure Python
+            if not self.value:
+                raise ValueError("avoid_edge needs value = an edge id from names.edge_id()")
+            edge_nodes(self.value)  # raises ValueError if not a canonical edge id
+        return self
 
 
 def constraints_to_json(constraints: Iterable[Constraint]) -> str:

@@ -19,7 +19,8 @@ VERDICTS = (EthicalVerdict.VERDICT_APPROVE, EthicalVerdict.VERDICT_MODIFY, Ethic
 TASK_STATES = (TaskStatus.STATE_STARTED, TaskStatus.STATE_REACHED, TaskStatus.STATE_DONE,
                TaskStatus.STATE_FAILED, TaskStatus.STATE_TIMED_OUT)
 EVENT_KINDS = (EpisodeEvent.KIND_START, EpisodeEvent.KIND_END, EpisodeEvent.KIND_VIOLATION,
-               EpisodeEvent.KIND_TIMEOUT, EpisodeEvent.KIND_PLANNING_EXHAUSTED)
+               EpisodeEvent.KIND_TIMEOUT, EpisodeEvent.KIND_PLANNING_EXHAUSTED,
+               EpisodeEvent.KIND_EDGE_BLOCKED, EpisodeEvent.KIND_EDGE_CLEARED)
 
 
 def stamp_now(node=None) -> Time:

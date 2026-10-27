@@ -43,7 +43,7 @@ def test_robot_ids():
 
 
 @pytest.mark.parametrize("topic, cls", [
-    ("/robot_a/scan", "sensor"), ("/robot_a/ground_truth", "sensor"),
+    ("/robot_a/scan", "sensor"), ("/robot_a/odom", "sensor"), ("/robot_a/ground_truth", "sensor"),
     ("/robot_a/cmd_vel", "command"), ("/robot_b/cmd_vel_nominal", "command"),
     (N.MISSION, "latched"), (N.VALIDATED_PLAN, "latched"),
     (N.PROPOSED_PLAN, "decision"), (N.VERDICT, "decision"), ("/robot_a/world_state", "decision"),
@@ -58,3 +58,29 @@ def test_ids():
     assert not is_transaction_id("not-a-uuid")
     e = new_episode_id("S1 Exit Blocking", seed=7)
     assert e.startswith("s1-exit-blocking-s7-")
+
+
+# ---- waypoint-graph edges ----------------------------------------------------------
+def test_edge_id_is_undirected_and_canonical():
+    assert N.edge_id("room_3", "corridor_1") == "corridor_1--room_3"
+    assert N.edge_id("corridor_1", "room_3") == N.edge_id("room_3", "corridor_1")
+    assert N.edge_nodes("corridor_1--room_3") == ("corridor_1", "room_3")
+
+
+@pytest.mark.parametrize("a, b", [("room_3", "room_3"), ("", "room_3"), ("a--b", "c"), ("a->b", "c")])
+def test_edge_id_rejects_bad_nodes(a, b):
+    with pytest.raises(ValueError):
+        N.edge_id(a, b)
+
+
+@pytest.mark.parametrize("bad", ["room_3", "room_3--corridor_1", "a--b--c", "--room_3", ""])
+def test_edge_nodes_rejects_non_canonical(bad):
+    with pytest.raises(ValueError):
+        N.edge_nodes(bad)
+
+
+def test_edge_from_world_state_at():
+    assert N.edge_from_at("room_3->corridor_1") == "corridor_1--room_3"   # direction dropped
+    assert N.edge_from_at("corridor_1->room_3") == "corridor_1--room_3"
+    assert N.edge_from_at("room_3") is None                                # at a node
+    assert N.edge_from_at("") is None

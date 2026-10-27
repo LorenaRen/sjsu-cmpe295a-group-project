@@ -1,6 +1,6 @@
 """Shared code for the MRS ethical gating project (Module 1).
 
-Pure-Python modules (importable without ROS): plan_schema, names, ids, samples.
+Pure-Python modules (importable without ROS): plan_schema, names, ids, reasons, samples.
 ROS-dependent modules (need a built workspace): convert, qos.qos_for, tools.
 """
 from importlib import resources as _resources

@@ -5,6 +5,8 @@ string KIND_END=end
 string KIND_VIOLATION=violation
 string KIND_TIMEOUT=timeout
 string KIND_PLANNING_EXHAUSTED=planning_exhausted
+string KIND_EDGE_BLOCKED=edge_blocked
+string KIND_EDGE_CLEARED=edge_cleared
 
 string episode_id
 string kind                       # KIND_* constants

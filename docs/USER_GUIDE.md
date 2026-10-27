@@ -12,7 +12,7 @@ plan is the team's *End-to-End Implementation Guide*.
 
 | Module | Package(s) | Status | What you can do with it |
 |---|---|---|---|
-| 0 Repository and containers | — | not started | (conda env set up by hand, see §2) |
+| 0 Repository and containers | `environment.yml` | partly done — conda env file exists; Docker image not started | Create the team conda env from one file (§2) |
 | 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 89 tests pass on macOS | Message types, plan format, topic names, message builders, dev nodes |
 | 2 Simulation world | `mrs_sim` | next | — |
 | 3 World state | `mrs_world_state` | — | — |
@@ -25,23 +25,27 @@ plan is the team's *End-to-End Implementation Guide*.
 
 ## 2. One-time setup (macOS, Apple Silicon)
 
-You need Miniconda and a conda environment with ROS 2 Jazzy from RoboStack (the one used for
-the ROS tutorials). The team environment is called `mrs-ethics`.
+You need Miniconda. Everything else (ROS 2 Jazzy from RoboStack, Gazebo, compilers, pydantic,
+pytest and the other Python libraries) comes from the team's `environment.yml` at the repo root.
+The environment is called `mrs-ethics`.
 
 ```bash
+conda env create -f environment.yml   # first time only
 conda activate mrs-ethics
 ros2 --help                           # must print help
-
-# Check what Module 1 needs; install only what is missing
-python -c "import pydantic; print(pydantic.VERSION)"     # need 2.x
-python -c "import setuptools; print(setuptools.__version__)"  # need < 80 for --symlink-install
-pytest --version
-which cmake clang
-
-conda install -c conda-forge "pydantic>=2" pytest "setuptools<80" compilers cmake make pkg-config
+python -c "import pydantic; print(pydantic.VERSION)"     # must be 2.x
 ```
 
-When Module 0 is done, these move into the team's `environment.yml` and nobody installs by hand.
+When `environment.yml` changes (pull it, then):
+
+```bash
+conda env update -f environment.yml --prune
+```
+
+Never `conda install` or `pip install` into the env by hand: add the package to `environment.yml`
+in a PR, so every teammate gets the same environment. If you already had an env from the ROS
+tutorials, create the new one from the file anyway (`conda env remove -n mrs-ethics` first if the
+name is taken).
 
 Get the code: clone the team repo (or unzip the module drop) so you have:
 
@@ -74,8 +78,8 @@ source install/setup.zsh          # after the first build; setup.bash in Docker/
 
 Build only what you need: `colcon build --packages-up-to mrs_common`.
 
-`colcon build --symlink-install` (no rebuild after Python edits) also works once setuptools is
-below 80; see Troubleshooting.
+Use plain `colcon build`. The environment does not pin setuptools, and `colcon build --symlink-install`
+fails with setuptools 80 or newer; see Troubleshooting.
 
 ### Running tests
 
@@ -324,11 +328,12 @@ Interfaces are agreed in week 1 and frozen in week 3 (tag `interfaces-v1`).
 | `ModuleNotFoundError: No module named 'mrs_common'` in pytest | old copy without `pytest.ini` | add `pytest.ini` to the package |
 | pytest: `collected 0 items / 1 skipped` | a test file skips at module level | use the `skipif` pattern (§5) |
 | Tests skipped: "needs the built and sourced workspace" | not built or not sourced | `colcon build`, `source install/setup.zsh` |
-| `error: option --editable not recognized` | setuptools ≥ 80 with `--symlink-install` | `conda install -c conda-forge "setuptools<80"`, or plain `colcon build`; then `rm -rf build/<pkg> install/<pkg>` |
+| `error: option --editable not recognized` | `--symlink-install` with setuptools 80 or newer | use plain `colcon build`; then `rm -rf build/<pkg> install/<pkg>` |
 | `colcon test`: `Ran 0 tests`, exit code 5 | `setup.py` uses `tests_require` | use `extras_require={"test": ["pytest"]}`, rebuild |
 | `Could not load library libmrs_msgs__rosidl_typesupport_...dylib` / `type support not from this implementation` | macOS strips `DYLD_LIBRARY_PATH` under `colcon test` | run `pytest` from a sourced terminal instead |
 | Subscriber never receives anything | QoS mismatch or wrong topic string | both sides use `qos_for(topic)` and names from `mrs_common.names`; check `ros2 topic info -v <topic>` |
-| pydantic errors on import | pydantic 1.x installed | `conda install -c conda-forge "pydantic>=2"` |
+| pydantic errors on import | pydantic 1.x installed | `conda env update -f environment.yml --prune`; if it stays 1.x, change `pydantic` to `"pydantic>=2"` in `environment.yml` (PR) |
+| `PackagesNotFoundError` on `conda env create` | a package in the file has no RoboStack build for macOS arm64 | remove it from `environment.yml` (see the implementation guide, Module 0 step 2) |
 | Warnings about `install_name_tool` / code signature during build | normal on Apple Silicon conda | ignore |
 
 Still stuck: run `ros2 run mrs_common check_interfaces` and `pytest -q -rs`, and paste both outputs.

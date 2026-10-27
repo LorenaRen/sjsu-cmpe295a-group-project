@@ -87,6 +87,18 @@ def test_decision_messages_carry_ids_and_stamp(name):
         assert "transaction_id" in fields
 
 
+def test_every_event_kind_is_accepted_by_make_episode_event():
+    """A KIND_* constant added to EpisodeEvent.msg must also be added to EVENT_KINDS in convert.py."""
+    src = (Path(__file__).resolve().parents[1] / "mrs_common" / "convert.py").read_text()
+    kinds = re.search(r"EVENT_KINDS = \((.*?)\)\n", src, re.S).group(1)
+    for const in ALL["EpisodeEvent"][1]:
+        assert f"EpisodeEvent.{const}" in kinds, f"convert.EVENT_KINDS is missing EpisodeEvent.{const}"
+
+
+def test_team_state_carries_blocked_edges():
+    assert ALL["TeamState"][0].get("blocked_edges") == "string[]"
+
+
 def test_convert_helpers_match_message_fields():
     """Every keyword passed to a message constructor in convert.py must be a real field."""
     src = (Path(__file__).resolve().parents[1] / "mrs_common" / "convert.py").read_text()

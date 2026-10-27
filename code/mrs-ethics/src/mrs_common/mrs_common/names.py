@@ -7,7 +7,7 @@ so a rename is a one-line change and `check_interfaces` can list everything.
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Iterable, Optional
 
 _ROBOT_ID = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -81,6 +81,49 @@ def base_frame(robot_id: str) -> str:
 
 def lidar_frame(robot_id: str) -> str:
     return f"{validate_robot_id(robot_id)}/lidar"
+
+
+# ---- waypoint-graph edges ------------------------------------------------------
+# WorldState.at names the edge a robot is travelling as "node_a->node_b" (direction of travel).
+# A blocked corridor is blocked both ways, so blocked edges and avoid_edge constraints use one
+# undirected id instead: edge_id("room_3", "corridor_1") == edge_id("corridor_1", "room_3")
+# == "corridor_1--room_3". Always build edge ids with edge_id(); never by hand.
+EDGE_SEP = "--"
+TRAVEL_SEP = "->"
+
+
+def _check_node(node: str) -> str:
+    node = (node or "").strip()
+    if not node or EDGE_SEP in node or TRAVEL_SEP in node:
+        raise ValueError(f"invalid graph node name '{node}' (empty, or contains '{EDGE_SEP}' or '{TRAVEL_SEP}')")
+    return node
+
+
+def edge_id(node_a: str, node_b: str) -> str:
+    """Undirected edge id: the two node names sorted, joined by '--'."""
+    a, b = _check_node(node_a), _check_node(node_b)
+    if a == b:
+        raise ValueError(f"an edge needs two different nodes, got '{a}' twice")
+    a, b = sorted((a, b))
+    return f"{a}{EDGE_SEP}{b}"
+
+
+def edge_nodes(edge: str) -> tuple[str, str]:
+    """The two nodes of an edge id; raises ValueError if it is not one."""
+    parts = (edge or "").split(EDGE_SEP)
+    if len(parts) != 2:
+        raise ValueError(f"'{edge}' is not an edge id like 'corridor_1--room_3'")
+    if edge_id(*parts) != edge:
+        raise ValueError(f"'{edge}' is not canonical; use edge_id() to build it")
+    return parts[0], parts[1]
+
+
+def edge_from_at(at: str) -> Optional[str]:
+    """Edge id for a WorldState.at value: None when the robot is at a node, else the edge it travels."""
+    if TRAVEL_SEP not in (at or ""):
+        return None
+    a, b = at.split(TRAVEL_SEP, 1)
+    return edge_id(a, b)
 
 
 def robot_ids(n: int) -> list[str]:

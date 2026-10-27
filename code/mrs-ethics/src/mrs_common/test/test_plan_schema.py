@@ -139,6 +139,15 @@ def test_constraint_needs_text_and_known_kind():
         Constraint.model_validate({"kind": "teleport", "rule_id": "X", "text": "no"})
 
 
+def test_avoid_edge_constraint():
+    c = Constraint(kind="avoid_edge", rule_id="blocked_route", value="corridor_1--room_3",
+                   text="Corridor between corridor_1 and room_3 is blocked; route around it.")
+    assert constraints_from_json(constraints_to_json([c])) == [c]
+    for bad in (None, "room_3--corridor_1", "corridor_1->room_3", "room_3"):
+        with pytest.raises(ValidationError):
+            Constraint(kind="avoid_edge", rule_id="blocked_route", value=bad, text="blocked")
+
+
 def test_json_schema_export():
     schema = team_plan_json_schema()
     assert "assignments" in schema["properties"]

@@ -14,7 +14,7 @@ try:
 
     from mrs_common.convert import (constraints_from_verdict, make_episode_event, make_proposed_plan,
                                     make_task_status, make_validated_plan, make_verdict, plan_from_msg)
-    from mrs_msgs.msg import EthicalVerdict, ProposedPlan, ValidatedPlan
+    from mrs_msgs.msg import EpisodeEvent, EthicalVerdict, ProposedPlan, TeamState, ValidatedPlan
     ROS_ERROR = None
 except ImportError as e:  # workspace not built / not sourced
     ROS_ERROR = str(e)
@@ -77,3 +77,18 @@ def test_corrupted_plan_json_is_detected():
     msg.plan_json = msg.plan_json.replace('"navigate"', '"fly"')
     with pytest.raises(Exception):
         plan_from_msg(wire(msg))
+
+
+def test_blocked_edges_round_trip_and_event():
+    import json
+
+    from mrs_common import names as N
+    from mrs_common import reasons as R
+
+    edge = N.edge_id("room_3", "corridor_1")
+    back = wire(TeamState(episode_id="ep-test", blocked_edges=[edge]))
+    assert list(back.blocked_edges) == ["corridor_1--room_3"]
+    ev = wire(make_episode_event(episode_id="ep-test", kind=EpisodeEvent.KIND_EDGE_BLOCKED, robot_id="robot_a",
+                                 detail=R.detail(R.EDGE_BLOCKED, edge=edge)))
+    assert ev.kind == "edge_blocked" and json.loads(ev.detail_json)["edge"] == edge
+    assert make_episode_event(episode_id="e", kind="edge_cleared").kind == EpisodeEvent.KIND_EDGE_CLEARED
