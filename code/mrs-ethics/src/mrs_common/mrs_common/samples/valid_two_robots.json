@@ -1,0 +1,23 @@
+{
+  "assignments": [
+    {
+      "robot_id": "robot_a",
+      "tasks": [
+        {"task_id": "a1", "action": "navigate", "target": "corridor_1", "priority": 1,
+         "justification": "Go through the narrow passage first while it is free."},
+        {"task_id": "a2", "action": "hold_position", "target": "room_3", "priority": 1,
+         "justification": "Goal for robot_a.", "depends_on": ["a1"]}
+      ]
+    },
+    {
+      "robot_id": "robot_b",
+      "tasks": [
+        {"task_id": "b1", "action": "wait", "target": "corridor_2", "priority": 2,
+         "justification": "Wait outside the narrow passage until robot_a is through.", "depends_on": ["a1"]},
+        {"task_id": "b2", "action": "hold_position", "target": "room_2", "priority": 2,
+         "justification": "Goal for robot_b.", "depends_on": ["b1"]}
+      ]
+    }
+  ],
+  "rationale": "Both robots need the narrow passage; robot_a goes first and robot_b waits outside it."
+}
