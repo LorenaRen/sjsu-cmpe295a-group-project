@@ -235,6 +235,22 @@ class TestYieldAssignment:
         # r1 is starving, so r2 must yield even though it's DELIVERY
         assert yielder == "r2"
 
+    def test_starvation_picks_yielder_in_same_direction_as_r1(self):
+        """Among non-starving robots, the one with FEWER yields yields, as in R-1."""
+        plans = {f"r{i}": make_plan(f"r{i}", [("wait", "aisle_1")]) for i in range(3)}
+
+        ledger = FairnessLedger()
+        for i in range(3):
+            ledger.record_yield("r0", f"s{i}", float(i), "r1")  # r0 starving
+        ledger.record_yield("r2", "c1", 10.0, "r1")
+        ledger.record_yield("r2", "c2", 11.0, "r1")             # r2: 2 yields, r1: 0
+
+        conflicts = check_capacity_violations(list(plans.values()), WORLD,
+                                              margin=0.0, hold_final=False)
+        yielder = assign_yield(conflicts[0], plans, ledger)
+
+        assert yielder == "r1"
+
 
 class TestFairnessLedger:
     """Tests for FairnessLedger tracking."""

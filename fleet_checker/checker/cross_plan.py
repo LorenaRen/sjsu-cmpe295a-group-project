@@ -286,30 +286,23 @@ def assign_yield(
         # No conflict if only one robot
         return robot_ids[0] if robot_ids else ""
 
-    # Check for starvation override (F-2)
-    starving_robots = [rid for rid in robot_ids if ledger.is_starving(rid)]
-    if len(starving_robots) == 1:
-        # The starving robot gets priority, others yield
-        non_starving = [rid for rid in robot_ids if rid not in starving_robots]
-        if non_starving:
-            # Pick the one with most yields to yield again (they can handle it)
-            return max(non_starving, key=lambda r: (
-                ledger.yield_count(r),
-                TASK_PRIORITY.get(plans[r].task_type, 99)
-            ))
+    # Robot with lowest key should yield
+    return min(robot_ids, key=lambda r: _yield_key(r, plans, ledger))
 
-    # Normal R-1 resolution
-    # "The robot with fewer cumulative yields yields this time"
-    def yield_priority(robot_id: str) -> tuple[int, int]:
-        """Lower tuple = should yield (be asked to replan)."""
-        yield_count = ledger.yield_count(robot_id)
-        task_priority = TASK_PRIORITY.get(plans[robot_id].task_type, 99)
-        # Fewer yields = should yield this time
-        # Higher task_priority number (SERVICE=2) = lower priority = should yield
-        return (yield_count, -task_priority)
 
-    # Robot with lowest yield_priority should yield
-    return min(robot_ids, key=yield_priority)
+def _yield_key(robot_id: str, plans: dict[str, Plan], ledger: FairnessLedger) -> tuple[bool, int, int]:
+    """Sort key for R-1 and F-2 together: lower key = should yield (replan).
+
+    1. Starving robots (F-2) sort last, so they yield only when every
+       other robot in the conflict is starving too.
+    2. Fewer cumulative yields = should yield this time (R-1).
+    3. Higher task_priority number (SERVICE=2) = lower priority = should yield.
+
+    One key for both rules keeps the starvation branch from ranking the
+    non-starving robots in a different direction than R-1.
+    """
+    task_priority = TASK_PRIORITY.get(plans[robot_id].task_type, 99)
+    return (ledger.is_starving(robot_id), ledger.yield_count(robot_id), -task_priority)
 
 
 # ---------------------------------------------------------------------------
