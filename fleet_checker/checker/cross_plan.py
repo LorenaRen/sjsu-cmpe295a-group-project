@@ -8,9 +8,14 @@ S-1: Interval capacity violation
     labels it `EDGE_SWAP` instead of `CAPACITY_EXCEEDED`.
 
 R-1: Yield assignment
-    When a conflict is detected, decide which robot yields based on:
+    When a conflict is detected, decide which robots yield (n robots in a
+    capacity-c region: n - c of them) based on:
     1. Fewer cumulative yields (from FairnessLedger) yields this time
     2. Tie-break: task_type rank — SERVICE yields to DELIVERY
+
+F-2: Starvation override
+    Starving robots are kept ahead of everyone else; they yield only when
+    there are more starving robots than capacity, ranked among themselves by R-1.
 """
 from __future__ import annotations
 
@@ -39,6 +44,12 @@ class CapacityConflict(NamedTuple):
     t_start: float
     t_end: float
     is_edge_swap: bool
+    capacity: int  # of resource_id; R-1 needs it to know how many robots must yield
+
+
+def _capacity_of(resource_id: str, world: WorldMap) -> int:
+    # Unknown ids are rejected by validate_plan; default to the strictest value.
+    return world.capacity(resource_id) if world.knows(resource_id) else 1
 
 
 def _detect_edge_swap(
@@ -124,7 +135,7 @@ def check_capacity_violations(
         if len(resource_claims_list) < 2:
             continue
 
-        capacity = world.capacity(resource_id) if world.knows(resource_id) else 1
+        capacity = _capacity_of(resource_id, world)
 
         # Build sweep-line events
         events: list[ConflictEvent] = []
@@ -181,6 +192,7 @@ def check_capacity_violations(
             t_start=t_start,
             t_end=t_end,
             is_edge_swap=(i in swap_indices),
+            capacity=_capacity_of(resource_id, world),
         ))
 
     return conflicts
@@ -265,36 +277,42 @@ def assign_yield(
     conflict: CapacityConflict,
     plans: dict[str, Plan],
     ledger: FairnessLedger,
-) -> str:
-    """Decide which robot should yield (replan) given a conflict.
+) -> list[str]:
+    """Decide which robots should yield (replan) given a conflict.
 
-    Resolution order (R-1):
-    1. The robot with fewer cumulative yields yields this time
-    2. Tie-break: SERVICE yields to DELIVERY (lower task_type priority yields)
+    With n distinct robots in a region of capacity c, n - c robots yield, so
+    three robots in a capacity-1 aisle send two of them back to replan.
+    Robots are ranked by `_yield_key` (F-2, then R-1) and the first n - c
+    yield; the remaining c keep their plans.
+
+    Known over-yield: n counts every robot in the conflict window, but they
+    may not all be inside at once. In a chain where r1 overlaps r2 and r2
+    overlaps r3 but r1 and r3 never meet, capacity 1 asks two robots to
+    yield when removing r2 alone would do. This is conservative: the robots
+    kept never exceed capacity, so the conflict is always resolved, at the
+    cost of an extra replan. Finding the minimum set is an interval
+    selection problem; revisit if experiments show chains are common.
 
     Args:
         conflict: The detected capacity conflict
         plans: Dict mapping robot_id to their Plan
-        ledger: FairnessLedger tracking cumulative yields
+        ledger: FairnessLedger tracking cumulative yields and starvation
 
     Returns:
-        robot_id of the robot that should yield
+        robot_ids that should yield, in yield order (empty if no conflict)
     """
     robot_ids = sorted(set(c.robot_id for c in conflict.claims))
+    n_yield = max(len(robot_ids) - conflict.capacity, 0)
 
-    if len(robot_ids) < 2:
-        # No conflict if only one robot
-        return robot_ids[0] if robot_ids else ""
-
-    # Robot with lowest key should yield
-    return min(robot_ids, key=lambda r: _yield_key(r, plans, ledger))
+    ranked = sorted(robot_ids, key=lambda r: _yield_key(r, plans, ledger))
+    return ranked[:n_yield]
 
 
 def _yield_key(robot_id: str, plans: dict[str, Plan], ledger: FairnessLedger) -> tuple[bool, int, int]:
     """Sort key for R-1 and F-2 together: lower key = should yield (replan).
 
-    1. Starving robots (F-2) sort last, so they yield only when every
-       other robot in the conflict is starving too.
+    1. Starving robots (F-2) sort last, so they yield only when there are
+       more starving robots than capacity; among themselves, R-1 decides.
     2. Fewer cumulative yields = should yield this time (R-1).
     3. Higher task_priority number (SERVICE=2) = lower priority = should yield.
 
@@ -343,7 +361,7 @@ def check_cross_plan_conflicts(
     robot_violations: dict[str, list[Violation]] = defaultdict(list)
 
     for conflict, violation in zip(conflicts, all_violations):
-        yielding_robot = assign_yield(conflict, plans_dict, ledger)
-        robot_violations[yielding_robot].append(violation)
+        for yielding_robot in assign_yield(conflict, plans_dict, ledger):
+            robot_violations[yielding_robot].append(violation)
 
     return all_violations, dict(robot_violations)

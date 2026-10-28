@@ -114,16 +114,27 @@ yields).
 ### R-1  Yield assignment
 
 When S-1 or S-2 detects a conflict, the checker must decide **which**
-robot replans (yields).
+robots replan (yield).  A conflict with *n* distinct robots in a region
+of capacity *c* needs **n − c** of them to yield — e.g. three robots
+entering a capacity-1 aisle send two back to replan.
 
-Resolution order:
+Resolution order (robots are ranked; the first n − c yield):
 1. The robot with **fewer** cumulative yields (from `FairnessLedger`)
    yields this time.
 2. Tie-break: `task_type` rank — `SERVICE` yields to `DELIVERY`
    (configurable).
 
-The yielding robot receives the `Violation` with a structured rejection
-reason; the other robot's plan is accepted.
+Each yielding robot receives the `Violation` with a structured rejection
+reason; the remaining *c* robots' plans are accepted.
+
+**Known over-yield.**  *n* counts every robot in the conflict window, but
+they are not necessarily all inside at the same moment.  In a chain where
+r1 overlaps r2 and r2 overlaps r3 but r1 and r3 never meet, capacity 1
+asks two robots to yield even though removing r2 alone would suffice.
+This is deliberately conservative: the robots kept never exceed capacity,
+so the conflict is always resolved, at the cost of one extra replan.
+Computing the minimum yielding set is an interval-selection problem;
+revisit if experiments show chained overlaps are common.
 
 - **Scope:** cross-plan
 - **Data:** `FairnessLedger` (cumulative yields per robot);
@@ -153,8 +164,17 @@ Not a violation that rejects a plan.  Instead it is:
 
 A robot's plan has been rejected M consecutive times (across any conflict
 group).  When triggered, the starving robot receives **priority override**:
-its current plan is accepted and the conflicting robots are asked to
-replan, regardless of R-1's normal yield assignment.
+it is kept ahead of every non-starving robot in the conflict, and the
+n − c yielding robots are drawn from the non-starving robots first,
+ranked by R-1 (fewer cumulative yields yields; `task_type` tie-break).
+
+If a conflict contains more starving robots than the region's capacity,
+starving robots are still kept ahead of non-starving ones, but some of
+them must yield; among the starving robots, R-1 decides who yields.
+
+Implementation note: R-1 and F-2 share one ranking key,
+`(is_starving, yield_count, task_type rank)`, so the starvation branch
+can never order robots in the opposite direction from R-1.
 
 - **Data:** `FairnessLedger` consecutive-rejection count
 - **Source:** project-defined (task-completion guarantee)

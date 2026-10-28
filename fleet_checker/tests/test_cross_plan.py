@@ -182,10 +182,10 @@ class TestYieldAssignment:
         conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
         assert len(conflicts) == 1
 
-        yielder = assign_yield(conflicts[0], plans, ledger)
+        yielders = assign_yield(conflicts[0], plans, ledger)
         # Per R-1: "The robot with fewer cumulative yields yields this time"
         # r2 has 0 yields (fewer than r1's 2), so r2 should yield
-        assert yielder == "r2"
+        assert yielders == ["r2"]
 
     def test_robot_with_more_yields_is_protected(self):
         """Robot that has yielded more should NOT yield again (fairness)."""
@@ -200,9 +200,9 @@ class TestYieldAssignment:
         ledger.record_yield("r2", "c3", 20.0, "r1")
 
         conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
-        yielder = assign_yield(conflicts[0], plans, ledger)
+        yielders = assign_yield(conflicts[0], plans, ledger)
         # r2 has 1 yield, r1 has 2 yields. r2 (fewer) should yield
-        assert yielder == "r2"
+        assert yielders == ["r2"]
 
     def test_task_type_tiebreak(self):
         """SERVICE yields to DELIVERY when yield counts are equal."""
@@ -213,10 +213,10 @@ class TestYieldAssignment:
         ledger = FairnessLedger()  # Both have 0 yields
 
         conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
-        yielder = assign_yield(conflicts[0], plans, ledger)
+        yielders = assign_yield(conflicts[0], plans, ledger)
 
         # SERVICE has lower priority, so r2 (service) yields
-        assert yielder == "r2"
+        assert yielders == ["r2"]
 
     def test_starvation_override(self):
         """Starving robot (F-2) gets priority, others yield."""
@@ -230,26 +230,73 @@ class TestYieldAssignment:
             ledger.record_yield("r1", f"c{i}", float(i), "r2")
 
         conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
-        yielder = assign_yield(conflicts[0], plans, ledger)
+        yielders = assign_yield(conflicts[0], plans, ledger)
 
         # r1 is starving, so r2 must yield even though it's DELIVERY
-        assert yielder == "r2"
+        assert yielders == ["r2"]
 
     def test_starvation_picks_yielder_in_same_direction_as_r1(self):
         """Among non-starving robots, the one with FEWER yields yields, as in R-1."""
-        plans = {f"r{i}": make_plan(f"r{i}", [("wait", "aisle_1")]) for i in range(3)}
+        # 4 robots in capacity-3 room_a: exactly one must yield
+        plans = {f"r{i}": make_plan(f"r{i}", [("wait", "room_a")]) for i in range(4)}
 
         ledger = FairnessLedger()
         for i in range(3):
             ledger.record_yield("r0", f"s{i}", float(i), "r1")  # r0 starving
         ledger.record_yield("r2", "c1", 10.0, "r1")
-        ledger.record_yield("r2", "c2", 11.0, "r1")             # r2: 2 yields, r1: 0
+        ledger.record_yield("r2", "c2", 11.0, "r1")             # r2: 2 yields
+        ledger.record_yield("r3", "c3", 12.0, "r1")             # r3: 1 yield, r1: 0
 
         conflicts = check_capacity_violations(list(plans.values()), WORLD,
                                               margin=0.0, hold_final=False)
-        yielder = assign_yield(conflicts[0], plans, ledger)
+        yielders = assign_yield(conflicts[0], plans, ledger)
 
-        assert yielder == "r1"
+        assert yielders == ["r1"]
+
+    def test_three_robots_in_capacity_one_two_yield(self):
+        """n robots in a capacity-c region: n - c yield, chosen in R-1 order."""
+        plans = {f"r{i}": make_plan(f"r{i}", [("wait", "aisle_1")]) for i in range(3)}
+
+        ledger = FairnessLedger()
+        ledger.record_yield("r0", "c1", 0.0, "r1")
+        ledger.record_yield("r0", "c2", 1.0, "r1")              # r0: 2 yields
+        ledger.record_yield("r2", "c3", 2.0, "r1")              # r2: 1, r1: 0
+
+        conflicts = check_capacity_violations(list(plans.values()), WORLD,
+                                              margin=0.0, hold_final=False)
+        assert len(conflicts) == 1
+        yielders = assign_yield(conflicts[0], plans, ledger)
+
+        # r0 has yielded most, so it keeps its plan
+        assert yielders == ["r1", "r2"]
+
+    def test_five_robots_in_capacity_three_two_yield(self):
+        plans = {f"r{i}": make_plan(f"r{i}", [("wait", "room_a")]) for i in range(5)}
+
+        conflicts = check_capacity_violations(list(plans.values()), WORLD,
+                                              margin=0.0, hold_final=False)
+        yielders = assign_yield(conflicts[0], plans, FairnessLedger())
+
+        assert len(yielders) == 2
+
+    def test_multiple_starving_robots_ranked_by_r1_when_slots_run_out(self):
+        """More starving robots than capacity: starving robots yield in R-1 order."""
+        plans = {f"r{i}": make_plan(f"r{i}", [("wait", "aisle_1")]) for i in range(3)}
+
+        ledger = FairnessLedger()
+        for i in range(3):
+            ledger.record_yield("r0", f"a{i}", float(i), "r2")  # r0 starving, 3 yields
+        for i in range(4):
+            ledger.record_yield("r1", f"b{i}", float(i), "r2")  # r1 starving, 4 yields
+        # r2 not starving
+
+        conflicts = check_capacity_violations(list(plans.values()), WORLD,
+                                              margin=0.0, hold_final=False)
+        yielders = assign_yield(conflicts[0], plans, ledger)
+
+        # r2 yields first (not starving); one starving robot must also yield,
+        # and R-1 picks the one with fewer yields (r0). r1 keeps its plan.
+        assert yielders == ["r2", "r0"]
 
 
 class TestFairnessLedger:
@@ -331,6 +378,8 @@ class TestCrossPlanConflicts:
             plans, WORLD, margin=0.0
         )
 
-        assert len(all_violations) >= 1
-        # At least one robot should be assigned to yield
-        assert len(robot_violations) >= 1
+        assert len(all_violations) == 1
+        # Capacity 1 keeps one robot; the other two are sent back to replan
+        assert len(robot_violations) == 2
+        for violations in robot_violations.values():
+            assert violations == all_violations
