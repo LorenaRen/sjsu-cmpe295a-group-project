@@ -13,8 +13,8 @@ plan is the team's *End-to-End Implementation Guide*.
 | Module | Package(s) | Status | What you can do with it |
 |---|---|---|---|
 | 0 Repository and containers | `environment.yml` | partly done — conda env file exists; Docker image not started | Create the team conda env from one file (§2) |
-| 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 115 tests (navigation-only update, Oct 26) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
-| 2 Simulation world | `mrs_sim` | next | — |
+| 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 118 tests (optional camera topics added Oct 28) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
+| 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
 | 5 Ethical gatekeeper | `mrs_ethical_gate` | — | — |
@@ -366,6 +366,102 @@ Sample plans (`mrs_common/samples/`, load with `mrs_common.load_sample(name)`):
 Dev nodes are run by hand; the real system never launches them. Recording for audit and analysis
 is Module 7 (`mrs_telemetry`), not a dev node.
 
+### 4.2 Module 2 — simulation (`mrs_sim`)
+
+Starts a Gazebo world with N robots, bridged to the canonical ROS topics. Nothing else from the
+stack runs yet, so the robots stand still until something publishes `/<robot>/cmd_vel`.
+
+```bash
+ros2 launch mrs_sim sim.launch.py                       # narrow_aisle, 2 robots, camera on, headless
+ros2 launch mrs_sim sim.launch.py gui:=true             # also open the Gazebo window
+ros2 launch mrs_sim sim.launch.py robots:=4 camera:=false
+ros2 launch mrs_sim sim.launch.py world:=aisle_bypass   # any world in src/mrs_sim/worlds/
+ros2 launch mrs_sim sim.launch.py world:=/path/to/my_world.sdf   # a world outside the package
+
+# in a second terminal, while it runs:
+ros2 run mrs_sim sim_check --drive                      # topics + rates, spawn poses, robots move
+ros2 run mrs_sim list_worlds                            # every world, and whether it loads
+```
+
+| Launch argument | Default | Meaning |
+|---|---|---|
+| `world` | `narrow_aisle` | world name in `worlds/`, or a path to a `.sdf` with its `.yaml` next to it |
+| `robots` | `2` | robot count; robots are `robot_a`, `robot_b`, ... and take the world's spawn slots in order |
+| `camera` | `true` | front camera on every robot; use `false` for batch / HPC runs (smaller recordings, less rendering) |
+| `gui` | `false` | also start the Gazebo GUI (a separate `gz sim -g` process, which macOS needs) |
+| `verbosity` | `2` | `gz sim -v` level |
+| `run_dir` | temp dir | where the generated robot SDFs and `bridge.yaml` are written (printed at start) |
+
+**What each robot publishes** (all names from `mrs_common.names`; `use_sim_time:=true` everywhere):
+
+| Topic | Type | Rate | Frame |
+|---|---|---|---|
+| `/<robot>/scan` | `LaserScan` (360°, 0.05–10 m) | 10 Hz | `<robot>/lidar` |
+| `/<robot>/odom` | `Odometry` (wheel odometry, starts at 0 at spawn) | 30 Hz | `<robot>/odom` → `<robot>/base_link` |
+| `/<robot>/ground_truth` | `Odometry` (true pose) | 30 Hz | `map` → `<robot>/base_link` |
+| `/<robot>/camera/image_raw`, `.../camera_info` | `Image` 640×480, `CameraInfo` (only with `camera:=true`) | 10 Hz | `<robot>/camera` |
+| `/<robot>/cmd_vel` (input) | `Twist`; clamped to 0.5 m/s, 1.5 rad/s | — | — |
+
+TF: `map → <robot>/odom` (static, the spawn pose) `→ <robot>/base_link` (wheel odometry) `→ <robot>/lidar`,
+`<robot>/camera` (static). The `map` frame is the Gazebo world frame. Also bridged: `/clock`.
+
+Measured on the Intel i9 MacBook, headless: 2 robots with cameras run at full rate (scan 10 Hz, camera
+9.6 Hz, odom 28 Hz); 4 robots without cameras at about 9 Hz scan.
+
+#### Worlds
+
+A world is **two files with the same name** in `src/mrs_sim/worlds/`:
+
+| File | Contains | Used by |
+|---|---|---|
+| `<name>.sdf` | Gazebo world: floor, walls, lights. `<world name="<name>">` must match the file name | Gazebo |
+| `<name>.yaml` | waypoint graph (`nodes`, `edges`), semantic `zones`, robot `spawns` | launch file, Modules 3–5 |
+
+```python
+from mrs_sim.world_map import load_world_map
+wm, sdf_path = load_world_map("narrow_aisle")
+wm.edge_ids()            # ["room_w--room_w_n", ..., "aisle_mid--aisle_w", ...]  (names.edge_id form)
+wm.zones_at(6.0, 0.0)    # ["aisle"]                -> WorldState.zones (Module 3)
+wm.nearest_node(5.9, 0.1)  # ("aisle_mid", 0.14)    -> WorldState.at (Module 3)
+wm.zone("aisle").capacity  # 1                      -> narrow-passage rule (Module 5)
+wm.to_prompt_dict()      # compact static map for the LLM system prompt (Module 4)
+```
+
+**`narrow_aisle`** (the 295A world): two 4 × 4 m rooms joined by a straight aisle 8 m long and 0.8 m
+wide. A robot is 0.40 m wide, so only one fits in the aisle (zone `aisle`, type `narrow`, capacity 1).
+`robot_a` starts in the west room, `robot_b` in the east room, both facing the aisle; swapping rooms
+forces one to wait. Slots 3 and 4 (`robot_c`, `robot_d`) are the other corners of the rooms.
+
+```
+room_w_n (robot_c)                                     room_e_n (robot_b)
+     |                                                      |
+  room_w ── aisle_w ──── aisle_mid ──── aisle_e ──────── room_e
+     |        (the three aisle nodes are in zone "aisle")   |
+room_w_s (robot_a)                                     room_e_s (robot_d)
+```
+
+#### Adding or switching a world (e.g. `aisle_bypass`)
+
+1. Copy `narrow_aisle.sdf` and `narrow_aisle.yaml` to `aisle_bypass.sdf` / `aisle_bypass.yaml`.
+2. In the `.sdf`: rename `<world name="aisle_bypass">` and edit the walls (box collisions in the `walls` model;
+   keep them axis-aligned and give each a matching visual).
+3. In the `.yaml`: set `world: aisle_bypass`, then the nodes, edges, zones and at least 2 spawn slots.
+4. `colcon build --packages-select mrs_sim`, then `cd src/mrs_sim && pytest -q`. The world tests run on
+   every world automatically: the yaml validates, the names match, the graph is connected, every node is
+   in a zone, and nodes / edges keep clear of the walls (0.30 m / 0.20 m).
+5. `ros2 launch mrs_sim sim.launch.py world:=aisle_bypass` and `ros2 run mrs_sim sim_check --world aisle_bypass --drive`.
+
+Nothing else changes: the robots, bridge and launch file are shared by every world. To try a world without
+adding it to the package, pass its path: `world:=/path/to/aisle_bypass.sdf`.
+
+#### Robot model
+
+`mrs_sim/templates/mrs_bot.sdf` (+ `camera.sdf`) is filled per robot by `mrs_sim.robot_model.robot_sdf()`:
+upstream's `ethics_bot` body (0.45 × 0.30 m, 0.06 m wheels, 0.36 m track) plus two frictionless casters,
+each robot in its own colour (a orange, b blue, c green, d purple). Sizes, sensor mounts and speed limits
+are constants at the top of `robot_model.py`; the static sensor transforms are generated from the same
+numbers, so edit them there, not in the template.
+
 ---
 
 ## 5. Adding your own package (Modules 2–8)
@@ -433,5 +529,10 @@ Interfaces are agreed in week 1 and frozen in week 3 (tag `interfaces-v1`).
 | pydantic errors on import | pydantic 1.x installed | `conda env update -f environment.yml --prune`; if it stays 1.x, change `pydantic` to `"pydantic>=2"` in `environment.yml` (PR) |
 | `PackagesNotFoundError` on `conda env create` | a package in the file has no RoboStack build for macOS arm64 | remove it from `environment.yml` (see the implementation guide, Module 0 step 2) |
 | Warnings about `install_name_tool` / code signature during build | normal on Apple Silicon conda | ignore |
+| `malformed launch argument` | launch arguments need `:=` | `world:=narrow_aisle`, not `world=narrow_aisle` |
+| `sim_check` fails right after launch | robots still spawning (takes about 10 s) | wait for both `Entity creation successful` lines, run it again |
+| Gazebo or bridge processes left over after Ctrl-C | a launch was killed hard | `pkill -f "gz sim"; pkill -f parameter_bridge; pkill -f static_transform_publisher` |
+| `gz sdf -k` warns `gz_frame_id ... not defined in SDF` | Gazebo-specific tag, read by the sensors | ignore |
+| A new world fails `test_nodes_and_edges_clear_of_walls` | a node or edge is too close to a wall | move the node, or widen the gap in the `.sdf` |
 
 Still stuck: run `ros2 run mrs_common check_interfaces` and `pytest -q -rs`, and paste both outputs.

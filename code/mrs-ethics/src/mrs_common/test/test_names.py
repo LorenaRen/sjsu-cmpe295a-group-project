@@ -26,6 +26,14 @@ def test_frames_are_prefixed():
     assert N.odom_frame("robot_a") == "robot_a/odom"
     assert N.base_frame("robot_b") == "robot_b/base_link"
     assert N.lidar_frame("robot_c") == "robot_c/lidar"
+    assert N.camera_frame("robot_d") == "robot_d/camera"
+
+
+def test_camera_topics_are_optional():
+    assert N.robot_topic("robot_a", N.CAMERA_IMAGE) == "/robot_a/camera/image_raw"
+    with_cam = N.all_topics(N.robot_ids(2), camera=True)
+    assert len(with_cam) == len(N.all_topics(N.robot_ids(2))) + 2 * len(N.CAMERA_TOPIC_TYPES)
+    assert with_cam["/robot_b/camera/camera_info"] == "sensor_msgs/msg/CameraInfo"
 
 
 def test_all_topics():
@@ -44,6 +52,7 @@ def test_robot_ids():
 
 @pytest.mark.parametrize("topic, cls", [
     ("/robot_a/scan", "sensor"), ("/robot_a/odom", "sensor"), ("/robot_a/ground_truth", "sensor"),
+    ("/robot_a/camera/image_raw", "sensor"), ("/robot_b/camera/camera_info", "sensor"),
     ("/robot_a/cmd_vel", "command"), ("/robot_b/cmd_vel_nominal", "command"),
     (N.MISSION, "latched"), (N.VALIDATED_PLAN, "latched"),
     (N.PROPOSED_PLAN, "decision"), (N.VERDICT, "decision"), ("/robot_a/world_state", "decision"),

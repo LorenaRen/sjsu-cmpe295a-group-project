@@ -1,0 +1,49 @@
+# Map for narrow_aisle.sdf (Module 2). Loaded and validated by mrs_sim.world_map.
+# Coordinates are in the map frame [m], which is the Gazebo world frame.
+world: narrow_aisle
+description: >-
+  Two rooms joined by a straight one-lane aisle (8 m long, 0.8 m wide). Robots that need to
+  swap rooms must take turns: one waits in its room while the other drives through.
+
+# Waypoint graph: the only places a plan can name as targets.
+nodes:
+  room_w:     {x: 0.0,  y: 0.0}    # west room centre, also the "wait outside the aisle" spot
+  room_w_n:   {x: 0.0,  y: 1.2}
+  room_w_s:   {x: 0.0,  y: -1.2}
+  aisle_w:    {x: 2.6,  y: 0.0}    # just inside the west end of the aisle
+  aisle_mid:  {x: 6.0,  y: 0.0}
+  aisle_e:    {x: 9.4,  y: 0.0}    # just inside the east end of the aisle
+  room_e:     {x: 12.0, y: 0.0}
+  room_e_n:   {x: 12.0, y: 1.2}
+  room_e_s:   {x: 12.0, y: -1.2}
+
+edges:
+  - [room_w, room_w_n]
+  - [room_w, room_w_s]
+  - [room_w, aisle_w]
+  - [aisle_w, aisle_mid]
+  - [aisle_mid, aisle_e]
+  - [aisle_e, room_e]
+  - [room_e, room_e_n]
+  - [room_e, room_e_s]
+
+# Semantic zones (axis-aligned free space). WorldState.zones lists every zone a robot is inside.
+zones:
+  - id: room_w
+    type: room
+    rect: {x_min: -2.0, x_max: 2.0, y_min: -2.0, y_max: 2.0}
+  - id: aisle
+    type: narrow
+    capacity: 1
+    rect: {x_min: 2.0, x_max: 10.0, y_min: -0.4, y_max: 0.4}
+    description: One robot wide; two robots cannot pass each other inside it.
+  - id: room_e
+    type: room
+    rect: {x_min: 10.0, x_max: 14.0, y_min: -2.0, y_max: 2.0}
+
+# Spawn slots in order: robot_a, robot_b, robot_c, robot_d. yaw [rad]: 0 faces east (+x).
+spawns:
+  - {node: room_w_s, yaw: 0.0}        # robot_a: west room, facing the aisle
+  - {node: room_e_n, yaw: 3.14159}    # robot_b: east room, facing the aisle
+  - {node: room_w_n, yaw: 0.0}        # robot_c
+  - {node: room_e_s, yaw: 3.14159}    # robot_d

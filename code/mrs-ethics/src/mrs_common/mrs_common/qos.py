@@ -33,7 +33,7 @@ def qos_class(topic: str) -> str:
     leaf = topic.rstrip("/").rsplit("/", 1)[-1]
     if topic in LATCHED_TOPICS:
         return "latched"
-    if leaf in (N.SCAN, N.ODOM, N.GROUND_TRUTH):
+    if leaf in (N.SCAN, N.ODOM, N.GROUND_TRUTH) or topic.endswith(tuple(N.CAMERA_TOPIC_TYPES)):
         return "sensor"
     if leaf in (N.CMD_VEL, N.CMD_VEL_NOMINAL):
         return "command"

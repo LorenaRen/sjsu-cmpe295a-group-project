@@ -1,0 +1,111 @@
+<?xml version="1.0"?>
+<!--
+  narrow_aisle (Module 2): two 4 x 4 m rooms joined by a straight aisle 8 m long and 0.8 m wide.
+  A robot is about 0.40 m wide (wheel to wheel), so only one fits in the aisle at a time and two
+  robots swapping rooms have to take turns.
+
+      y
+      ^   room_w              aisle (0.8 m)              room_e
+   2  +_________+                                  +_________+
+      |  [c]    |                                  |    [b]  |
+   0  |    .    +==================================+    .    |
+      |  [a]    |                                  |    [d]  |
+  -2  +_________+                                  +_________+
+     -2         2                                  10        14  => x
+  (XML comments cannot contain two dashes in a row, hence the underscores.)
+
+  The waypoint graph, zones and spawn slots are in narrow_aisle.yaml; keep the two in sync.
+  Walls are 0.1 m thick and sit just outside the free space given in the yaml rects.
+-->
+<sdf version="1.9">
+  <world name="narrow_aisle">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.95 0.95 0.95 1</background>
+    </scene>
+
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>6 0 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.2 0.2 -1</direction>
+    </light>
+
+    <model name="floor">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 8</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <pose>6 0 0 0 0 0</pose>
+          <geometry><plane><normal>0 0 1</normal><size>20 8</size></plane></geometry>
+          <material>
+            <ambient>0.9 0.9 0.9 1</ambient>
+            <diffuse>0.9 0.9 0.9 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <!-- Yellow floor marking for the one-lane aisle (visual only, no collision). -->
+        <visual name="aisle_marking">
+          <pose>6 0 0.001 0 0 0</pose>
+          <geometry><box><size>8 0.8 0.001</size></box></geometry>
+          <material>
+            <ambient>0.95 0.85 0.30 1</ambient>
+            <diffuse>0.95 0.85 0.30 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- All walls in one static model: one link, one collision + visual per wall segment. -->
+    <model name="walls">
+      <static>true</static>
+      <link name="link">
+        <!-- room_w: x in [-2, 2], y in [-2, 2]; opening in the east wall for y in [-0.4, 0.4] -->
+        <collision name="w_north_c"><pose>0 2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry></collision>
+        <visual name="w_north_v"><pose>0 2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="w_south_c"><pose>0 -2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry></collision>
+        <visual name="w_south_v"><pose>0 -2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="w_west_c"><pose>-2.05 0 0.5 0 0 0</pose><geometry><box><size>0.1 4.2 1</size></box></geometry></collision>
+        <visual name="w_west_v"><pose>-2.05 0 0.5 0 0 0</pose><geometry><box><size>0.1 4.2 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="w_east_n_c"><pose>2.05 1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry></collision>
+        <visual name="w_east_n_v"><pose>2.05 1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="w_east_s_c"><pose>2.05 -1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry></collision>
+        <visual name="w_east_s_v"><pose>2.05 -1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+
+        <!-- aisle: x in [2, 10], y in [-0.4, 0.4] -->
+        <collision name="aisle_north_c"><pose>6 0.45 0.5 0 0 0</pose><geometry><box><size>7.8 0.1 1</size></box></geometry></collision>
+        <visual name="aisle_north_v"><pose>6 0.45 0.5 0 0 0</pose><geometry><box><size>7.8 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="aisle_south_c"><pose>6 -0.45 0.5 0 0 0</pose><geometry><box><size>7.8 0.1 1</size></box></geometry></collision>
+        <visual name="aisle_south_v"><pose>6 -0.45 0.5 0 0 0</pose><geometry><box><size>7.8 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+
+        <!-- room_e: x in [10, 14], y in [-2, 2]; opening in the west wall for y in [-0.4, 0.4] -->
+        <collision name="e_north_c"><pose>12 2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry></collision>
+        <visual name="e_north_v"><pose>12 2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="e_south_c"><pose>12 -2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry></collision>
+        <visual name="e_south_v"><pose>12 -2.05 0.5 0 0 0</pose><geometry><box><size>4.2 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="e_east_c"><pose>14.05 0 0.5 0 0 0</pose><geometry><box><size>0.1 4.2 1</size></box></geometry></collision>
+        <visual name="e_east_v"><pose>14.05 0 0.5 0 0 0</pose><geometry><box><size>0.1 4.2 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="e_west_n_c"><pose>9.95 1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry></collision>
+        <visual name="e_west_n_v"><pose>9.95 1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="e_west_s_c"><pose>9.95 -1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry></collision>
+        <visual name="e_west_s_v"><pose>9.95 -1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.7 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

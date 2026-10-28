@@ -1,0 +1,180 @@
+<?xml version="1.0"?>
+<!--
+  mrs_bot: differential-drive robot for mrs_sim (Module 2). Rendered per robot by
+  mrs_sim.robot_model.robot_sdf(); every placeholder is filled there, so do not spawn this file
+  directly. Body and wheel sizes follow upstream's ethics_bot (0.45 x 0.30 m base, 0.06 m wheels),
+  plus two frictionless casters so the base no longer drags on the floor.
+
+  Gazebo topics are already the canonical ROS names (/robot_a/scan, ...), so the bridge maps
+  each topic to itself. Frames are <robot>/odom, <robot>/base_link, <robot>/lidar, <robot>/camera.
+-->
+<sdf version="1.9">
+  <model name="$robot">
+
+    <link name="base_link">
+      <pose>0 0 $wheel_radius 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0.04 0 0 0</pose>
+        <mass>8.0</mass>
+        <inertia>
+          <ixx>0.07</ixx><iyy>0.15</iyy><izz>0.2</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <collision name="base_collision">
+        <pose>0 0 0.04 0 0 0</pose>
+        <geometry><box><size>0.45 0.30 0.12</size></box></geometry>
+      </collision>
+      <visual name="base_visual">
+        <pose>0 0 0.04 0 0 0</pose>
+        <geometry><box><size>0.45 0.30 0.12</size></box></geometry>
+        <material>
+          <ambient>$color 1</ambient>
+          <diffuse>$color 1</diffuse>
+          <specular>0.2 0.2 0.2 1</specular>
+        </material>
+      </visual>
+
+      <!-- Casters: frictionless spheres front and back, touching the floor. -->
+      <collision name="caster_front_collision">
+        <pose>0.17 0 -0.03 0 0 0</pose>
+        <geometry><sphere><radius>0.03</radius></sphere></geometry>
+        <surface><friction><ode><mu>0</mu><mu2>0</mu2></ode></friction></surface>
+      </collision>
+      <visual name="caster_front_visual">
+        <pose>0.17 0 -0.03 0 0 0</pose>
+        <geometry><sphere><radius>0.03</radius></sphere></geometry>
+      </visual>
+      <collision name="caster_back_collision">
+        <pose>-0.17 0 -0.03 0 0 0</pose>
+        <geometry><sphere><radius>0.03</radius></sphere></geometry>
+        <surface><friction><ode><mu>0</mu><mu2>0</mu2></ode></friction></surface>
+      </collision>
+      <visual name="caster_back_visual">
+        <pose>-0.17 0 -0.03 0 0 0</pose>
+        <geometry><sphere><radius>0.03</radius></sphere></geometry>
+      </visual>
+    </link>
+
+    <!-- 360-degree lidar on top, above the base so it never sees its own robot. -->
+    <link name="lidar_link">
+      <pose relative_to="base_link">$lidar_x 0 $lidar_z 0 0 0</pose>
+      <inertial>
+        <mass>0.1</mass>
+        <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <visual name="lidar_visual">
+        <geometry><cylinder><radius>0.03</radius><length>0.04</length></cylinder></geometry>
+        <material>
+          <ambient>0.1 0.1 0.1 1</ambient>
+          <diffuse>0.1 0.1 0.1 1</diffuse>
+        </material>
+      </visual>
+      <sensor name="lidar" type="gpu_lidar">
+        <gz_frame_id>$robot/lidar</gz_frame_id>
+        <topic>/$robot/scan</topic>
+        <always_on>true</always_on>
+        <visualize>false</visualize>
+        <update_rate>10</update_rate>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>360</samples>
+              <resolution>1</resolution>
+              <min_angle>-3.14159</min_angle>
+              <max_angle>3.14159</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>1</samples>
+              <resolution>1</resolution>
+              <min_angle>0</min_angle>
+              <max_angle>0</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>0.05</min>
+            <max>10.0</max>
+            <resolution>0.01</resolution>
+          </range>
+        </lidar>
+      </sensor>
+    </link>
+    <joint name="lidar_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>lidar_link</child>
+    </joint>
+$camera_block
+    <link name="left_wheel">
+      <pose relative_to="base_link">0 $half_separation 0 -1.5707963 0 0</pose>
+      <inertial>
+        <mass>0.5</mass>
+        <inertia><ixx>0.0005</ixx><iyy>0.0005</iyy><izz>0.0009</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <collision name="collision">
+        <geometry><cylinder><radius>$wheel_radius</radius><length>0.04</length></cylinder></geometry>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+      </collision>
+      <visual name="visual">
+        <geometry><cylinder><radius>$wheel_radius</radius><length>0.04</length></cylinder></geometry>
+        <material><ambient>0.05 0.05 0.05 1</ambient><diffuse>0.05 0.05 0.05 1</diffuse></material>
+      </visual>
+    </link>
+    <link name="right_wheel">
+      <pose relative_to="base_link">0 -$half_separation 0 -1.5707963 0 0</pose>
+      <inertial>
+        <mass>0.5</mass>
+        <inertia><ixx>0.0005</ixx><iyy>0.0005</iyy><izz>0.0009</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <collision name="collision">
+        <geometry><cylinder><radius>$wheel_radius</radius><length>0.04</length></cylinder></geometry>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+      </collision>
+      <visual name="visual">
+        <geometry><cylinder><radius>$wheel_radius</radius><length>0.04</length></cylinder></geometry>
+        <material><ambient>0.05 0.05 0.05 1</ambient><diffuse>0.05 0.05 0.05 1</diffuse></material>
+      </visual>
+    </link>
+    <!-- Wheel frames are rolled -90 deg about x, so the spin axis is the wheel's own z. -->
+    <joint name="left_wheel_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>left_wheel</child>
+      <axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis>
+    </joint>
+    <joint name="right_wheel_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>right_wheel</child>
+      <axis><xyz>0 0 1</xyz><limit><lower>-1e16</lower><upper>1e16</upper></limit></axis>
+    </joint>
+
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>left_wheel_joint</left_joint>
+      <right_joint>right_wheel_joint</right_joint>
+      <wheel_separation>$wheel_separation</wheel_separation>
+      <wheel_radius>$wheel_radius</wheel_radius>
+      <topic>/$robot/cmd_vel</topic>
+      <odom_topic>/$robot/odom</odom_topic>
+      <tf_topic>/$robot/tf</tf_topic>
+      <frame_id>$robot/odom</frame_id>
+      <child_frame_id>$robot/base_link</child_frame_id>
+      <odom_publish_frequency>30</odom_publish_frequency>
+      <max_linear_velocity>$max_linear</max_linear_velocity>
+      <min_linear_velocity>-$max_linear</min_linear_velocity>
+      <max_angular_velocity>$max_angular</max_angular_velocity>
+      <min_angular_velocity>-$max_angular</min_angular_velocity>
+      <max_linear_acceleration>1.0</max_linear_acceleration>
+      <min_linear_acceleration>-1.0</min_linear_acceleration>
+      <max_angular_acceleration>3.0</max_angular_acceleration>
+      <min_angular_acceleration>-3.0</min_angular_acceleration>
+    </plugin>
+
+    <!-- Ground truth: the true pose in the map (= Gazebo world) frame, for world state + metrics. -->
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>map</odom_frame>
+      <robot_base_frame>$robot/base_link</robot_base_frame>
+      <odom_topic>/$robot/ground_truth</odom_topic>
+      <tf_topic>/$robot/ground_truth_tf</tf_topic>
+      <odom_publish_frequency>30</odom_publish_frequency>
+      <dimensions>2</dimensions>
+    </plugin>
+  </model>
+</sdf>

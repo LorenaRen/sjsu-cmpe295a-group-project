@@ -25,7 +25,17 @@ ROBOT_TOPIC_TYPES: dict[str, str] = {
     GROUND_TRUTH: "nav_msgs/msg/Odometry",
     WORLD_STATE: "mrs_msgs/msg/WorldState",
     CMD_VEL_NOMINAL: "geometry_msgs/msg/Twist",
-    CMD_VEL: "geometry_msgs/msg/Twist",  # switch to TwistStamped if the robot's bridge expects it (Module 2)
+    CMD_VEL: "geometry_msgs/msg/Twist",  # matches gz.msgs.Twist on the mrs_sim bridge (Module 2)
+}
+
+# Optional robot topics: only present when the sim runs with camera:=true (Module 2). Kept out of
+# ROBOT_TOPIC_TYPES so nothing that needs the core topics waits for a camera that may be off.
+CAMERA_IMAGE = "camera/image_raw"
+CAMERA_INFO = "camera/camera_info"
+
+CAMERA_TOPIC_TYPES: dict[str, str] = {
+    CAMERA_IMAGE: "sensor_msgs/msg/Image",
+    CAMERA_INFO: "sensor_msgs/msg/CameraInfo",
 }
 
 # ---- team-level topics -----------------------------------------------------
@@ -66,8 +76,9 @@ def validate_robot_id(robot_id: str) -> str:
 
 def robot_topic(robot_id: str, name: str) -> str:
     """robot_topic('robot_a', SCAN) -> '/robot_a/scan'"""
-    if name not in ROBOT_TOPIC_TYPES:
-        raise ValueError(f"'{name}' is not a canonical robot topic: {sorted(ROBOT_TOPIC_TYPES)}")
+    if name not in ROBOT_TOPIC_TYPES and name not in CAMERA_TOPIC_TYPES:
+        known = sorted(ROBOT_TOPIC_TYPES) + sorted(CAMERA_TOPIC_TYPES)
+        raise ValueError(f"'{name}' is not a canonical robot topic: {known}")
     return f"/{validate_robot_id(robot_id)}/{name}"
 
 
@@ -81,6 +92,10 @@ def base_frame(robot_id: str) -> str:
 
 def lidar_frame(robot_id: str) -> str:
     return f"{validate_robot_id(robot_id)}/lidar"
+
+
+def camera_frame(robot_id: str) -> str:
+    return f"{validate_robot_id(robot_id)}/camera"
 
 
 # ---- waypoint-graph edges ------------------------------------------------------
@@ -133,8 +148,12 @@ def robot_ids(n: int) -> list[str]:
     return [f"robot_{chr(ord('a') + i)}" for i in range(n)]
 
 
-def all_topics(robots: Iterable[str]) -> dict[str, str]:
-    """Every canonical topic -> type for a robot list. Module 7 records exactly this set (+ /tf)."""
+def all_topics(robots: Iterable[str], camera: bool = False) -> dict[str, str]:
+    """Every canonical topic -> type for a robot list. Module 7 records exactly this set (+ /tf).
+    camera=True adds the camera topics (only when the sim runs with camera:=true)."""
+    robots = list(robots)
     out = {robot_topic(r, n): t for r in robots for n, t in ROBOT_TOPIC_TYPES.items()}
+    if camera:
+        out.update({robot_topic(r, n): t for r in robots for n, t in CAMERA_TOPIC_TYPES.items()})
     out.update(TEAM_TOPIC_TYPES)
     return out
