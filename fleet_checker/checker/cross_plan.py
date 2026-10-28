@@ -14,7 +14,7 @@ R-1: Yield assignment
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Iterator, NamedTuple
 
@@ -135,24 +135,33 @@ def check_capacity_violations(
         # Sort: by time, then ends before starts at same time (half-open intervals)
         events.sort(key=lambda e: (e.time, e.is_start))
 
-        # Sweep through events
+        # Sweep through events. Capacity counts distinct robots, not claims:
+        # with margin > 0 a robot's consecutive steps in the same region
+        # overlap, and that is still one robot. A Counter (not a set of
+        # robot_ids) keeps the robot active until its last claim ends.
         active_claims: set[Claim] = set()
+        active_robots: Counter[str] = Counter()
         conflict_start: float | None = None
         conflict_claims: set[Claim] = set()
 
         for event in events:
+            robot_id = event.claim.robot_id
             if event.is_start:
                 active_claims.add(event.claim)
+                active_robots[robot_id] += 1
 
-                if len(active_claims) > capacity:
+                if len(active_robots) > capacity:
                     # Entering a conflict state
                     if conflict_start is None:
                         conflict_start = event.time
                     conflict_claims.update(active_claims)
             else:
                 active_claims.discard(event.claim)
+                active_robots[robot_id] -= 1
+                if active_robots[robot_id] == 0:
+                    del active_robots[robot_id]
 
-                if conflict_start is not None and len(active_claims) <= capacity:
+                if conflict_start is not None and len(active_robots) <= capacity:
                     # Exiting conflict state - record the conflict
                     conflict_tuple = tuple(sorted(conflict_claims, key=lambda c: (c.robot_id, c.step_index)))
                     raw_conflicts.append((resource_id, conflict_tuple, conflict_start, event.time))
@@ -199,7 +208,7 @@ def capacity_conflicts_to_violations(
         else:
             code = "CAPACITY_EXCEEDED"
             message = (
-                f"region {conflict.resource_id} has {len(conflict.claims)} robots "
+                f"region {conflict.resource_id} has {len(robot_ids)} robots "
                 f"but capacity is exceeded at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f})"
             )
 
@@ -233,7 +242,7 @@ class FairnessLedger:
     def record_yield(self, robot_id: str, conflict_id: str, timestamp: float, opponent_id: str):
         """Record that a robot yielded in a conflict."""
         self.yields[robot_id].append(YieldRecord(conflict_id, timestamp, opponent_id))
-        # Reset consecutive rejections for the yielding robot
+        # A yield is a rejection; count it toward starvation (F-2)
         self.consecutive_rejections[robot_id] += 1
 
     def record_acceptance(self, robot_id: str):

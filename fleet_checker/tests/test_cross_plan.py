@@ -107,6 +107,22 @@ class TestCapacityViolation:
         swap_conflicts = [c for c in conflicts_with_margin if c.is_edge_swap]
         assert len(swap_conflicts) >= 1
 
+    def test_robot_does_not_conflict_with_itself(self):
+        """Consecutive steps in the same region overlap by 2*margin; that is one robot, not two."""
+        r1 = make_plan("r1", [("wait", "aisle_1"), ("wait", "aisle_1")])
+
+        conflicts = check_capacity_violations([r1], WORLD, margin=0.5, hold_final=False)
+        assert conflicts == []
+
+    def test_capacity_counts_robots_not_claims(self):
+        """Three robots in capacity-3 room_a is fine even if one robot holds two overlapping claims."""
+        r1 = make_plan("r1", [("wait", "room_a"), ("wait", "room_a")])
+        r2 = make_plan("r2", [("wait", "room_a"), ("wait", "room_a")])
+        r3 = make_plan("r3", [("wait", "room_a"), ("wait", "room_a")])
+
+        conflicts = check_capacity_violations([r1, r2, r3], WORLD, margin=0.5, hold_final=False)
+        assert conflicts == []
+
     def test_parked_robot_blocks_later_traffic(self):
         """Robot holding final position blocks another robot."""
         r1 = make_plan("r1", [("navigate", "door_1"), ("wait", "aisle_1")])
