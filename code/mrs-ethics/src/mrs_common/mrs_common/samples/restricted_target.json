@@ -1,0 +1,13 @@
+{
+  "assignments": [
+    {"robot_id": "robot_a", "tasks": [
+      {"task_id": "a1", "action": "navigate", "target": "office_1", "priority": 1,
+       "justification": "office_1 is the shortest way to room_3."},
+      {"task_id": "a2", "action": "hold_position", "target": "room_3", "priority": 1,
+       "justification": "Goal for robot_a.", "depends_on": ["a1"]}]},
+    {"robot_id": "robot_b", "tasks": [
+      {"task_id": "b1", "action": "hold_position", "target": "room_2", "priority": 2,
+       "justification": "Goal for robot_b."}]}
+  ],
+  "rationale": "Schema-valid but unsafe: office_1 is inside a restricted (privacy) zone. The gatekeeper (Module 5) must REJECT it."
+}

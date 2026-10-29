@@ -1,0 +1,66 @@
+# ---- colcon / ROS 2 build output (regenerate with `colcon build`) ----
+build/
+install/
+log/
+**/build/
+**/install/
+**/log/
+.colcon/
+ 
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+pytest.xml
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+ 
+# ---- secrets: API keys go in .env (loaded via MRS_SECRETS), never in Git ----
+.env
+.env.*
+!.env.example
+*.env
+!*.env.example
+secrets/
+ 
+# ---- experiment output (Modules 7-11): runs, bags, logs, LLM caches ----
+results/
+*.mcap
+*.db3
+rosbag2_*/
+gz_log/
+*.tlog
+llm_cache.sqlite
+*.sqlite-journal
+events.jsonl
+ 
+# ---- HPC (Module 10) ----
+*.sif
+slurm-*.out
+slurm-*.err
+ 
+# ---- dashboard frontend (Module 8) ----
+node_modules/
+dashboard/frontend/dist/
+.vite/
+ 
+# ---- notebooks / analysis ----
+.ipynb_checkpoints/
+ 
+# ---- editors and OS ----
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+._*

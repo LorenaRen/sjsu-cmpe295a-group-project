@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mrs_common</name>
+  <version>0.1.0</version>
+  <description>Shared Python code for the MRS ethical gating project (Module 1): TeamPlan pydantic
+    schema, canonical topic/frame names, QoS conventions, message builders and CLI checks.</description>
+  <maintainer email="team@example.com">MRS Ethics Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>mrs_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <!-- pydantic v2 is NOT declared here on purpose: the rosdep key python3-pydantic installs
+       Ubuntu's pydantic 1.x. It comes from environment.yml (conda) / the Dockerfile pip step. -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,32 @@
+name: mrs-ethics
+channels:
+  - robostack-jazzy   # ROS 2 Jazzy builds for macOS
+  - conda-forge       # Gazebo, Python libraries, compilers
+  - nodefaults        # never use Anaconda's defaults channel
+dependencies:
+  - ros-jazzy-desktop
+  - ros-jazzy-ros-gz
+  - ros-jazzy-rosbag2-storage-mcap
+  - ros-jazzy-foxglove-bridge
+  - colcon-common-extensions
+  - compilers        # needed to build mrs_msgs, even with no C++ written
+  - cmake
+  - make
+  - pkg-config
+  - numpy
+  - qpsolvers
+  - osqp
+  - pydantic
+  - pyyaml
+  - httpx
+  - openai
+  - anthropic
+  - pandas
+  - matplotlib
+  - pytest
+  - networkx         # shortest paths on the waypoint graph
+  - fastapi
+  - uvicorn
+  - pip
+  - pip:
+      - mcap-ros2-support

@@ -1,0 +1,3 @@
+{"assignments": [
+  {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "fly", "target": "room_1", "priority": 1}]}
+]}

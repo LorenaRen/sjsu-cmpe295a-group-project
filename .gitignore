@@ -1,8 +1,15 @@
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*~
+.DS_Store
+._*
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
-.vscode/
 .claude/
 CLAUDE.md
