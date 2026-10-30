@@ -55,6 +55,8 @@ class RegionKind(str, Enum):
     OPEN_AREA = "open_area"
     CHARGER = "charger"
     ELEVATOR = "elevator"
+    KEEP_CLEAR = "keep_clear"    # a robot must not stop here (P-1)
+    RESTRICTED = "restricted"    # who may enter is set by the access policy (P-2)
 
 
 # --------------------------------------------------------------------------

@@ -13,7 +13,9 @@ from checker.policy import (
 WORLD = WorldMap(
     regions={
         "room_a":    Region(id="room_a", kind=RegionKind.OPEN_AREA, capacity=3, center=(0, 0),
-                            neighbors=frozenset({"door_1", "charger_1"})),
+                            neighbors=frozenset({"door_1", "charger_1", "fire_exit"})),
+        "fire_exit": Region(id="fire_exit", kind=RegionKind.KEEP_CLEAR, capacity=1, center=(0, -3),
+                            neighbors=frozenset({"room_a"})),
         "charger_1": Region(id="charger_1", kind=RegionKind.CHARGER, capacity=1, center=(0, 3),
                             neighbors=frozenset({"room_a"})),
         "door_1":    Region(id="door_1", kind=RegionKind.DOORWAY, capacity=1, center=(5, 0),
@@ -23,9 +25,11 @@ WORLD = WorldMap(
         "door_2":    Region(id="door_2", kind=RegionKind.DOORWAY, capacity=1, center=(15, 0),
                             neighbors=frozenset({"aisle_1", "room_b"})),
         "room_b":    Region(id="room_b", kind=RegionKind.OPEN_AREA, capacity=3, center=(20, 0),
-                            neighbors=frozenset({"door_2", "patient_room"})),
+                            neighbors=frozenset({"door_2", "patient_room", "records"})),
         "patient_room": Region(id="patient_room", kind=RegionKind.OPEN_AREA, capacity=2, center=(25, 0),
                                neighbors=frozenset({"room_b"})),
+        "records":   Region(id="records", kind=RegionKind.RESTRICTED, capacity=1, center=(20, 3),
+                            neighbors=frozenset({"room_b"})),
     },
     resources={},
 )
@@ -66,6 +70,13 @@ class TestFinalStopInPassthrough:
         assert codes(violations) == ["FINAL_STOP_IN_PASSTHROUGH"]
         assert "doorway" in violations[0].message
 
+    def test_final_stop_in_keep_clear_rejected(self):
+        """Plan ending in KEEP_CLEAR should be rejected."""
+        plan = make_plan("r1", [("navigate", "room_a"), ("wait", "fire_exit")])
+        violations = check_final_stop_in_passthrough(plan, WORLD)
+        assert codes(violations) == ["FINAL_STOP_IN_PASSTHROUGH"]
+        assert "keep_clear" in violations[0].message
+
     def test_final_stop_in_room_ok(self):
         """Plan ending in OPEN_AREA is fine."""
         plan = make_plan("r1", [("navigate", "door_1"), ("navigate", "room_a")])
@@ -92,9 +103,9 @@ class TestRegionAccess:
 
     def test_region_id_restriction(self):
         """Access denied by specific region_id."""
-        policy: AccessPolicy = {
+        policy = AccessPolicy(by_id={
             "patient_room": frozenset({TaskType.SERVICE}),  # Only SERVICE allowed
-        }
+        })
         plan = make_plan("r1", [("navigate", "room_b"), ("navigate", "patient_room")], task_type="delivery")
         violations = check_region_access(plan, WORLD, policy=policy)
         assert codes(violations) == ["REGION_ACCESS_DENIED"]
@@ -102,9 +113,9 @@ class TestRegionAccess:
 
     def test_region_kind_restriction(self):
         """Access denied by region kind."""
-        policy: AccessPolicy = {
-            "aisle": frozenset({TaskType.DELIVERY}),  # Only DELIVERY can use aisles
-        }
+        policy = AccessPolicy(by_kind={
+            RegionKind.AISLE: frozenset({TaskType.DELIVERY}),  # Only DELIVERY can use aisles
+        })
         plan = make_plan("r1", [("navigate", "door_1"), ("navigate", "aisle_1")], task_type="service")
         violations = check_region_access(plan, WORLD, policy=policy)
         assert codes(violations) == ["REGION_ACCESS_DENIED"]
@@ -112,23 +123,69 @@ class TestRegionAccess:
 
     def test_allowed_task_type_passes(self):
         """Task type in allowed set passes."""
-        policy: AccessPolicy = {
+        policy = AccessPolicy(by_id={
             "patient_room": frozenset({TaskType.SERVICE}),
-        }
+        })
         plan = make_plan("r1", [("navigate", "patient_room")], task_type="service")
         violations = check_region_access(plan, WORLD, policy=policy)
         assert violations == []
 
     def test_multiple_violations(self):
         """Multiple steps can each generate violations."""
-        policy: AccessPolicy = {
-            "aisle": frozenset({TaskType.DELIVERY}),
-            "doorway": frozenset({TaskType.DELIVERY}),
-        }
+        policy = AccessPolicy(by_kind={
+            RegionKind.AISLE: frozenset({TaskType.DELIVERY}),
+            RegionKind.DOORWAY: frozenset({TaskType.DELIVERY}),
+        })
         # SERVICE robot going through door and aisle
         plan = make_plan("r1", [("navigate", "door_1"), ("navigate", "aisle_1")], task_type="service")
         violations = check_region_access(plan, WORLD, policy=policy)
         assert len(violations) == 2
+
+    def test_restricted_kind_with_empty_set_denies_every_task_type(self):
+        """by_kind {RESTRICTED: {}} is 'nobody may enter'."""
+        policy = AccessPolicy(by_kind={RegionKind.RESTRICTED: frozenset()})
+        for task_type in ("delivery", "service"):
+            plan = make_plan("r1", [("navigate", "room_b"), ("navigate", "records")], task_type=task_type)
+            assert codes(check_region_access(plan, WORLD, policy=policy)) == ["REGION_ACCESS_DENIED"]
+
+    def test_both_tables_must_allow(self):
+        """Neither table can grant what the other one denies."""
+        service = make_plan("r1", [("navigate", "aisle_1")], task_type="service")
+        id_grants = AccessPolicy(by_id={"aisle_1": frozenset({TaskType.SERVICE})},
+                                 by_kind={RegionKind.AISLE: frozenset({TaskType.DELIVERY})})
+        kind_grants = AccessPolicy(by_id={"aisle_1": frozenset({TaskType.DELIVERY})},
+                                   by_kind={RegionKind.AISLE: frozenset({TaskType.SERVICE})})
+        assert codes(check_region_access(service, WORLD, policy=id_grants)) == ["REGION_ACCESS_DENIED"]
+        assert codes(check_region_access(service, WORLD, policy=kind_grants)) == ["REGION_ACCESS_DENIED"]
+
+    # The two tests below reproduce the key collision of the old single-dict
+    # policy: narrow_aisle has a zone named "aisle", which is also
+    # RegionKind.AISLE's value, so one key meant both "that region" and
+    # "every aisle". Each failed on the old dict[str, ...] lookup.
+
+    def test_id_rule_does_not_apply_to_other_regions_of_that_kind(self):
+        """A rule for the region named 'aisle' must not restrict aisle_1."""
+        world = WorldMap(regions={
+            **WORLD.regions,
+            "aisle": Region(id="aisle", kind=RegionKind.AISLE, capacity=1, center=(10, -5)),
+        })
+        policy = AccessPolicy(by_id={"aisle": frozenset({TaskType.SERVICE})})
+        elsewhere = make_plan("r1", [("navigate", "aisle_1")], task_type="delivery")
+        inside = make_plan("r2", [("navigate", "aisle")], task_type="delivery")
+        assert check_region_access(elsewhere, world, policy=policy) == []
+        assert codes(check_region_access(inside, world, policy=policy)) == ["REGION_ACCESS_DENIED"]
+
+    def test_kind_rule_does_not_apply_to_a_region_named_like_the_kind(self):
+        """A rule for every aisle must not restrict an open area named 'aisle'."""
+        world = WorldMap(regions={
+            **WORLD.regions,
+            "aisle": Region(id="aisle", kind=RegionKind.OPEN_AREA, capacity=3, center=(10, -5)),
+        })
+        policy = AccessPolicy(by_kind={RegionKind.AISLE: frozenset({TaskType.DELIVERY})})
+        open_area = make_plan("r1", [("navigate", "aisle")], task_type="service")
+        real_aisle = make_plan("r2", [("navigate", "aisle_1")], task_type="service")
+        assert check_region_access(open_area, world, policy=policy) == []
+        assert codes(check_region_access(real_aisle, world, policy=policy)) == ["REGION_ACCESS_DENIED"]
 
 
 # ---------------- P-3: Maximum plan duration ----------------
@@ -169,9 +226,9 @@ class TestValidatePolicy:
 
     def test_multiple_policy_violations(self):
         """Multiple policy rules can trigger at once."""
-        policy: AccessPolicy = {
-            "aisle": frozenset({TaskType.DELIVERY}),
-        }
+        policy = AccessPolicy(by_kind={
+            RegionKind.AISLE: frozenset({TaskType.DELIVERY}),
+        })
         # SERVICE robot ends in aisle (P-1 and P-2 both violated)
         plan = make_plan("r1", [("navigate", "door_1"), ("wait", "aisle_1")], task_type="service")
         violations = validate_policy(plan, WORLD, access_policy=policy, max_duration=3600.0)

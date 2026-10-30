@@ -57,9 +57,11 @@ that per-robot guardrails cannot catch.
 
 ### P-1  Final stop in passthrough zone
 
-A plan whose last step is in an `AISLE` or `DOORWAY` region.  With
-`hold_final=True` the robot claims that region to +∞, blocking other
-traffic indefinitely.
+A plan whose last step is in an `AISLE`, `DOORWAY` or `KEEP_CLEAR`
+region.  With `hold_final=True` the robot claims that region to +∞,
+blocking other traffic indefinitely.  `KEEP_CLEAR` is where the map says
+a robot must not stop (e.g. in front of a door), so it is held to the same
+rule as aisles and doorways.
 
 - **Scope:** single-plan
 - **Data:** `Plan.steps[-1].region`; `WorldMap.regions[].kind`
@@ -76,8 +78,17 @@ Access rules live in a **separate policy configuration**, not on the
    the map.
 2. Different deployments share the same map but different policies.
 
-The policy config shape (TBD) will map `(region_id | region_kind)` →
-`set[TaskType]` (allowed) or a deny-list, loaded at checker start.
+The policy config is `AccessPolicy`, with two tables of allowed task
+types: `by_id` (region id → `set[TaskType]`) and `by_kind` (`RegionKind` →
+`set[TaskType]`).  A region missing from a table is not restricted by it;
+a step must pass both tables, so neither can grant what the other denies.
+The tables are separate because one dict keyed by "region id or kind
+value" is ambiguous: `narrow_aisle` names its narrow zone `aisle`, which
+is also the value of `RegionKind.AISLE`, so a rule for that one zone
+would also apply to every aisle.
+
+`RESTRICTED` is only a label that comes from the map; who may enter is
+decided here (an empty set means nobody).
 
 - **Scope:** single-plan
 - **Data:** `Plan.task_type`; `PlanStep.region`; policy config (new)
