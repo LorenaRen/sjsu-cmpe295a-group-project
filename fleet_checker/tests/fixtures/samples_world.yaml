@@ -1,0 +1,77 @@
+# Test map for the Module 1 sample plans (mrs_common/samples/*.json), in mrs_sim's map format.
+# Written for fleet_checker's tests: it is NOT one of Shervan's worlds and has no .sdf. The
+# samples name corridor_1, corridor_2, room_2, room_3, door_A and office_1, which no mrs_sim
+# world has yet; the rest of the layout is chosen so that each sample exercises one rule.
+#
+#  office_w ──────────── office_1 ──────────── office_e     office: restricted
+#     │                                           │
+#  [door_b]                                     door_A       door_b, door_a: keep_clear, capacity 1
+#     │                                           │          ([door_b] has no node; an edge crosses it)
+#  room_2 ── pass_w ═════════════ pass_e ─── corridor_1 ──── room_3
+#     │         passage: narrow, capacity 1       │            │
+#  west_s (robot_a)                           corridor_2     east_n (robot_b)
+#
+# The west and east halls are joined by a one-robot passage. The office is a longer bypass, so
+# shortest paths between the halls use the passage unless a task targets an office node.
+world: samples_world
+description: >-
+  Two halls joined by a one-robot passage, with a longer bypass through a restricted office
+  whose doors are keep-clear zones.
+
+nodes:
+  west_s:     {x: 0.0,  y: -1.2}
+  room_2:     {x: 0.0,  y: 0.0}
+  pass_w:     {x: 2.6,  y: 0.0}
+  pass_e:     {x: 7.4,  y: 0.0}
+  corridor_1: {x: 9.0,  y: 0.0}
+  corridor_2: {x: 9.0,  y: -1.5}
+  room_3:     {x: 12.0, y: 0.0}
+  east_n:     {x: 12.0, y: 1.2}
+  door_A:     {x: 9.0,  y: 2.5}
+  office_e:   {x: 9.0,  y: 4.0}
+  office_1:   {x: 5.0,  y: 4.0}
+  office_w:   {x: 0.0,  y: 4.0}
+
+edges:
+  - [west_s, room_2]
+  - [room_2, pass_w]
+  - [pass_w, pass_e]
+  - [pass_e, corridor_1]
+  - [corridor_1, corridor_2]
+  - [corridor_1, room_3]
+  - [room_3, east_n]
+  - [corridor_1, door_A]
+  - [door_A, office_e]
+  - [office_e, office_1]
+  - [office_1, office_w]
+  - [office_w, room_2]
+
+zones:
+  - id: west_hall
+    type: room
+    rect: {x_min: -2.0, x_max: 2.0, y_min: -2.0, y_max: 2.0}
+  - id: passage
+    type: narrow
+    capacity: 1
+    rect: {x_min: 2.0, x_max: 8.0, y_min: -0.4, y_max: 0.4}
+    description: One robot wide.
+  - id: east_hall
+    type: room
+    rect: {x_min: 8.0, x_max: 14.0, y_min: -2.0, y_max: 2.0}
+  - id: door_b
+    type: keep_clear
+    capacity: 1
+    rect: {x_min: -0.5, x_max: 0.5, y_min: 2.0, y_max: 3.0}
+  - id: door_a
+    type: keep_clear
+    capacity: 1
+    rect: {x_min: 8.5, x_max: 9.5, y_min: 2.0, y_max: 3.0}
+  - id: office
+    type: restricted
+    rect: {x_min: -1.0, x_max: 10.0, y_min: 3.0, y_max: 5.0}
+    description: Private office; robots may not enter.
+
+# Spawn slots in order: robot_a, robot_b.
+spawns:
+  - {node: west_s, yaw: 0.0}
+  - {node: east_n, yaw: 3.14159}
