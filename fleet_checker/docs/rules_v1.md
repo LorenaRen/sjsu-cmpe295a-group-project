@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.2, 2026-10-06
+Status: draft v0.3, 2026-10-29
 
 ---
 
@@ -192,13 +192,57 @@ can never order robots in the opposite direction from R-1.
 
 ---
 
-## Data structures needed (not yet implemented)
+## Running the rules on a Module 1 TeamPlan
 
-| Item | Used by | Notes |
-|------|---------|-------|
-| `FairnessLedger` | R-1, F-1, F-2, P-4 | Fourth data category alongside Plan / WorldMap / WorldSnapshot.  Accumulates across planning rounds; not a snapshot. |
-| Policy config (access rules) | P-2 | Separate from WorldMap.  Maps `region_id \| region_kind` → allowed `TaskType` set. |
-| Replan history | P-4 | Tracks `(conflict_group_id, round, outcome)`.  Could live inside the checker orchestrator rather than a standalone type. |
+`checker/adapters/` connects the rules to the rest of the stack.  It
+changes neither Module 1's `TeamPlan` nor Module 2's `mrs_sim`; the
+checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
+
+| File | Does |
+|------|------|
+| `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
+| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
+| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code and the TeamPlan task ids it came from.  Restricted zones default to "no robot may enter". |
+
+`TeamPlan.priority` is kept for logs only; who yields is decided by R-1
+and the fairness ledger.  TeamPlan has no task type, so every robot is
+`DELIVERY` unless the caller says otherwise; R-1's task-type tie-break then
+never decides, and full ties fall to robot_id order.
+
+### Assumptions to confirm with Module 4 (planner) and Module 6 (executor)
+
+The checker checks the compiled timeline, so its verdicts hold only if the
+executor behaves the same way.  These are the compiler's assumptions, not
+agreed interfaces:
+
+1. **Action semantics.**
+
+   | Action | Leaves when | Done when |
+   |--------|-------------|-----------|
+   | `navigate` | previous task done and every `depends_on` done | it arrives |
+   | `wait` | previous task done (does not wait for `depends_on`) | it has arrived and every `depends_on` is done |
+   | `hold_position` | like `navigate` | it arrives; as the robot's last task, the robot stays there |
+
+   A `hold_position` that is not the robot's last task acts like
+   `navigate`.
+2. **Same route.**  The executor drives the same shortest path on the
+   waypoint graph, including how equal-length routes are decided
+   (compare node names along the route).
+3. **`depends_on` is enforced by events** (`TaskStatus` "done"), not by the
+   compiled times.  The times are estimates: nominal speed, with no
+   acceleration, turning on the spot or CBF slow-down.  S-1's `margin`
+   absorbs that error.  Speed and margin are to be set from measurements in
+   simulation; no accuracy figure is claimed yet.
+
+---
+
+## Data structures
+
+| Item | Used by | Status |
+|------|---------|--------|
+| `FairnessLedger` | R-1, F-1, F-2, P-4 | Implemented (`cross_plan.py`): yield records and consecutive-rejection counts per robot.  Accumulates across planning rounds; not a snapshot.  Nothing computes the F-1 imbalance metric from it yet. |
+| `AccessPolicy` | P-2 | Implemented (`policy.py`): `by_id` and `by_kind` tables, kept separate from `WorldMap`. |
+| Replan history | P-4 | Not implemented.  Tracks `(conflict_group_id, round, outcome)`; could live inside the checker orchestrator rather than as a standalone type. |
 
 ---
 
@@ -206,13 +250,13 @@ can never order robots in the opposite direction from R-1.
 
 | Code | Name | Cat. | Scope | Impl. status |
 |------|------|------|-------|:---:|
-| S-1 | Interval capacity / edge-swap | safety | cross | Sprint 2 |
-| S-2 | Human crowding | safety | cross | Sprint 2 |
+| S-1 | Interval capacity / edge-swap | safety | cross | implemented |
+| S-2 | Human crowding | safety | cross | not yet (Sprint 2) |
 | S-3 | Unsafe action near humans | safety | single | deferred |
-| P-1 | Final stop in passthrough zone | policy | single | Sprint 2 |
-| P-2 | Region access restriction | policy | single | Sprint 2 |
-| P-3 | Maximum plan duration | policy | single | Sprint 2 |
-| P-4 | Replan divergence circuit-breaker | policy | cross | Sprint 3 |
-| R-1 | Yield assignment | resolution | cross | Sprint 2 |
-| F-1 | Yield imbalance metric | fairness | cross | Sprint 2 |
-| F-2 | Starvation override | fairness | cross | Sprint 3 |
+| P-1 | Final stop in passthrough zone | policy | single | implemented |
+| P-2 | Region access restriction | policy | single | implemented |
+| P-3 | Maximum plan duration | policy | single | implemented |
+| P-4 | Replan divergence circuit-breaker | policy | cross | not yet (Sprint 3) |
+| R-1 | Yield assignment | resolution | cross | implemented |
+| F-1 | Yield imbalance metric | fairness | cross | ledger data only; metric not computed |
+| F-2 | Starvation override | fairness | cross | implemented |
