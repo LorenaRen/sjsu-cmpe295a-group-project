@@ -20,6 +20,18 @@ LLM_ERROR = "llm_error"                    # API error that retries did not fix 
 LLM_MALFORMED = "llm_malformed"            # output still invalid after the one retry with the validation error
 PLANNING_EXHAUSTED = "planning_exhausted"  # attempt cap reached without an approved plan; all robots hold
 
+# ---- shared checker (Module 5) --------------------------------------------------
+# Why the checker rejected a plan. Its own Violation codes are the upper-case form
+# (CAPACITY_EXCEEDED -> capacity_exceeded). A target with no path is NO_ROUTE (below).
+CAPACITY_EXCEEDED = "capacity_exceeded"                  # S-1: more robots in a zone at once than its capacity
+EDGE_SWAP = "edge_swap"                                  # S-1: two robots swap adjacent zones head-on
+FINAL_STOP_IN_PASSTHROUGH = "final_stop_in_passthrough"  # P-1: plan ends in a narrow, doorway or keep-clear zone
+REGION_ACCESS_DENIED = "region_access_denied"            # P-2: robot enters a zone its task type may not enter
+MAX_DURATION_EXCEEDED = "max_duration_exceeded"          # P-3: plan takes longer than the time limit
+UNKNOWN_ROBOT = "unknown_robot"                          # plan gives tasks to a robot whose position is unknown
+UNKNOWN_TARGET = "unknown_target"                        # task target is not a node on the waypoint graph
+DEPENDENCY_DEADLOCK = "dependency_deadlock"              # depends_on plus each robot's task order form a cycle
+
 # ---- executor and navigation (Module 6) ---------------------------------------
 EDGE_BLOCKED = "edge_blocked"              # an edge on the robot's path is blocked; executor reroutes or holds
 NO_ROUTE = "no_route"                      # no path to the target on the graph without blocked edges

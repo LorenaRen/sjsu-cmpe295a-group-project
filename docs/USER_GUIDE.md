@@ -264,6 +264,8 @@ so Module 11 can count them:
 from mrs_common import reasons as R
 
 R.LLM_TIMEOUT, R.LLM_ERROR, R.LLM_MALFORMED, R.PLANNING_EXHAUSTED        # planner (Module 4)
+R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.FINAL_STOP_IN_PASSTHROUGH, R.REGION_ACCESS_DENIED,
+R.MAX_DURATION_EXCEEDED, R.UNKNOWN_ROBOT, R.UNKNOWN_TARGET, R.DEPENDENCY_DEADLOCK    # shared checker (Module 5)
 R.EDGE_BLOCKED, R.NO_ROUTE, R.ROBOT_STUCK, R.TASK_TIMEOUT               # executor (Module 6)
 R.SAFETY_OVERRIDE, R.QP_INFEASIBLE                                      # CBF filter (Module 6)
 R.EPISODE_TIMEOUT                                                       # runner (Module 9)
