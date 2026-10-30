@@ -1,0 +1,13 @@
+[project]
+name = "fleet-checker"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["pydantic>=2", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+# mrs_common (Module 1, TeamPlan and reason codes) is used from source until it is installable here.
+pythonpath = [".", "../code/mrs-ethics/src/mrs_common"]
+testpaths = ["tests"]
