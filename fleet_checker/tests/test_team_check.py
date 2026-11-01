@@ -146,6 +146,25 @@ def test_narrow_aisle_swap_passes_when_one_robot_waits(aisle_map):
 
 # ---------------- plumbing ----------------
 
+def test_each_finding_says_which_robots_must_fix_it(samples_map):
+    [p1] = check(samples_map, sample("keep_clear_stop.json")).findings
+    assert p1.must_fix == ("robot_b",)                  # policy: the robot that broke it
+    [s1] = check(samples_map, drop_dependencies(sample("valid_two_robots.json"))).findings
+    assert s1.must_fix == ("robot_b",)                  # conflict: the robot R-1 chose
+    plan = edited(sample("valid_two_robots.json"),
+                  lambda t: t.update(target="room_9") if t["task_id"] == "a2" else None)
+    [compile_error] = check(samples_map, plan).findings
+    assert compile_error.must_fix == ()                 # the whole plan goes back
+
+
+def test_recheck_runs_the_same_check_on_another_plan(samples_map):
+    result = check(samples_map, drop_dependencies(sample("valid_two_robots.json")), max_duration=30.0)
+    assert codes(result) == ["MAX_DURATION_EXCEEDED", "CAPACITY_EXCEEDED"]
+    again = result.recheck(sample("valid_two_robots.json"))
+    assert again.team_plan == sample("valid_two_robots.json")
+    # The conflict is gone with the depends_on back; the 30 s limit still applies.
+    assert codes(again) == ["MAX_DURATION_EXCEEDED"]
+
 def test_compile_errors_stop_before_the_rule_checks(samples_map):
     plan = edited(sample("valid_two_robots.json"),
                   lambda t: t.update(target="room_9") if t["task_id"] == "a2" else None)
