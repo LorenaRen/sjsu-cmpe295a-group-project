@@ -11,18 +11,20 @@ from checker.adapters.team_check import check_team_plan, reason_of
 from checker.cross_plan import FairnessLedger
 from checker.plan import Violation
 
-FIXTURES = Path(__file__).parent / "fixtures"
+SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
+NARROW_AISLE = (Path(__file__).resolve().parents[2]
+                / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml")
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
 
 
 @pytest.fixture(scope="module")
 def samples_map():
-    return load_sim_map(FIXTURES / "samples_world.yaml")
+    return load_sim_map(SAMPLES_WORLD)
 
 
 @pytest.fixture(scope="module")
 def aisle_map():
-    return load_sim_map(FIXTURES / "narrow_aisle.yaml")
+    return load_sim_map(NARROW_AISLE)
 
 
 def sample(name: str) -> TeamPlan:
