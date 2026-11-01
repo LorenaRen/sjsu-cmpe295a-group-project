@@ -1,0 +1,298 @@
+"""EthicalVerdict content (Module 5) from a check_team_plan result. REJECT path only.
+
+  finding                            constraint (mrs_common.plan_schema.Constraint)
+  S-1 capacity_exceeded, edge_swap   order_before: the keeper's task that takes it out of
+                                     the zone finishes before the yielder's task that
+                                     takes it in (verified first, see below)
+  P-1 final_stop_in_passthrough      forbid_node for every node of the zone
+  P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
+  P-3 and compile errors             custom
+
+Every node of the zone, not only the one in the plan: otherwise the next plan
+can stop at, or route through, a neighbouring node of the same zone and be
+rejected again.
+
+An order_before is not always a fix. The keeper may stay in the zone to the end
+of its plan, the yielder may already be in it, the ordering may close a cycle
+with the plan's depends_on, or the plan may already have it (the conflict then
+comes from the time margin). So it is verified before it is suggested: added as
+a depends_on to a copy of the TeamPlan, which is checked again. If the conflict
+between these two robots in this zone is gone, the order_before is sent;
+otherwise a custom constraint says why ordering them does not help.
+
+The verification looks only at that pair of robots in that zone. It does not
+guarantee that the reordered plan creates no new conflict elsewhere: on the
+REJECT path the next round's check catches those; MODIFY (designed, not built)
+must check the whole modified plan again before approving it.
+
+rule_ids are mrs_common.reasons codes. risk_score is an ordinal level, not a
+probability (SEVERITY). standard_refs stay empty: the team has not read the
+standards' text yet, and EthicalVerdict only allows clauses that were read.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from mrs_common import reasons as R
+from mrs_common.plan_schema import Constraint, TeamPlan
+from pydantic import ValidationError
+
+from ..plan import RegionKind
+from .team_check import Finding, TeamCheckResult
+
+# The strings of EthicalVerdict.VERDICT_* (mrs_msgs needs a ROS build to import).
+APPROVE = "APPROVE"
+MODIFY = "MODIFY"    # the checker repairing a plan itself: designed, not built yet
+REJECT = "REJECT"
+
+# Ordinal severity of a finding; risk_score = worst level / TOP_LEVEL. Only the
+# order means anything: this is not a probability and must not be used as one.
+SEVERITY: dict[str, int] = {
+    R.CAPACITY_EXCEEDED: 3,          # robots predicted to collide or block each other
+    R.EDGE_SWAP: 3,
+    R.FINAL_STOP_IN_PASSTHROUGH: 2,  # a rule about where robots may be is broken
+    R.REGION_ACCESS_DENIED: 2,
+    R.MAX_DURATION_EXCEEDED: 1,      # the plan cannot run as written, or runs too long
+    R.UNKNOWN_ROBOT: 1,
+    R.UNKNOWN_TARGET: 1,
+    R.NO_ROUTE: 1,
+    R.DEPENDENCY_DEADLOCK: 1,
+}
+TOP_LEVEL = 3
+
+MAX_PROBLEMS_IN_RATIONALE = 3
+
+_CONFLICT_CODES = frozenset({"CAPACITY_EXCEEDED", "EDGE_SWAP"})
+
+# How P-1 describes the zone a robot must not stop in.
+_STAY_CLEAR = {
+    RegionKind.AISLE: "narrow passage",
+    RegionKind.DOORWAY: "doorway",
+    RegionKind.KEEP_CLEAR: "keep-clear zone",
+}
+
+
+@dataclass(frozen=True)
+class VerdictContent:
+    """The decision fields of an EthicalVerdict; the gate node adds ids, latency and stamp."""
+    verdict: str
+    rule_ids: tuple[str, ...]
+    standard_refs: tuple[str, ...]
+    risk_score: float
+    rationale: str
+    constraints: tuple[Constraint, ...]
+
+    def make_verdict_kwargs(self) -> dict[str, Any]:
+        """Arguments for mrs_common.convert.make_verdict, besides transaction_id,
+        episode_id, attempt, latency_ms and node."""
+        return {"verdict": self.verdict, "rule_ids": list(self.rule_ids),
+                "standard_refs": list(self.standard_refs), "risk_score": self.risk_score,
+                "rationale": self.rationale, "constraints": list(self.constraints)}
+
+
+def to_verdict(result: TeamCheckResult) -> VerdictContent:
+    """APPROVE when nothing was found, else REJECT with one or more constraints per finding."""
+    if result.approved:
+        return VerdictContent(APPROVE, (), (), 0.0, "Plan approved: no rule violations found.", ())
+    constraints: list[Constraint] = []
+    for finding in result.findings:
+        for c in _constraints_for(finding, result):
+            if c not in constraints:
+                constraints.append(c)
+    return VerdictContent(
+        verdict=REJECT,
+        rule_ids=tuple(sorted({f.reason for f in result.findings})),
+        standard_refs=(),
+        risk_score=max(SEVERITY[f.reason] for f in result.findings) / TOP_LEVEL,
+        rationale=_rationale(result),
+        constraints=tuple(constraints),
+    )
+
+
+# --------------------------------------------------------------------------
+# Constraints
+# --------------------------------------------------------------------------
+
+def _constraints_for(f: Finding, result: TeamCheckResult) -> list[Constraint]:
+    code = f.violation.code
+    if code in _CONFLICT_CODES:
+        return _orderings(f, result)
+    if code == "FINAL_STOP_IN_PASSTHROUGH":
+        return _forbid_stops(f, result)
+    if code == "REGION_ACCESS_DENIED":
+        return _avoid_zone(f, result)
+    if code == "MAX_DURATION_EXCEEDED":
+        robot = f.violation.refs[0].robot_id
+        return [Constraint(kind="custom", rule_id=f.reason, robot_id=robot,
+                           text=f"{robot}: {_too_long(robot, result)}; make the plan shorter.")]
+    # Compile errors: the message already says what is wrong, and with which task.
+    return [Constraint(kind="custom", rule_id=f.reason, text=f.violation.message)]
+
+
+def _forbid_stops(f: Finding, result: TeamCheckResult) -> list[Constraint]:
+    ref = f.violation.refs[0]
+    robot, zone = ref.robot_id, _zone(f, result)
+    task_id = result.compiled.origins[robot][ref.step_index].task_id
+    what = f"a {_STAY_CLEAR[result.sim_map.world.regions[zone].kind]} that must stay clear"
+    return [Constraint(kind="forbid_node", rule_id=f.reason, robot_id=robot, task_id=task_id, node=node,
+                       text=f"{robot}: do not stop at {node}; it is in {zone}, {what}.")
+            for node in _zone_nodes(zone, result)]
+
+
+def _avoid_zone(f: Finding, result: TeamCheckResult) -> list[Constraint]:
+    robot, zone = f.violation.refs[0].robot_id, _zone(f, result)
+    nodes = _zone_nodes(zone, result)
+    if not nodes:   # e.g. a strip in a doorway that an edge only passes through
+        return [Constraint(kind="custom", rule_id=f.reason, robot_id=robot,
+                           text=f"{robot}: do not enter {zone}; {robot} may not go there.")]
+    return [Constraint(kind="avoid_node", rule_id=f.reason, robot_id=robot, node=node,
+                       text=f"{robot}: do not drive through {node}; {robot} may not enter {zone}.")
+            for node in nodes]
+
+
+def _orderings(f: Finding, result: TeamCheckResult) -> list[Constraint]:
+    """One constraint for each (yielder, keeper) pair of the conflict."""
+    zone = _zone(f, result)
+    steps: dict[str, list[int]] = {}
+    for ref in f.violation.refs:
+        steps.setdefault(ref.robot_id, []).append(ref.step_index)
+    return [_ordering(f, result, zone, keeper=k, k_step=max(steps[k]), yielder=y, y_step=min(steps[y]))
+            for y in f.must_fix for k in sorted(set(steps) - set(f.must_fix))]
+
+
+def _ordering(f: Finding, result: TeamCheckResult, zone: str, *,
+              keeper: str, k_step: int, yielder: str, y_step: int) -> Constraint:
+    k_task = result.compiled.origins[keeper][k_step].task_id    # takes the keeper out of the zone
+    y_task = result.compiled.origins[yielder][y_step].task_id   # takes the yielder into it
+    holds = _robots(result.sim_map.world.regions[zone].capacity)
+    why_not = _why_ordering_fails(result, zone, keeper, k_task, k_step, yielder, y_task, y_step)
+    if why_not is None:
+        # A swap is reported once per zone; leaving the zone out of its text makes
+        # both halves the same constraint, so the planner gets it once.
+        because = ("otherwise they meet head-on and cannot pass each other"
+                   if f.violation.code == "EDGE_SWAP" else f"both need {zone}, which holds {holds}")
+        return Constraint(
+            kind="order_before", rule_id=f.reason, robot_id=yielder, task_id=k_task, value=y_task,
+            text=f"{yielder}: start task {y_task} only after {keeper} has finished task {k_task}; "
+                 f"{because}.")
+    return Constraint(
+        kind="custom", rule_id=f.reason, robot_id=yielder, task_id=y_task,
+        text=f"{yielder} and {keeper} would be in {zone} at the same time, but it holds {holds}, "
+             f"and making {yielder} wait for {keeper} does not fix it: {why_not}. "
+             f"Change the plan so that {yielder} stays out of {zone} while {keeper} is there.")
+
+
+def _why_ordering_fails(result: TeamCheckResult, zone: str, keeper: str, k_task: str | None,
+                        k_step: int, yielder: str, y_task: str | None, y_step: int) -> str | None:
+    """None if making y_task wait for k_task ends this pair's conflict in this zone,
+    otherwise the reason it does not. Other robots and other zones are not looked at."""
+    if k_task is None or y_task is None:
+        return f"{keeper if k_task is None else yielder} has no task in this plan"
+    reordered = _with_dependency(result.team_plan, before=k_task, after=y_task)
+    if reordered is None:
+        return "the tasks would wait for each other in a cycle"
+    again = result.recheck(reordered)
+    if again.compiled.violations:   # an added dependency can only make it a deadlock
+        return "the tasks would wait for each other in a cycle"
+    if not _in_conflict(again, zone, keeper, yielder):
+        return None
+    if k_step == len(result.compiled.plans[keeper].steps) - 1:
+        return f"{keeper} stays in {zone} until the end of its plan"
+    if y_step == 0:
+        return f"{yielder} is already in {zone} when its plan starts"
+    return f"{yielder} would still be in {zone} while {keeper} is there"
+
+
+def _with_dependency(plan: TeamPlan, *, before: str, after: str) -> TeamPlan | None:
+    """A copy of plan in which task `after` also depends on task `before`, or None
+    if Module 1 rejects that (depends_on would be circular)."""
+    data = plan.model_dump(mode="json")
+    for assignment in data["assignments"]:
+        for task in assignment["tasks"]:
+            if task["task_id"] == after and before not in task["depends_on"]:
+                task["depends_on"].append(before)
+    try:
+        return TeamPlan.model_validate(data)
+    except ValidationError:
+        return None
+
+
+def _in_conflict(result: TeamCheckResult, zone: str, a: str, b: str) -> bool:
+    return any(f.violation.code in _CONFLICT_CODES and _zone(f, result) == zone
+               and {a, b} <= {ref.robot_id for ref in f.violation.refs}
+               for f in result.findings)
+
+
+# --------------------------------------------------------------------------
+# Rationale
+# --------------------------------------------------------------------------
+
+def _rationale(result: TeamCheckResult) -> str:
+    """Two sentences: what is wrong, then what to do. The constraints carry the details."""
+    problems: list[str] = []
+    for f in result.findings:
+        problem = _problem(f, result)
+        if problem not in problems:
+            problems.append(problem)
+    shown = problems[:MAX_PROBLEMS_IN_RATIONALE]
+    more = len(problems) - len(shown)
+    listed = "; ".join(shown)
+    if more:
+        listed += f"; and {more} more problem{'s' if more > 1 else ''}"
+    return f"Plan rejected: {listed}. Propose a new plan that follows the constraints."
+
+
+def _problem(f: Finding, result: TeamCheckResult) -> str:
+    code, refs = f.violation.code, f.violation.refs
+    if code == "CAPACITY_EXCEEDED":
+        zone = _zone(f, result)
+        robots = sorted({ref.robot_id for ref in refs})
+        return (f"{_join(robots)} would be in {zone} at the same time, "
+                f"but it holds {_robots(result.sim_map.world.regions[zone].capacity)}")
+    if code == "EDGE_SWAP":
+        # Reported once per zone of the swap; the wording leaves the zone out so both halves read the same.
+        a, b = sorted({ref.robot_id for ref in refs})
+        return f"{a} and {b} would meet head-on and could not pass each other"
+    if code == "FINAL_STOP_IN_PASSTHROUGH":
+        robot, zone = refs[0].robot_id, _zone(f, result)
+        node = result.compiled.origins[robot][refs[0].step_index].nodes[-1]
+        kind = _STAY_CLEAR[result.sim_map.world.regions[zone].kind]
+        return f"{robot} would stop at {node} in {zone}, a {kind} that must stay clear"
+    if code == "REGION_ACCESS_DENIED":
+        robot, zone = refs[0].robot_id, _zone(f, result)
+        if result.sim_map.world.regions[zone].kind == RegionKind.RESTRICTED:
+            return f"{robot}'s route goes through {zone}, a restricted zone"
+        return f"{robot}'s route goes through {zone}, where it may not go"
+    if code == "MAX_DURATION_EXCEEDED":
+        robot = refs[0].robot_id
+        return f"{robot}'s {_too_long(robot, result)}"
+    return f.violation.message
+
+
+# --------------------------------------------------------------------------
+# Small helpers
+# --------------------------------------------------------------------------
+
+def _zone(f: Finding, result: TeamCheckResult) -> str:
+    """The zone of the finding's steps (all steps of one S-1 conflict share it)."""
+    ref = f.violation.refs[0]
+    return result.compiled.plans[ref.robot_id].steps[ref.step_index].region
+
+
+def _zone_nodes(zone: str, result: TeamCheckResult) -> list[str]:
+    return sorted(node for node, z in result.sim_map.zone_of.items() if z == zone)
+
+
+def _too_long(robot: str, result: TeamCheckResult) -> str:
+    plan = result.compiled.plans[robot]
+    return (f"plan takes {plan.t_end - plan.t_start:.0f} s, "
+            f"more than the {result.settings.max_duration:.0f} s limit")
+
+
+def _robots(n: int) -> str:
+    return "1 robot" if n == 1 else f"{n} robots"
+
+
+def _join(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]

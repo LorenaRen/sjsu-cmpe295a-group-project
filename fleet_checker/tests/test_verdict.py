@@ -1,0 +1,243 @@
+"""to_verdict: check_team_plan result -> EthicalVerdict content (REJECT path)."""
+import re
+from pathlib import Path
+
+import pytest
+from mrs_common import load_sample, plan_from_json
+from mrs_common import reasons as R
+from mrs_common.plan_schema import TeamPlan, constraints_from_json, constraints_to_json
+
+from checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
+from checker.adapters.team_check import check_team_plan
+from checker.adapters.verdict import APPROVE, MODIFY, REJECT, to_verdict
+from checker.policy import AccessPolicy
+
+ROOT = Path(__file__).resolve().parents[2]
+SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
+NARROW_AISLE = ROOT / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml"
+VERDICT_MSG = ROOT / "code/mrs-ethics/src/mrs_msgs/msg/EthicalVerdict.msg"
+SPEED = 0.5  # m/s; a test value, not Module 6's speed
+
+# Two one-robot zones side by side between two rooms: robots crossing in
+# opposite directions swap places head-on at x = 2.
+TWO_NARROW_ZONES = {
+    "world": "two_narrow_zones",
+    "nodes": {"wr": {"x": 0.0, "y": 0.0}, "w": {"x": 1.5, "y": 0.0},
+              "e": {"x": 2.5, "y": 0.0}, "er": {"x": 4.0, "y": 0.0}},
+    "edges": [["wr", "w"], ["w", "e"], ["e", "er"]],
+    "zones": [
+        {"id": "west_room", "type": "room", "rect": {"x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1}},
+        {"id": "west", "type": "narrow", "capacity": 1,
+         "rect": {"x_min": 1, "x_max": 2, "y_min": -0.4, "y_max": 0.4}},
+        {"id": "east", "type": "narrow", "capacity": 1,
+         "rect": {"x_min": 2, "x_max": 3, "y_min": -0.4, "y_max": 0.4}},
+        {"id": "east_room", "type": "room", "rect": {"x_min": 3, "x_max": 5, "y_min": -1, "y_max": 1}},
+    ],
+    "spawns": [{"node": "wr"}, {"node": "er"}],
+}
+
+
+@pytest.fixture(scope="module")
+def samples_map():
+    return load_sim_map(SAMPLES_WORLD)
+
+
+@pytest.fixture(scope="module")
+def aisle_map():
+    return load_sim_map(NARROW_AISLE)
+
+
+def sample(name: str) -> TeamPlan:
+    return plan_from_json(load_sample(name))
+
+
+def task(task_id, action, target, depends_on=()) -> dict:
+    return {"task_id": task_id, "action": action, "target": target, "priority": 1,
+            "depends_on": list(depends_on)}
+
+
+def team(*assignments) -> TeamPlan:
+    return TeamPlan.model_validate(
+        {"assignments": [{"robot_id": r, "tasks": tasks} for r, tasks in assignments]})
+
+
+def edited(plan: TeamPlan, edit) -> TeamPlan:
+    data = plan.model_dump(mode="json")
+    for a in data["assignments"]:
+        for t in a["tasks"]:
+            edit(t)
+    return TeamPlan.model_validate(data)
+
+
+def drop_dependencies(plan: TeamPlan) -> TeamPlan:
+    return edited(plan, lambda t: t.update(depends_on=[]))
+
+
+def verdict_for(sim_map, plan, starts=None, speed=SPEED, **kwargs):
+    starts = starts or spawn_starts(sim_map, ["robot_a", "robot_b"])
+    return to_verdict(check_team_plan(plan, sim_map, starts, speed=speed, **kwargs))
+
+
+def fields(verdict, *names):
+    return [tuple(getattr(c, n) for n in names) for c in verdict.constraints]
+
+
+# ---------------- APPROVE ----------------
+
+def test_valid_plan_is_approved(samples_map):
+    v = verdict_for(samples_map, sample("valid_two_robots.json"))
+    assert v.verdict == APPROVE
+    assert v.rule_ids == () and v.constraints == () and v.standard_refs == ()
+    assert v.risk_score == 0.0
+
+
+# ---------------- P-1 -> forbid_node ----------------
+
+def test_keep_clear_stop_forbids_stopping_at_door_A(samples_map):
+    v = verdict_for(samples_map, sample("keep_clear_stop.json"))
+    assert v.verdict == REJECT
+    assert v.rule_ids == (R.FINAL_STOP_IN_PASSTHROUGH,)
+    assert fields(v, "kind", "robot_id", "task_id", "node") == [("forbid_node", "robot_b", "b1", "door_A")]
+    assert v.risk_score == pytest.approx(2 / 3)
+    assert "door_A" in v.rationale and "keep-clear" in v.rationale
+
+
+def test_p1_covers_every_node_of_the_zone(samples_map):
+    # robot_b parks at pass_e; the passage also has pass_w, which must not become the next stop.
+    plan = team(("robot_a", [task("a1", "hold_position", "west_s")]),
+                ("robot_b", [task("b1", "hold_position", "pass_e")]))
+    v = verdict_for(samples_map, plan)
+    assert fields(v, "kind", "robot_id", "node") == [
+        ("forbid_node", "robot_b", "pass_e"), ("forbid_node", "robot_b", "pass_w")]
+
+
+# ---------------- P-2 -> avoid_node ----------------
+
+def test_restricted_target_avoids_every_node_of_the_office(samples_map):
+    v = verdict_for(samples_map, sample("restricted_target.json"))
+    assert v.rule_ids == (R.REGION_ACCESS_DENIED,)
+    # a1 and a2 both cross the office: one constraint per office node, not per crossing.
+    assert fields(v, "kind", "robot_id", "task_id", "node") == [
+        ("avoid_node", "robot_a", None, "office_1"),
+        ("avoid_node", "robot_a", None, "office_e"),
+        ("avoid_node", "robot_a", None, "office_w"),
+    ]
+    assert v.risk_score == pytest.approx(2 / 3)
+    assert "office" in v.rationale and "restricted" in v.rationale
+
+
+def test_p2_in_a_zone_without_nodes_is_custom(samples_map):
+    # door_b holds no node, so there is nothing for avoid_node to name.
+    v = verdict_for(samples_map, sample("restricted_target.json"),
+                    access_policy=AccessPolicy(by_id={"door_b": frozenset()}))
+    [c] = v.constraints
+    assert (c.kind, c.robot_id) == ("custom", "robot_a")
+    assert "door_b" in c.text
+
+
+# ---------------- S-1 -> verified order_before ----------------
+
+def test_conflict_gives_a_verified_order_before(samples_map):
+    v = verdict_for(samples_map, drop_dependencies(sample("valid_two_robots.json")))
+    assert v.rule_ids == (R.CAPACITY_EXCEEDED,)
+    # robot_b yields (it reaches the passage later): b2 may start only when a1 is done.
+    assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_b", "a1", "b2")]
+    assert v.risk_score == 1.0
+    assert "passage" in v.rationale and "1 robot" in v.rationale
+
+
+def test_narrow_aisle_swap_puts_robot_a_after_robot_b(aisle_map):
+    plan = team(("robot_a", [task("a1", "hold_position", "room_e_s")]),
+                ("robot_b", [task("b2", "hold_position", "room_w_n")]))
+    v = verdict_for(aisle_map, plan)
+    # Mirror-symmetric map: entry times tie, robot_id picks robot_a to yield.
+    assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_a", "b2", "a1")]
+
+
+def test_head_on_swap_is_one_problem_and_one_ordering():
+    sim_map = sim_map_from_dict(TWO_NARROW_ZONES)
+    plan = team(("robot_a", [task("a1", "navigate", "er")]), ("robot_b", [task("b1", "navigate", "wr")]))
+    v = verdict_for(sim_map, plan, starts={"robot_a": "wr", "robot_b": "er"}, speed=1.0)
+    assert v.rule_ids == (R.EDGE_SWAP,)
+    assert v.rationale.count("head-on") == 1                    # two findings, one problem
+    assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_a", "b1", "a1")]
+
+
+# ---------------- S-1 where ordering does not help -> custom ----------------
+
+def test_keeper_that_stays_in_the_zone_gets_custom(samples_map):
+    # robot_b parks in the passage; robot_a waits for that, then has to cross it.
+    plan = team(("robot_a", [task("a1", "navigate", "corridor_1", depends_on=["b1"])]),
+                ("robot_b", [task("b1", "hold_position", "pass_e")]))
+    v = verdict_for(samples_map, plan)
+    assert v.rule_ids == (R.CAPACITY_EXCEEDED, R.FINAL_STOP_IN_PASSTHROUGH)
+    [custom] = [c for c in v.constraints if c.rule_id == R.CAPACITY_EXCEEDED]
+    assert (custom.kind, custom.robot_id) == ("custom", "robot_a")
+    assert "robot_b stays in passage until the end of its plan" in custom.text
+    assert {c.node for c in v.constraints if c.kind == "forbid_node"} == {"pass_e", "pass_w"}
+    assert v.risk_score == 1.0                                  # the worst finding decides
+
+
+def test_ordering_that_would_close_a_cycle_gets_custom(samples_map):
+    # robot_a waits inside the passage for b1, while b1 has to drive through it.
+    plan = team(("robot_a", [task("a1", "navigate", "pass_w"),
+                             task("a2", "navigate", "corridor_1", depends_on=["b1"])]),
+                ("robot_b", [task("b1", "navigate", "room_2")]))
+    v = verdict_for(samples_map, plan)
+    [c] = v.constraints
+    assert (c.kind, c.robot_id, c.rule_id) == ("custom", "robot_b", R.CAPACITY_EXCEEDED)
+    assert "cycle" in c.text
+
+
+# ---------------- P-3 and compile errors -> custom ----------------
+
+def test_too_long_plan_is_custom(samples_map):
+    v = verdict_for(samples_map, sample("valid_two_robots.json"), max_duration=30.0)
+    [c] = v.constraints
+    assert (c.kind, c.robot_id) == ("custom", "robot_b")
+    assert "41 s" in c.text and "30 s" in c.text
+    assert v.risk_score == pytest.approx(1 / 3)
+
+
+def test_compile_error_is_custom(samples_map):
+    plan = edited(sample("valid_two_robots.json"),
+                  lambda t: t.update(target="room_9") if t["task_id"] == "a2" else None)
+    v = verdict_for(samples_map, plan)
+    assert v.rule_ids == (R.UNKNOWN_TARGET,)
+    [c] = v.constraints
+    assert c.kind == "custom" and "room_9" in c.text
+    assert v.risk_score == pytest.approx(1 / 3)
+
+
+# ---------------- rationale ----------------
+
+def test_rationale_is_problems_then_what_to_do(samples_map):
+    v = verdict_for(samples_map, sample("keep_clear_stop.json"))
+    assert v.rationale == ("Plan rejected: robot_b would stop at door_A in door_a, a keep-clear zone "
+                           "that must stay clear. Propose a new plan that follows the constraints.")
+
+
+def test_rationale_lists_at_most_three_problems(samples_map):
+    plan = team(("robot_a", [task("a1", "navigate", "corridor_1", depends_on=["b1"])]),
+                ("robot_b", [task("b1", "hold_position", "pass_e")]))
+    v = verdict_for(samples_map, plan, max_duration=10.0)       # adds P-3 for both robots
+    assert "; and 1 more problem." in v.rationale
+
+
+# ---------------- what goes into the message ----------------
+
+def test_constraints_survive_constraints_json(samples_map):
+    v = verdict_for(samples_map, sample("restricted_target.json"))
+    assert tuple(constraints_from_json(constraints_to_json(v.constraints))) == v.constraints
+
+
+def test_make_verdict_kwargs(samples_map):
+    v = verdict_for(samples_map, sample("keep_clear_stop.json"))
+    kwargs = v.make_verdict_kwargs()
+    assert set(kwargs) == {"verdict", "rule_ids", "standard_refs", "risk_score", "rationale", "constraints"}
+    assert kwargs["standard_refs"] == [] and kwargs["rule_ids"] == [R.FINAL_STOP_IN_PASSTHROUGH]
+
+
+def test_verdict_strings_match_ethical_verdict_msg():
+    found = dict(re.findall(r"^string VERDICT_(\w+)=(\w+)$", VERDICT_MSG.read_text(), re.M))
+    assert found == {"APPROVE": APPROVE, "MODIFY": MODIFY, "REJECT": REJECT}
