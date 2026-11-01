@@ -114,13 +114,13 @@ def check_region_access(
         if allowed_by_id is not None and plan.task_type not in allowed_by_id:
             violations.append(Violation(
                 code="REGION_ACCESS_DENIED",
-                message=f"task_type '{plan.task_type.value}' cannot enter region '{region_id}'",
+                message=f"{plan.robot_id} may not enter region '{region_id}'",
                 refs=(StepRef(robot_id=plan.robot_id, step_index=i),),
             ))
         elif allowed_by_kind is not None and plan.task_type not in allowed_by_kind:
             violations.append(Violation(
                 code="REGION_ACCESS_DENIED",
-                message=f"task_type '{plan.task_type.value}' cannot enter "
+                message=f"{plan.robot_id} may not enter "
                         f"{region.kind.value} regions (at '{region_id}')",
                 refs=(StepRef(robot_id=plan.robot_id, step_index=i),),
             ))
