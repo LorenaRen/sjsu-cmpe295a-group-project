@@ -134,6 +134,24 @@ Resolution order (robots are ranked; the first n − c yield):
    yields this time.
 2. Tie-break: `task_type` rank — `SERVICE` yields to `DELIVERY`
    (configurable).
+3. Tie-break: the robot expected to reach a conflict region **later**
+   yields; the one that gets there first keeps going.  Entry times are
+   rounded to 1e-6 s so that floating-point noise does not decide.
+4. Tie-break: `robot_id`, so the order is total.
+
+**Entry time is taken once per robot per round**, not once per conflict:
+it is the robot's earliest claim start over *all* conflicts found in that
+round.  Every robot therefore has one global sort key for the round, and
+the yield relations of a round cannot form a cycle.  Taken per conflict,
+a head-on swap breaks this: it is reported as two conflicts (one in each
+region), each robot is "first" in the region it starts in, so each half
+would send the *other* robot back, and the two resulting orderings would
+contradict each other.  With a single conflict, the two definitions agree.
+
+In the TeamPlan pipeline every robot has the same task type, so after the
+ledger the entry time decides; `robot_id` decides only when both robots
+reach the conflict at the same moment (e.g. the mirror-symmetric swap in
+`narrow_aisle`).
 
 Each yielding robot receives the `Violation` with a structured rejection
 reason; the remaining *c* robots' plans are accepted.
@@ -184,8 +202,9 @@ starving robots are still kept ahead of non-starving ones, but some of
 them must yield; among the starving robots, R-1 decides who yields.
 
 Implementation note: R-1 and F-2 share one ranking key,
-`(is_starving, yield_count, task_type rank)`, so the starvation branch
-can never order robots in the opposite direction from R-1.
+`(is_starving, yield_count, task_type rank, −entry time, robot_id)`, so
+the starvation branch can never order robots in the opposite direction
+from R-1.
 
 - **Data:** `FairnessLedger` consecutive-rejection count
 - **Source:** project-defined (task-completion guarantee)

@@ -12,6 +12,9 @@ R-1: Yield assignment
     capacity-c region: n - c of them) based on:
     1. Fewer cumulative yields (from FairnessLedger) yields this time
     2. Tie-break: task_type rank — SERVICE yields to DELIVERY
+    3. Tie-break: the robot that reaches a conflict region later yields
+       (one entry time per robot for the whole round, see first_entry_times)
+    4. Tie-break: robot_id
 
 F-2: Starvation override
     Starving robots are kept ahead of everyone else; they yield only when
@@ -19,9 +22,10 @@ F-2: Starvation override
 """
 from __future__ import annotations
 
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Iterator, NamedTuple
+from typing import Iterable, Iterator, Mapping, NamedTuple
 
 from .plan import Claim, Plan, StepRef, TaskType, Violation, WorldMap, claims
 
@@ -273,10 +277,27 @@ TASK_PRIORITY: dict[TaskType, int] = {
 }
 
 
+def first_entry_times(conflicts: Iterable[CapacityConflict]) -> dict[str, float]:
+    """robot_id -> the earliest start of its claims in any of these conflicts.
+
+    R-1 compares robots by this one value per round, not by when they enter
+    each conflict's region: that gives every robot one global sort key, so the
+    yield relations of a round cannot form a cycle. Taken per conflict, the two
+    halves of a head-on swap would each send the other robot back (each robot
+    is first in the region it starts in), and the orderings would contradict.
+    """
+    entry: dict[str, float] = {}
+    for conflict in conflicts:
+        for c in conflict.claims:
+            entry[c.robot_id] = min(c.start, entry.get(c.robot_id, math.inf))
+    return entry
+
+
 def assign_yield(
     conflict: CapacityConflict,
     plans: dict[str, Plan],
     ledger: FairnessLedger,
+    entry_times: Mapping[str, float] | None = None,
 ) -> list[str]:
     """Decide which robots should yield (replan) given a conflict.
 
@@ -284,6 +305,9 @@ def assign_yield(
     three robots in a capacity-1 aisle send two of them back to replan.
     Robots are ranked by `_yield_key` (F-2, then R-1) and the first n - c
     yield; the remaining c keep their plans.
+
+    entry_times: first_entry_times over every conflict of the round;
+    check_cross_plan_conflicts passes it. If None, only this conflict is used.
 
     Known over-yield: n counts every robot in the conflict window, but they
     may not all be inside at once. In a chain where r1 overlaps r2 and r2
@@ -303,24 +327,32 @@ def assign_yield(
     """
     robot_ids = sorted(set(c.robot_id for c in conflict.claims))
     n_yield = max(len(robot_ids) - conflict.capacity, 0)
+    if entry_times is None:
+        entry_times = first_entry_times([conflict])
 
-    ranked = sorted(robot_ids, key=lambda r: _yield_key(r, plans, ledger))
+    ranked = sorted(robot_ids, key=lambda r: _yield_key(r, plans, ledger, entry_times))
     return ranked[:n_yield]
 
 
-def _yield_key(robot_id: str, plans: dict[str, Plan], ledger: FairnessLedger) -> tuple[bool, int, int]:
+def _yield_key(robot_id: str, plans: dict[str, Plan], ledger: FairnessLedger,
+               entry_times: Mapping[str, float]) -> tuple[bool, int, int, float, str]:
     """Sort key for R-1 and F-2 together: lower key = should yield (replan).
 
     1. Starving robots (F-2) sort last, so they yield only when there are
        more starving robots than capacity; among themselves, R-1 decides.
     2. Fewer cumulative yields = should yield this time (R-1).
     3. Higher task_priority number (SERVICE=2) = lower priority = should yield.
+    4. Later first entry into a conflict region = should yield: the robot that
+       gets there first keeps going. Rounded to 1e-6 s so float noise does not decide.
+    5. robot_id, so the order is total.
 
     One key for both rules keeps the starvation branch from ranking the
     non-starving robots in a different direction than R-1.
     """
     task_priority = TASK_PRIORITY.get(plans[robot_id].task_type, 99)
-    return (ledger.is_starving(robot_id), ledger.yield_count(robot_id), -task_priority)
+    entry = round(entry_times[robot_id], 6)
+    return (ledger.is_starving(robot_id), ledger.yield_count(robot_id), -task_priority,
+            -entry, robot_id)
 
 
 # ---------------------------------------------------------------------------
@@ -357,11 +389,12 @@ def check_cross_plan_conflicts(
     conflicts = check_capacity_violations(plans, world, margin=margin, hold_final=hold_final)
     all_violations = capacity_conflicts_to_violations(conflicts)
 
-    # Assign yields (R-1)
+    # Assign yields (R-1), every conflict ranking robots by the same entry times
     robot_violations: dict[str, list[Violation]] = defaultdict(list)
+    entry_times = first_entry_times(conflicts)
 
     for conflict, violation in zip(conflicts, all_violations):
-        for yielding_robot in assign_yield(conflict, plans_dict, ledger):
+        for yielding_robot in assign_yield(conflict, plans_dict, ledger, entry_times):
             robot_violations[yielding_robot].append(violation)
 
     return all_violations, dict(robot_violations)
