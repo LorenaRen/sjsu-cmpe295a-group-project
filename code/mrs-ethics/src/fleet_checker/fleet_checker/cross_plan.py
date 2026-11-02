@@ -247,27 +247,42 @@ class YieldRecord:
 
 @dataclass
 class FairnessLedger:
-    """Tracks cumulative yields per robot for fair conflict resolution."""
+    """Two counts per robot, written at different times (rules_v1.md, "Updating the ledger"):
+
+      yields                  conflicts the robot gave way in; R-1 and F-1 use them.
+                              Recorded when the conflict is resolved (the plan is approved),
+                              not on each REJECT: otherwise R-1 would swap the robots on every
+                              round in which the planner fails to fix the conflict.
+      consecutive_rejections  REJECTs in a row that told the robot to yield; F-2 uses them.
+                              Reset when the robot's plan is approved.
+    """
     yields: dict[str, list[YieldRecord]] = field(default_factory=lambda: defaultdict(list))
     consecutive_rejections: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    starvation_threshold: int = 3   # F-2's M
+
+    def __post_init__(self):
+        if self.starvation_threshold < 1:
+            raise ValueError(f"starvation_threshold must be at least 1, got {self.starvation_threshold}")
 
     def yield_count(self, robot_id: str) -> int:
         """Get the total number of times this robot has yielded."""
         return len(self.yields[robot_id])
 
     def record_yield(self, robot_id: str, conflict_id: str, timestamp: float, opponent_id: str):
-        """Record that a robot yielded in a conflict."""
+        """Record that a robot gave way in a conflict that has been resolved."""
         self.yields[robot_id].append(YieldRecord(conflict_id, timestamp, opponent_id))
-        # A yield is a rejection; count it toward starvation (F-2)
+
+    def record_rejection(self, robot_id: str):
+        """Record that a REJECT told this robot to yield (counts toward F-2)."""
         self.consecutive_rejections[robot_id] += 1
 
     def record_acceptance(self, robot_id: str):
         """Record that a robot's plan was accepted (reset consecutive rejections)."""
         self.consecutive_rejections[robot_id] = 0
 
-    def is_starving(self, robot_id: str, threshold: int = 3) -> bool:
+    def is_starving(self, robot_id: str) -> bool:
         """Check if a robot has been rejected too many times consecutively (F-2)."""
-        return self.consecutive_rejections[robot_id] >= threshold
+        return self.consecutive_rejections[robot_id] >= self.starvation_threshold
 
 
 # Task type priority ranking (lower number = higher priority)

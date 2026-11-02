@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.4, 2026-11-01
+Status: draft v0.5, 2026-11-02
 
 ---
 
@@ -191,8 +191,9 @@ Not a violation that rejects a plan.  Instead it is:
 
 ### F-2  Starvation
 
-A robot's plan has been rejected M consecutive times (across any conflict
-group).  When triggered, the starving robot receives **priority override**:
+R-1 has told a robot to yield in M consecutive REJECTs (across any
+conflict group; rejections for the robot's own P-1, P-2 or P-3 violations
+do not count).  When triggered, the starving robot receives **priority override**:
 it is kept ahead of every non-starving robot in the conflict, and the
 n − c yielding robots are drawn from the non-starving robots first,
 ranked by R-1 (fewer cumulative yields yields; `task_type` tie-break).
@@ -206,8 +207,61 @@ Implementation note: R-1 and F-2 share one ranking key,
 the starvation branch can never order robots in the opposite direction
 from R-1.
 
-- **Data:** `FairnessLedger` consecutive-rejection count
+- **Data:** `FairnessLedger.consecutive_rejections` (see "Updating the
+  ledger" below); M is `FairnessLedger.starvation_threshold`, default 3
 - **Source:** project-defined (task-completion guarantee)
+
+### Updating the ledger
+
+Whatever runs the replan loop writes the ledger; `check_team_plan` only
+reads it.  That is the Module 5 gate (`mrs_ethical_gate`).  The two counts
+are written at different times:
+
+| Event | Rejections in a row (F-2) | Yields (R-1, F-1) |
+|---|---|---|
+| REJECT, and the plan compiles | +1 for each robot R-1 told to yield in this round | unchanged; each conflict and its yielders are remembered until the next APPROVE (a later round's version of the same conflict replaces the earlier one) |
+| APPROVE | reset to 0 for every robot | one yield for each yielder of each remembered conflict; then nothing is remembered |
+| Compile error, unreadable plan, a message seen before | unchanged | unchanged |
+
+A conflict is identified by its zone and the robots in it; the two halves
+of a head-on swap are one conflict.  P-1, P-2 and P-3 rejections do not
+count toward F-2: a robot whose own plan breaks a rule should not gain
+priority in conflicts.  Each episode starts with an empty ledger, so that
+episodes stay independent trials whose results do not depend on the order
+they ran in.
+
+**Why yields are not recorded on REJECT.**  When the planner fails to fix
+a conflict, the same conflict comes back in the next round.  If the
+yielder's count went up on the REJECT, R-1 would pick the other robot the
+next time, and the ordering sent to the planner would flip on every round.
+Run: the checker on `valid_two_robots` with its `depends_on` removed
+(`samples_world`, speed 0.5 m/s), the planner proposing that same plan six
+times in a row.  Counts are the ledger before each round.
+
+| Round | Old rule: yield (and rejection) recorded on every REJECT | New rule: rejection on REJECT, yield on APPROVE |
+|---|---|---|
+| 1 | robot_b yields (yields a, b = 0, 0) | robot_b yields (rejections in a row a, b = 0, 0) |
+| 2 | **robot_a** yields (0, 1) | robot_b yields (0, 1) |
+| 3 | robot_b yields (1, 1) | robot_b yields (0, 2) |
+| 4 | **robot_a** yields (1, 2) | robot_a yields (0, 3): F-2, robot_b is starving |
+| 5 | robot_b yields (2, 2) | robot_a yields (1, 3) |
+| 6 | **robot_a** yields (2, 3) | robot_a yields (2, 3) |
+
+Under the old rule the planner was told "robot_b: start b2 only after
+robot_a has finished a1" and "robot_a: start a1 only after robot_b has
+finished b2" in alternate rounds; a planner that keeps earlier constraints
+would end up holding both, which is a deadlock.  Under the new rule the
+yielder changes only where F-2 is meant to change it, after M = 3
+rejections in a row.
+
+**Known limitation.**  The yield is credited to the robot R-1 told to
+yield; the approved plan is not examined.  If the planner resolved the
+conflict another way (rerouting the keeper, say), the wrong robot is
+credited.  Inferring the yielder from the approved plan is possible
+(remove a cross-robot `depends_on` and check again: if the pair then
+conflicts, the waiting robot yielded), at the cost of extra rechecks on
+every approval; revisit if experiments show that planners often ignore the
+orderings.
 
 ---
 
@@ -342,9 +396,9 @@ MODIFY must check the whole modified plan again before approving it.
   (`source_verdict` MODIFY) and the inserted orderings into `constraints`,
   so the agents learn what changed.  If it fails, publish the REJECT it
   would have been.  One pass and no loop, so the latency stays bounded.
-- **Ledger.**  Yields are recorded only for decisions actually published
-  (a MODIFY counts as a yield by each yielder); recording belongs to
-  whatever runs the replan loop.
+- **Ledger.**  A MODIFY resolves its conflicts at once, so it updates the
+  ledger as an APPROVE does: one yield for each yielder, then every
+  robot's rejection count back to 0 (see "Updating the ledger").
 - **Why a switch.**  Evaluation can then compare "the LLM replans" with
   "the checker repairs" on the same scenarios (pass rate without
   replanning, LLM calls per episode).  Off by default keeps REJECT as the
@@ -358,7 +412,7 @@ MODIFY must check the whole modified plan again before approving it.
 
 | Item | Used by | Status |
 |------|---------|--------|
-| `FairnessLedger` | R-1, F-1, F-2, P-4 | Implemented (`cross_plan.py`): yield records and consecutive-rejection counts per robot.  Accumulates across planning rounds; not a snapshot.  Nothing computes the F-1 imbalance metric from it yet. |
+| `FairnessLedger` | R-1, F-1, F-2, P-4 | Implemented (`cross_plan.py`): yield records (written on approval) and consecutive-rejection counts (written on REJECT) per robot, and F-2's threshold M.  Accumulates across the planning rounds of one episode; not a snapshot.  Nothing computes the F-1 imbalance metric from it yet. |
 | `AccessPolicy` | P-2 | Implemented (`policy.py`): `by_id` and `by_kind` tables, kept separate from `WorldMap`. |
 | Replan history | P-4 | Not implemented.  Tracks `(conflict_group_id, round, outcome)`; could live inside the checker orchestrator rather than as a standalone type. |
 
