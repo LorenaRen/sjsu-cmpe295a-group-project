@@ -2,7 +2,6 @@
 from pathlib import Path
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 from checker.adapters.sim_map import (
@@ -10,12 +9,10 @@ from checker.adapters.sim_map import (
 )
 from checker.plan import RegionKind
 
-FIXTURES = Path(__file__).parent / "fixtures"
-NARROW_AISLE = FIXTURES / "narrow_aisle.yaml"
-SAMPLES_WORLD = FIXTURES / "samples_world.yaml"
-# Shervan's original; only in the repo once mrs_sim is merged (now on origin/module2-simpackage).
-REPO_NARROW_AISLE = (Path(__file__).resolve().parents[2]
-                     / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml")
+SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
+# Shervan's world, read from the mrs_sim package itself.
+NARROW_AISLE = (Path(__file__).resolve().parents[2]
+                / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml")
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +29,7 @@ def pieces(sim_map, a, b):
     return [(p.zone, round(p.length, 9)) for p in sim_map.pieces[(a, b)]]
 
 
-# ---------------- narrow_aisle (copy of Shervan's world) ----------------
+# ---------------- narrow_aisle (Shervan's world in mrs_sim) ----------------
 
 class TestNarrowAisle:
 
@@ -66,12 +63,6 @@ class TestNarrowAisle:
             "robot_a": "room_w_s", "robot_b": "room_e_n"}
         with pytest.raises(ValueError, match="spawn slots"):
             spawn_starts(aisle_map, ["r1", "r2", "r3", "r4", "r5"])
-
-    @pytest.mark.skipif(not REPO_NARROW_AISLE.exists(),
-                        reason="mrs_sim is not on this branch yet (origin/module2-simpackage)")
-    def test_fixture_matches_mrs_sim(self):
-        """Drift check: the copy must equal Shervan's file once that file is in the repo."""
-        assert yaml.safe_load(NARROW_AISLE.read_text()) == yaml.safe_load(REPO_NARROW_AISLE.read_text())
 
 
 # ---------------- samples_world (test map for the Module 1 samples) ----------------

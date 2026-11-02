@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.3, 2026-10-29
+Status: draft v0.4, 2026-11-01
 
 ---
 
@@ -134,6 +134,24 @@ Resolution order (robots are ranked; the first n − c yield):
    yields this time.
 2. Tie-break: `task_type` rank — `SERVICE` yields to `DELIVERY`
    (configurable).
+3. Tie-break: the robot expected to reach a conflict region **later**
+   yields; the one that gets there first keeps going.  Entry times are
+   rounded to 1e-6 s so that floating-point noise does not decide.
+4. Tie-break: `robot_id`, so the order is total.
+
+**Entry time is taken once per robot per round**, not once per conflict:
+it is the robot's earliest claim start over *all* conflicts found in that
+round.  Every robot therefore has one global sort key for the round, and
+the yield relations of a round cannot form a cycle.  Taken per conflict,
+a head-on swap breaks this: it is reported as two conflicts (one in each
+region), each robot is "first" in the region it starts in, so each half
+would send the *other* robot back, and the two resulting orderings would
+contradict each other.  With a single conflict, the two definitions agree.
+
+In the TeamPlan pipeline every robot has the same task type, so after the
+ledger the entry time decides; `robot_id` decides only when both robots
+reach the conflict at the same moment (e.g. the mirror-symmetric swap in
+`narrow_aisle`).
 
 Each yielding robot receives the `Violation` with a structured rejection
 reason; the remaining *c* robots' plans are accepted.
@@ -184,8 +202,9 @@ starving robots are still kept ahead of non-starving ones, but some of
 them must yield; among the starving robots, R-1 decides who yields.
 
 Implementation note: R-1 and F-2 share one ranking key,
-`(is_starving, yield_count, task_type rank)`, so the starvation branch
-can never order robots in the opposite direction from R-1.
+`(is_starving, yield_count, task_type rank, −entry time, robot_id)`, so
+the starvation branch can never order robots in the opposite direction
+from R-1.
 
 - **Data:** `FairnessLedger` consecutive-rejection count
 - **Source:** project-defined (task-completion guarantee)
@@ -202,12 +221,13 @@ checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 |------|------|
 | `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
 | `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
-| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code and the TeamPlan task ids it came from.  Restricted zones default to "no robot may enter". |
+| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check on a changed plan. |
+| `verdict.py` | `to_verdict`: a `check_team_plan` result → the decision fields of an `EthicalVerdict` (see "Verdict for Module 5" below). |
 
 `TeamPlan.priority` is kept for logs only; who yields is decided by R-1
 and the fairness ledger.  TeamPlan has no task type, so every robot is
 `DELIVERY` unless the caller says otherwise; R-1's task-type tie-break then
-never decides, and full ties fall to robot_id order.
+never decides, and ties fall to entry time, then robot_id.
 
 ### Assumptions to confirm with Module 4 (planner) and Module 6 (executor)
 
@@ -233,6 +253,104 @@ agreed interfaces:
    acceleration, turning on the spot or CBF slow-down.  S-1's `margin`
    absorbs that error.  Speed and margin are to be set from measurements in
    simulation; no accuracy figure is claimed yet.
+
+---
+
+## Verdict for Module 5 (`EthicalVerdict`)
+
+`checker/adapters/verdict.py` (`to_verdict`) turns a `check_team_plan`
+result into the decision fields of an `EthicalVerdict`: `verdict`,
+`rule_ids`, `standard_refs`, `risk_score`, `rationale` and `constraints`.
+The gate node adds the ids, latency and stamp.  Only APPROVE and REJECT
+are produced; MODIFY is designed (below) but not built.
+
+### Violations → constraints
+
+| Finding | Constraint (`mrs_common.plan_schema.Constraint`) |
+|---------|--------------------------------------------------|
+| S-1 `capacity_exceeded`, `edge_swap` | `order_before`: the keeper's task that takes it out of the zone (`task_id`) must finish before the yielder's task that takes it in (`value`); `robot_id` is the yielder.  One per (yielder, keeper) pair, verified first (below). |
+| P-1 `final_stop_in_passthrough` | `forbid_node` for every node of the zone |
+| P-2 `region_access_denied` | `avoid_node` for every node of the zone; `custom` if the zone has no node |
+| P-3 `max_duration_exceeded` | `custom`, with the plan's duration and the limit |
+| Plan does not compile | `custom`, with the violation message |
+
+P-1 and P-2 name every node of the zone, not only the one in the plan:
+otherwise the next plan can stop at, or route through, a neighbouring
+node of the same zone and be rejected again.  A head-on swap is reported
+once per zone; its `order_before` text leaves the zone out, so both halves
+give the same constraint and the planner gets it once.
+
+### Verifying an `order_before`
+
+An ordering is not always a fix.  The keeper may stay in the zone until
+the end of its plan; the yielder may already be in the zone when its plan
+starts; the ordering may close a cycle with the plan's `depends_on`; or the
+plan may already contain it (the conflict then comes from the time
+margin).  So each suggested `order_before` is added as a `depends_on` to a
+copy of the TeamPlan, and the copy is checked again with the same map,
+start nodes, ledger and settings.  If the conflict between those two
+robots in that zone is gone, the `order_before` is sent; otherwise a
+`custom` constraint says why ordering them does not help.
+
+The verification looks only at **that pair of robots in that zone**.  It
+does not guarantee that the reordered plan creates no new conflict
+elsewhere.  On the REJECT path the next round's check catches those;
+MODIFY must check the whole modified plan again before approving it.
+
+### Other fields
+
+- **`rule_ids`**: the `mrs_common.reasons` codes of the findings, sorted.
+
+  | Reason code | Rule |
+  |-------------|------|
+  | `capacity_exceeded`, `edge_swap` | S-1 |
+  | `final_stop_in_passthrough` | P-1 |
+  | `region_access_denied` | P-2 |
+  | `max_duration_exceeded` | P-3 |
+  | `unknown_robot`, `unknown_target`, `no_route`, `dependency_deadlock` | plan does not compile (no rule number) |
+
+- **`risk_score`**: the worst finding's level divided by 3.
+
+  | Level | `risk_score` | Findings | Meaning |
+  |-------|--------------|----------|---------|
+  | 3 | 1.0 | S-1 | robots predicted to collide or block each other |
+  | 2 | 0.67 | P-1, P-2 | a rule about where robots may be is broken |
+  | 1 | 0.33 | P-3, plan does not compile | the plan cannot run as written, or runs too long |
+  | 0 | 0.0 | approved | |
+
+  **This is an ordinal level, not a probability.**  Only the order of the
+  levels means anything; the values are spread evenly over 0–1 because
+  `EthicalVerdict.risk_score` is a 0–1 field.  Evaluation must not use it
+  as a probability (for example, averaging it or comparing it with
+  observed violation rates).
+- **`rationale`**: two sentences: "Plan rejected: <up to three problems>."
+  and "Propose a new plan that follows the constraints."  The constraint
+  texts carry the details.
+- **`standard_refs`**: empty.  `EthicalVerdict` allows only clauses the
+  team has actually read, and the standards' text has not been read yet.
+
+### MODIFY: designed, not built
+
+- **Switch.**  A `modify` flag on the gate's entry point (a parameter of
+  the gate node), off by default.
+- **When.**  Only if every finding is S-1 and each produced a verified
+  `order_before`.  P-1, P-2, P-3 and compile errors always go back to the
+  planner: where else to stop or route needs its judgment.
+- **How.**  Add all of those orderings as `depends_on` to a copy of the
+  TeamPlan at once, and check the **whole** copy again.  If it passes,
+  publish MODIFY: the modified plan goes into `ValidatedPlan`
+  (`source_verdict` MODIFY) and the inserted orderings into `constraints`,
+  so the agents learn what changed.  If it fails, publish the REJECT it
+  would have been.  One pass and no loop, so the latency stays bounded.
+- **Ledger.**  Yields are recorded only for decisions actually published
+  (a MODIFY counts as a yield by each yielder); recording belongs to
+  whatever runs the replan loop.
+- **Why a switch.**  Evaluation can then compare "the LLM replans" with
+  "the checker repairs" on the same scenarios (pass rate without
+  replanning, LLM calls per episode).  Off by default keeps REJECT as the
+  baseline.
+- The verification above already builds and rechecks reordered plans, so
+  MODIFY is mostly wiring.
 
 ---
 

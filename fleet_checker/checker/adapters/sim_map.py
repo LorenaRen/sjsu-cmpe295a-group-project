@@ -19,8 +19,9 @@ zone, node or edge:
   - every edge runs through zones for its whole length.
 Nested zones (a keep-clear area inside a room) therefore cannot be loaded yet.
 
-This reads the YAML format, not mrs_sim's classes, so it works before mrs_sim is
-merged; a loaded mrs_sim WorldMap can be passed in as wm.model_dump().
+This reads the YAML format itself instead of importing mrs_sim's classes, so the
+checker does not depend on the mrs_sim package; a loaded mrs_sim WorldMap can
+also be passed in as wm.model_dump().
 """
 from __future__ import annotations
 

@@ -29,10 +29,24 @@ from .sim_map import SimMap
 NO_ENTRY_TO_RESTRICTED = AccessPolicy(by_kind={RegionKind.RESTRICTED: frozenset()})
 
 
+@dataclass(frozen=True)
+class CheckSettings:
+    """What check_team_plan was called with, besides the plan, map, start nodes and ledger."""
+    speed: float
+    t0: float
+    margin: float
+    max_duration: float
+    access_policy: AccessPolicy
+    task_types: Mapping[str, TaskType] | None
+    plan_id: str
+    revision: int
+
+
 class Finding(NamedTuple):
     violation: Violation
     reason: str                # mrs_common.reasons code, e.g. "capacity_exceeded"
     task_ids: tuple[str, ...]  # TeamPlan tasks that the violation's steps came from
+    must_fix: tuple[str, ...]  # robots that have to change their plan; () if it does not compile
 
 
 @dataclass(frozen=True)
@@ -42,10 +56,21 @@ class TeamCheckResult:
     # robot_id -> what it must fix. Empty when the plan does not compile: then
     # the TeamPlan as a whole goes back to the planner.
     must_replan: dict[str, tuple[Violation, ...]]
+    # The inputs, kept so that the same check can run on a changed plan (recheck).
+    team_plan: TeamPlan
+    sim_map: SimMap
+    start_nodes: Mapping[str, str]
+    ledger: FairnessLedger | None
+    settings: CheckSettings
 
     @property
     def approved(self) -> bool:
         return not self.findings
+
+    def recheck(self, team_plan: TeamPlan) -> TeamCheckResult:
+        """Run the same check (map, start nodes, ledger, settings) on another plan,
+        e.g. this one with a depends_on added."""
+        return _check(team_plan, self.sim_map, self.start_nodes, self.ledger, self.settings)
 
 
 def reason_of(violation: Violation) -> str:
@@ -75,37 +100,48 @@ def check_team_plan(
     speed, t0, task_types, plan_id and revision go to compile_team_plan;
     margin to the S-1 check; access_policy and max_duration to P-2 and P-3.
     """
-    compiled = compile_team_plan(team_plan, sim_map, start_nodes, speed=speed, t0=t0,
-                                 task_types=task_types, plan_id=plan_id, revision=revision)
-    if compiled.violations:
-        findings = tuple(_finding(v, compiled) for v in compiled.violations)
-        return TeamCheckResult(compiled, findings, {})
+    settings = CheckSettings(speed=speed, t0=t0, margin=margin, max_duration=max_duration,
+                             access_policy=access_policy, task_types=task_types,
+                             plan_id=plan_id, revision=revision)
+    return _check(team_plan, sim_map, start_nodes, ledger, settings)
 
-    violations: list[Violation] = []
-    must_replan: dict[str, list[Violation]] = {}
+
+def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
+           ledger: FairnessLedger | None, s: CheckSettings) -> TeamCheckResult:
+    compiled = compile_team_plan(team_plan, sim_map, start_nodes, speed=s.speed, t0=s.t0,
+                                 task_types=s.task_types, plan_id=s.plan_id, revision=s.revision)
+    inputs = dict(team_plan=team_plan, sim_map=sim_map, start_nodes=start_nodes,
+                  ledger=ledger, settings=s)
+    if compiled.violations:
+        findings = tuple(_finding(v, compiled, ()) for v in compiled.violations)
+        return TeamCheckResult(compiled=compiled, findings=findings, must_replan={}, **inputs)
+
+    found: list[tuple[Violation, tuple[str, ...]]] = []   # (violation, robots that must fix it)
     for robot, plan in compiled.plans.items():
-        found = validate_policy(plan, sim_map.world, access_policy, max_duration)
-        violations.extend(found)
-        if found:
-            must_replan.setdefault(robot, []).extend(found)
+        for v in validate_policy(plan, sim_map.world, s.access_policy, s.max_duration):
+            found.append((v, (robot,)))
 
     conflicts, yielders = check_cross_plan_conflicts(
-        list(compiled.plans.values()), sim_map.world, ledger, margin=margin)
-    violations.extend(conflicts)
-    for robot, found in yielders.items():
-        must_replan.setdefault(robot, []).extend(found)
+        list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin)
+    for v in conflicts:
+        found.append((v, tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))))
 
+    must_replan: dict[str, list[Violation]] = {}
+    for v, robots in found:
+        for robot in robots:
+            must_replan.setdefault(robot, []).append(v)
     return TeamCheckResult(
-        compiled,
-        tuple(_finding(v, compiled) for v in violations),
-        {robot: tuple(found) for robot, found in sorted(must_replan.items())},
+        compiled=compiled,
+        findings=tuple(_finding(v, compiled, robots) for v, robots in found),
+        must_replan={robot: tuple(vs) for robot, vs in sorted(must_replan.items())},
+        **inputs,
     )
 
 
-def _finding(violation: Violation, compiled: CompiledTeamPlan) -> Finding:
+def _finding(violation: Violation, compiled: CompiledTeamPlan, must_fix: tuple[str, ...]) -> Finding:
     task_ids: list[str] = []
     for ref in violation.refs:
         task_id = compiled.origins[ref.robot_id][ref.step_index].task_id
         if task_id is not None and task_id not in task_ids:
             task_ids.append(task_id)
-    return Finding(violation, reason_of(violation), tuple(task_ids))
+    return Finding(violation, reason_of(violation), tuple(task_ids), must_fix)

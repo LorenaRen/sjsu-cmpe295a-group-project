@@ -141,6 +141,20 @@ class TestRegionAccess:
         violations = check_region_access(plan, WORLD, policy=policy)
         assert len(violations) == 2
 
+    def test_message_names_the_robot_not_the_task_type(self):
+        """TeamPlans have no task type, so a planner could not act on one in the feedback."""
+        by_id = AccessPolicy(by_id={"patient_room": frozenset({TaskType.SERVICE})})
+        by_kind = AccessPolicy(by_kind={RegionKind.RESTRICTED: frozenset()})
+        cases = [
+            (make_plan("r1", [("navigate", "room_b"), ("navigate", "patient_room")]), by_id,
+             "r1 may not enter region 'patient_room'"),
+            (make_plan("r1", [("navigate", "room_b"), ("navigate", "records")]), by_kind,
+             "r1 may not enter restricted regions (at 'records')"),
+        ]
+        for plan, policy, message in cases:
+            [violation] = check_region_access(plan, WORLD, policy=policy)
+            assert violation.message == message
+
     def test_restricted_kind_with_empty_set_denies_every_task_type(self):
         """by_kind {RESTRICTED: {}} is 'nobody may enter'."""
         policy = AccessPolicy(by_kind={RegionKind.RESTRICTED: frozenset()})

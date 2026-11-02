@@ -11,18 +11,20 @@ from checker.adapters.team_check import check_team_plan, reason_of
 from checker.cross_plan import FairnessLedger
 from checker.plan import Violation
 
-FIXTURES = Path(__file__).parent / "fixtures"
+SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
+NARROW_AISLE = (Path(__file__).resolve().parents[2]
+                / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml")
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
 
 
 @pytest.fixture(scope="module")
 def samples_map():
-    return load_sim_map(FIXTURES / "samples_world.yaml")
+    return load_sim_map(SAMPLES_WORLD)
 
 
 @pytest.fixture(scope="module")
 def aisle_map():
-    return load_sim_map(FIXTURES / "narrow_aisle.yaml")
+    return load_sim_map(NARROW_AISLE)
 
 
 def sample(name: str) -> TeamPlan:
@@ -96,17 +98,19 @@ def test_priority_does_not_decide_who_yields(samples_map):
     plan = drop_dependencies(sample("valid_two_robots.json"))
     swapped = edited(plan, lambda t: t.update(priority=3 - t["priority"]))   # 1 <-> 2
     assert {o.priority for o in check(samples_map, swapped).compiled.origins["robot_a"]} == {2}
-    # With a fresh ledger and equal task types, R-1 ties and falls back to robot_id order.
-    assert list(check(samples_map, plan).must_replan) == ["robot_a"]
-    assert list(check(samples_map, swapped).must_replan) == ["robot_a"]
+    # Fresh ledger and equal task types: R-1 falls to entry time. robot_b enters
+    # the passage later (16.4 s against 6.4 s), so it yields whatever the priorities say.
+    assert list(check(samples_map, plan).must_replan) == ["robot_b"]
+    assert list(check(samples_map, swapped).must_replan) == ["robot_b"]
 
 
 def test_the_fairness_ledger_decides_who_yields(samples_map):
     plan = drop_dependencies(sample("valid_two_robots.json"))
     ledger = FairnessLedger()
-    ledger.record_yield("robot_a", conflict_id="earlier", timestamp=0.0, opponent_id="robot_b")
-    # robot_a has yielded before, robot_b has not, so robot_b yields this time.
-    assert list(check(samples_map, plan, ledger=ledger).must_replan) == ["robot_b"]
+    ledger.record_yield("robot_b", conflict_id="earlier", timestamp=0.0, opponent_id="robot_a")
+    # robot_b has yielded before, robot_a has not, so robot_a yields this time,
+    # although it enters the passage first.
+    assert list(check(samples_map, plan, ledger=ledger).must_replan) == ["robot_a"]
 
 
 # ---------------- Shervan's narrow_aisle ----------------
@@ -131,11 +135,35 @@ def test_narrow_aisle_swap_conflicts_in_the_aisle(aisle_map):
     assert "aisle" in result.findings[0].violation.message
 
 
+def test_symmetric_swap_ties_on_entry_time_and_falls_back_to_robot_id(aisle_map):
+    # The map is mirror-symmetric: both robots reach the aisle 3.2 m from their spawn.
+    assert list(check(aisle_map, swap_rooms(robot_b_waits=False)).must_replan) == ["robot_a"]
+
+
 def test_narrow_aisle_swap_passes_when_one_robot_waits(aisle_map):
     assert check(aisle_map, swap_rooms(robot_b_waits=True)).approved
 
 
 # ---------------- plumbing ----------------
+
+def test_each_finding_says_which_robots_must_fix_it(samples_map):
+    [p1] = check(samples_map, sample("keep_clear_stop.json")).findings
+    assert p1.must_fix == ("robot_b",)                  # policy: the robot that broke it
+    [s1] = check(samples_map, drop_dependencies(sample("valid_two_robots.json"))).findings
+    assert s1.must_fix == ("robot_b",)                  # conflict: the robot R-1 chose
+    plan = edited(sample("valid_two_robots.json"),
+                  lambda t: t.update(target="room_9") if t["task_id"] == "a2" else None)
+    [compile_error] = check(samples_map, plan).findings
+    assert compile_error.must_fix == ()                 # the whole plan goes back
+
+
+def test_recheck_runs_the_same_check_on_another_plan(samples_map):
+    result = check(samples_map, drop_dependencies(sample("valid_two_robots.json")), max_duration=30.0)
+    assert codes(result) == ["MAX_DURATION_EXCEEDED", "CAPACITY_EXCEEDED"]
+    again = result.recheck(sample("valid_two_robots.json"))
+    assert again.team_plan == sample("valid_two_robots.json")
+    # The conflict is gone with the depends_on back; the 30 s limit still applies.
+    assert codes(again) == ["MAX_DURATION_EXCEEDED"]
 
 def test_compile_errors_stop_before_the_rule_checks(samples_map):
     plan = edited(sample("valid_two_robots.json"),

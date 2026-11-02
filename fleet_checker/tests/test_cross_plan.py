@@ -218,6 +218,36 @@ class TestYieldAssignment:
         # SERVICE has lower priority, so r2 (service) yields
         assert yielders == ["r2"]
 
+    def test_later_entry_yields_when_r1_ties(self):
+        """Equal yields and task types: the robot that enters the region later yields."""
+        r1 = make_plan("r1", [("wait", "aisle_1")], step_s=30.0)               # in aisle_1 from t=0
+        r2 = make_plan("r2", [("navigate", "door_1"), ("wait", "aisle_1")])     # enters at t=10
+        plans = {"r1": r1, "r2": r2}
+
+        conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert len(conflicts) == 1
+
+        # robot_id order alone would pick r1
+        assert assign_yield(conflicts[0], plans, FairnessLedger()) == ["r2"]
+
+    def test_task_type_decides_before_entry_time(self):
+        """r1 is in the region first, but SERVICE still yields to DELIVERY."""
+        r1 = make_plan("r1", [("wait", "aisle_1")], step_s=30.0, task_type="service")
+        r2 = make_plan("r2", [("navigate", "door_1"), ("wait", "aisle_1")], task_type="delivery")
+        plans = {"r1": r1, "r2": r2}
+
+        conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert assign_yield(conflicts[0], plans, FairnessLedger()) == ["r1"]
+
+    def test_entry_times_that_differ_only_by_rounding_are_a_tie(self):
+        """0.1 + 0.2 != 0.3 in floating point; that must not decide who yields."""
+        r1 = make_plan("r1", [("wait", "aisle_1")], t0=0.3)
+        r2 = make_plan("r2", [("wait", "aisle_1")], t0=0.1 + 0.2)
+        plans = {"r1": r1, "r2": r2}
+
+        conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert assign_yield(conflicts[0], plans, FairnessLedger()) == ["r1"]   # robot_id
+
     def test_starvation_override(self):
         """Starving robot (F-2) gets priority, others yield."""
         r1 = make_plan("r1", [("wait", "aisle_1")], task_type="service")
@@ -383,3 +413,21 @@ class TestCrossPlanConflicts:
         assert len(robot_violations) == 2
         for violations in robot_violations.values():
             assert violations == all_violations
+
+    def test_both_halves_of_a_swap_pick_the_same_yielder(self):
+        """Entry time is taken once per robot for the whole round. Taken per
+        conflict, each robot would be 'first' in the region it starts in, each
+        half of the swap would send the other robot back, and the two resulting
+        orderings would contradict each other."""
+        r1 = make_plan("r1", [("wait", "door_1"), ("navigate", "aisle_1")], step_s=20.0)
+        # r1: door_1 [0, 20), then aisle_1
+        r2 = make_plan("r2", [("navigate", "door_2"), ("wait", "aisle_1"), ("navigate", "door_1")])
+        # r2: door_2 [0, 10), aisle_1 [10, 20), then door_1
+
+        all_violations, robot_violations = check_cross_plan_conflicts([r1, r2], WORLD, margin=0.5)
+
+        assert codes(all_violations) == ["EDGE_SWAP", "EDGE_SWAP"]
+        # r2 reaches its first conflict region (aisle_1, t=10) after r1 reaches
+        # its (door_1, t=0), so r2 yields in both halves.
+        assert list(robot_violations) == ["r2"]
+        assert robot_violations["r2"] == all_violations
