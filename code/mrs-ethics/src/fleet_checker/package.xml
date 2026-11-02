@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>fleet_checker</name>
+  <version>0.1.0</version>
+  <description>Shared checker of the MRS ethical gating project (the core of Module 5): plan format,
+    cross-plan capacity checks, policy rules, fair yield assignment, and adapters for Module 1's
+    TeamPlan and mrs_sim maps. Pure Python with no ROS imports; mrs_ethical_gate wraps it in a node.</description>
+  <maintainer email="team@example.com">MRS Ethics Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>mrs_common</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <!-- pydantic v2 is NOT declared here on purpose, as in mrs_common: the rosdep key
+       python3-pydantic installs Ubuntu's pydantic 1.x. It comes from environment.yml. -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

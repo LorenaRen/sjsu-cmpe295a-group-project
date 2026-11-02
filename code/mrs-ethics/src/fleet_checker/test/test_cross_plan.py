@@ -3,10 +3,10 @@ import math
 
 import pytest
 
-from checker.plan import (
+from fleet_checker.plan import (
     Plan, PlanStep, Region, RegionKind, Resource, TaskType, WorldMap,
 )
-from checker.cross_plan import (
+from fleet_checker.cross_plan import (
     CapacityConflict, FairnessLedger, assign_yield,
     capacity_conflicts_to_violations, check_capacity_violations,
     check_cross_plan_conflicts,

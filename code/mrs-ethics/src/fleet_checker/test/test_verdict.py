@@ -7,15 +7,15 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan, constraints_from_json, constraints_to_json
 
-from checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
-from checker.adapters.team_check import check_team_plan
-from checker.adapters.verdict import APPROVE, MODIFY, REJECT, to_verdict
-from checker.policy import AccessPolicy
+from fleet_checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
+from fleet_checker.adapters.team_check import check_team_plan
+from fleet_checker.adapters.verdict import APPROVE, MODIFY, REJECT, to_verdict
+from fleet_checker.policy import AccessPolicy
 
-ROOT = Path(__file__).resolve().parents[2]
+SRC = Path(__file__).resolve().parents[2]    # the workspace's src/
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
-NARROW_AISLE = ROOT / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml"
-VERDICT_MSG = ROOT / "code/mrs-ethics/src/mrs_msgs/msg/EthicalVerdict.msg"
+NARROW_AISLE = SRC / "mrs_sim/worlds/narrow_aisle.yaml"
+VERDICT_MSG = SRC / "mrs_msgs/msg/EthicalVerdict.msg"
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
 
 # Two one-robot zones side by side between two rooms: robots crossing in

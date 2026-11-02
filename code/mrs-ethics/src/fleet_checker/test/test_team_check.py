@@ -6,14 +6,13 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan
 
-from checker.adapters.sim_map import load_sim_map, spawn_starts
-from checker.adapters.team_check import check_team_plan, reason_of
-from checker.cross_plan import FairnessLedger
-from checker.plan import Violation
+from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
+from fleet_checker.adapters.team_check import check_team_plan, reason_of
+from fleet_checker.cross_plan import FairnessLedger
+from fleet_checker.plan import Violation
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
-NARROW_AISLE = (Path(__file__).resolve().parents[2]
-                / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml")
+NARROW_AISLE = Path(__file__).resolve().parents[2] / "mrs_sim/worlds/narrow_aisle.yaml"  # parents[2] = src/
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
 
 

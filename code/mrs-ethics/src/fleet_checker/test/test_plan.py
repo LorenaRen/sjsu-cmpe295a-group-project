@@ -5,7 +5,7 @@ from itertools import combinations
 import pytest
 from pydantic import ValidationError
 
-from checker.plan import (
+from fleet_checker.plan import (
     Plan, PlanStep, Region, RegionKind, Resource, WorldMap, WorldSnapshot,
     claims, parse_plan, validate_plan,
 )

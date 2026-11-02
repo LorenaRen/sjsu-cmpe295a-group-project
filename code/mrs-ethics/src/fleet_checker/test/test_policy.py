@@ -1,10 +1,10 @@
 """Tests for policy checks (P-1, P-2, P-3)."""
 import pytest
 
-from checker.plan import (
+from fleet_checker.plan import (
     Plan, PlanStep, Region, RegionKind, Resource, TaskType, WorldMap,
 )
-from checker.policy import (
+from fleet_checker.policy import (
     AccessPolicy, check_final_stop_in_passthrough, check_max_duration,
     check_region_access, validate_policy,
 )

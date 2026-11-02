@@ -213,7 +213,7 @@ from R-1.
 
 ## Running the rules on a Module 1 TeamPlan
 
-`checker/adapters/` connects the rules to the rest of the stack.  It
+`fleet_checker/adapters/` connects the rules to the rest of the stack.  It
 changes neither Module 1's `TeamPlan` nor Module 2's `mrs_sim`; the
 checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 
@@ -258,7 +258,7 @@ agreed interfaces:
 
 ## Verdict for Module 5 (`EthicalVerdict`)
 
-`checker/adapters/verdict.py` (`to_verdict`) turns a `check_team_plan`
+`fleet_checker/adapters/verdict.py` (`to_verdict`) turns a `check_team_plan`
 result into the decision fields of an `EthicalVerdict`: `verdict`,
 `rule_ids`, `standard_refs`, `risk_score`, `rationale` and `constraints`.
 The gate node adds the ids, latency and stamp.  Only APPROVE and REJECT
