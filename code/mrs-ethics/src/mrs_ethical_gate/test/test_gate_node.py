@@ -3,6 +3,7 @@
 Needs the built and sourced workspace; skipped otherwise (the skipif pattern of USER_GUIDE
 section 5). On the Macs run it with pytest from a sourced terminal, not colcon test.
 """
+import json
 import time
 from pathlib import Path
 
@@ -137,6 +138,19 @@ def test_a_person_from_the_people_file_is_checked_for_crowding(wired_with_a_pers
     _, v = send(executor, probe, load_sample("valid_two_robots.json"))
     assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.HUMAN_CROWDING])
     assert v.risk_score == pytest.approx(1.0)
+
+
+def test_two_robots_ending_at_one_node_get_a_reject(wired):
+    executor, probe = wired
+    both_at_room_3 = json.dumps({"assignments": [
+        {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "hold_position", "target": "room_3",
+                                           "priority": 1}]},
+        {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "hold_position", "target": "room_3",
+                                           "priority": 1}]}]})
+    _, v = send(executor, probe, both_at_room_3)
+    assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.NODE_OCCUPIED])
+    [c] = constraints_from_verdict(v)
+    assert (c.kind, c.robot_id, c.task_id, c.node) == ("custom", "robot_a", "a1", "room_3")
 
 
 def test_the_gate_does_not_start_without_a_speed(ros):
