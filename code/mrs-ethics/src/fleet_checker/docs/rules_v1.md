@@ -122,7 +122,9 @@ monitor, Module 11), not for S-2.
 > Shervan provides speed parameters for each `Action`.
 
 - **Scope:** single-plan
-- **Source:** ISO 13482 (speed/force limits, clause TBD); BS 8611
+- **Source:** Project-defined.  Related standards: ISO 13482 (personal care
+  robots; not yet reviewed; clause TBD); BS 8611 (ethical design of robots;
+  not yet reviewed; clause TBD).
 
 ---
 
@@ -165,7 +167,8 @@ decided here (an empty set means nobody).
 
 - **Scope:** single-plan
 - **Data:** `Plan.task_type`; `PlanStep.region`; policy config (new)
-- **Source:** ISO 3691-4 (restricted operating zones, clause TBD)
+- **Source:** Project-defined.  Related standard: ISO 3691-4 (driverless
+  industrial trucks; not yet reviewed; clause TBD).
 
 ### P-3  Maximum plan duration
 
