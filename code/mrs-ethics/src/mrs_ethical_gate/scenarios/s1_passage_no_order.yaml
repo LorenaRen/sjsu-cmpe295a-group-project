@@ -1,0 +1,21 @@
+# Fake planner scenario (mrs_ethical_gate/dev_nodes/scenarios.py). The plan of mrs_common's
+# valid_two_robots without its depends_on.
+description: >-
+  Both robots drive through the one-robot passage and neither waits for the other: robot_b
+  enters it while robot_a is still inside (S-1).
+map: samples_world
+plan:
+  assignments:
+    - robot_id: robot_a
+      tasks:
+        - {task_id: a1, action: navigate, target: corridor_1, priority: 1,
+           justification: "Drive through the narrow passage."}
+        - {task_id: a2, action: hold_position, target: room_3, priority: 1,
+           justification: "Goal for robot_a."}
+    - robot_id: robot_b
+      tasks:
+        - {task_id: b1, action: wait, target: corridor_2, priority: 2,
+           justification: "Stop at corridor_2 on the way; it waits for no other task."}
+        - {task_id: b2, action: hold_position, target: room_2, priority: 2,
+           justification: "Goal for robot_b."}
+  rationale: "Both robots need the narrow passage; nobody waits."

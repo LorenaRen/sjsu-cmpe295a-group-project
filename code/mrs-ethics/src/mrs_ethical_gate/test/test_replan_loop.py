@@ -1,24 +1,16 @@
 """replan_loop: what the fake planner sends, when it stops, and what it records.
 
 First with verdicts written out by hand (no checker), then against the gate's own session on
-samples_world, the way the two nodes run, without ROS.
+samples_world (conftest.run_with_gate), the way the two nodes run, without ROS.
 """
-from pathlib import Path
-
 import pytest
 from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
-from mrs_common.plan_schema import Constraint, TeamPlan, constraints_to_json, hold_all_plan, plan_to_json
+from mrs_common.plan_schema import Constraint, TeamPlan, constraints_to_json, hold_all_plan
 
-from fleet_checker.adapters.sim_map import load_sim_map
 from mrs_ethical_gate.dev_nodes.replan_loop import (APPROVE, MODIFY, REJECT, FakePlanner, Finished,
                                                     GateVerdict, Proposal)
 from mrs_ethical_gate.dev_nodes.scripted_repair import CHANGED, NOT_APPLIED, NOTED
-from mrs_ethical_gate.session import GateSession
-from mrs_ethical_gate.starts import spawn_start_nodes
-
-SRC = Path(__file__).resolve().parents[2]
-SAMPLES_WORLD = SRC / "fleet_checker/test/fixtures/samples_world.yaml"
 
 #   x --1-- y --1-- z --2-- w
 #           |
@@ -268,28 +260,6 @@ def test_the_summary_in_words_after_a_fallback():
 
 # ---------------- against the gate's session, on samples_world ----------------
 
-@pytest.fixture(scope="module")
-def samples_map():
-    return load_sim_map(SAMPLES_WORLD)
-
-
-def run_with_gate(sim_map, plan, max_attempts=5):
-    """The fake planner and the gate's GateSession, wired the way the two nodes are, minus ROS.
-    Verdicts go through constraints_json, as on /mrs/verdict."""
-    starts = spawn_start_nodes(sim_map, ["robot_a", "robot_b"])
-    gate = GateSession(sim_map, starts, speed=0.5, margin=0.5)   # config/gate.yaml's values; nobody around
-    f = FakePlanner(plan, graph=sim_map.neighbors, start_nodes=starts, max_attempts=max_attempts,
-                    transaction_id="txn-1", episode_id="ep-1")
-    step = f.first()
-    while isinstance(step, Proposal):
-        v = gate.decide(plan_to_json(step.plan), transaction_id="txn-1", episode_id="ep-1",
-                        attempt=step.attempt, now=0.0).verdict
-        step = f.on_verdict(GateVerdict(transaction_id="txn-1", attempt=step.attempt, verdict=v.verdict,
-                                        rule_ids=v.rule_ids, risk_score=v.risk_score, rationale=v.rationale,
-                                        constraints_json=constraints_to_json(v.constraints)))
-    return f, step
-
-
 def without_dependencies(plan: TeamPlan) -> TeamPlan:
     data = plan.model_dump(mode="json")
     for a in data["assignments"]:
@@ -315,8 +285,8 @@ def results(f, round_number):
     return [(c["kind"], c["result"]) for c in f.rounds[round_number - 1]["constraints"]]
 
 
-def test_the_s1_conflict_is_fixed_in_round_2(samples_map):
-    f, done = run_with_gate(samples_map, S1_NO_ORDER)
+def test_the_s1_conflict_is_fixed_in_round_2(run_with_gate):
+    f, done = run_with_gate(S1_NO_ORDER)
     assert done == Finished("approved")
     assert rule_ids(f) == [[R.CAPACITY_EXCEEDED], []]
     [c] = f.rounds[0]["constraints"]
@@ -326,8 +296,8 @@ def test_the_s1_conflict_is_fixed_in_round_2(samples_map):
     assert (s["passed_in_round"], s["targets_changed"]) == (2, {})
 
 
-def test_keep_clear_stop_takes_three_rounds_and_moves_the_target(samples_map):
-    f, done = run_with_gate(samples_map, KEEP_CLEAR_STOP)
+def test_keep_clear_stop_takes_three_rounds_and_moves_the_target(run_with_gate):
+    f, done = run_with_gate(KEEP_CLEAR_STOP)
     assert done == Finished("approved")
     assert rule_ids(f) == [[R.FINAL_STOP_IN_PASSTHROUGH], [R.REGION_ACCESS_DENIED], []]
     # door_A's nearest node is office_e, in the restricted office: the fake planner reads no zone
@@ -338,8 +308,8 @@ def test_keep_clear_stop_takes_three_rounds_and_moves_the_target(samples_map):
     # S-4, known limitation 1); when it does, this plan is no longer approved.
 
 
-def test_restricted_target_takes_three_rounds(samples_map):
-    f, done = run_with_gate(samples_map, RESTRICTED_TARGET)
+def test_restricted_target_takes_three_rounds(run_with_gate):
+    f, done = run_with_gate(RESTRICTED_TARGET)
     assert done == Finished("approved")
     assert rule_ids(f) == [[R.REGION_ACCESS_DENIED], [R.CAPACITY_EXCEEDED], []]
     assert results(f, 1) == [("avoid_node", CHANGED), ("avoid_node", NOTED), ("avoid_node", NOTED)]
@@ -347,34 +317,34 @@ def test_restricted_target_takes_three_rounds(samples_map):
     assert results(f, 2) == [("order_before", CHANGED)]
 
 
-def test_two_robots_holding_at_one_node_cannot_be_fixed(samples_map):
-    f, done = run_with_gate(samples_map, BOTH_HOLD_ROOM_3)
+def test_two_robots_holding_at_one_node_cannot_be_fixed(run_with_gate):
+    f, done = run_with_gate(BOTH_HOLD_ROOM_3)
     assert done.outcome == "stuck"
     assert results(f, 1) == [("custom", NOT_APPLIED)]
     assert f.summary()["fallback"]["hold"] == {"robot_a": "west_s", "robot_b": "east_n"}
 
 
-def test_a_fix_for_one_rule_can_lead_to_a_conflict_under_another(samples_map):
+def test_a_fix_for_one_rule_can_lead_to_a_conflict_under_another(run_with_gate):
     # Round 1: robot_b may not park in the passage (P-1), and robot_a cannot just wait for it
     # (S-1, custom). Moving robot_b to corridor_1 puts it on robot_a's target (S-4, custom).
-    f, done = run_with_gate(samples_map, B_PARKS_IN_PASSAGE)
+    f, done = run_with_gate(B_PARKS_IN_PASSAGE)
     assert done.outcome == "stuck"
     assert rule_ids(f) == [[R.CAPACITY_EXCEEDED, R.FINAL_STOP_IN_PASSTHROUGH], [R.NODE_OCCUPIED]]
     assert sorted(results(f, 1)) == [("custom", NOT_APPLIED), ("forbid_node", CHANGED), ("forbid_node", NOTED)]
     assert f.summary()["targets_changed"] == {"b1": ["pass_e", "corridor_1"]}
 
 
-def test_one_attempt_is_not_enough_for_the_s1_conflict(samples_map):
-    f, done = run_with_gate(samples_map, S1_NO_ORDER, max_attempts=1)
+def test_one_attempt_is_not_enough_for_the_s1_conflict(run_with_gate):
+    f, done = run_with_gate(S1_NO_ORDER, max_attempts=1)
     assert (done.outcome, done.fallback_attempt) == ("exhausted", 0)
 
 
 @pytest.mark.parametrize("plan", [S1_NO_ORDER, KEEP_CLEAR_STOP, RESTRICTED_TARGET, BOTH_HOLD_ROOM_3,
                                   B_PARKS_IN_PASSAGE])
-def test_every_order_before_of_a_round_can_be_applied(samples_map, plan):
+def test_every_order_before_of_a_round_can_be_applied(run_with_gate, plan):
     # rules_v1.md: the orderings the gate sends in one round cannot form a cycle. The fake
     # planner applies them independently of the checker, so this checks that claim.
-    f, _ = run_with_gate(samples_map, plan)
+    f, _ = run_with_gate(plan)
     refused = [c for r in f.rounds for c in r["constraints"] if c["kind"] == "order_before"
                and c["result"] != CHANGED]
     assert refused == []
