@@ -135,6 +135,9 @@ class PlanStep(_Frozen):
     # t_start to t_end, so the position at any moment follows from the times. One
     # point: it stands still. Filled in by the compiler, like the times; S-2 needs it.
     path: tuple[Point, ...] = ()
+    # The waypoint the step ends at, if it ends at one (not at a zone boundary); for a
+    # step that stands still, where it stands. Filled in by the compiler; S-4 needs it.
+    end_node: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _positive_duration(self) -> "PlanStep":

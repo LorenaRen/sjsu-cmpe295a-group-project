@@ -136,6 +136,34 @@ class TestPaths:
         assert paths(c.plans["robot_b"]) == [((12.0, 1.2),)]
 
 
+# ---------------- end_node (where each step ends, for S-4) ----------------
+
+def end_nodes(plan):
+    return [s.end_node for s in plan.steps]
+
+
+class TestEndNodes:
+
+    def test_a_step_ending_at_a_zone_boundary_has_no_end_node(self, samples_map):
+        c = compile_on(samples_map, team(("robot_a", [task("a1", "navigate", "corridor_1")])),
+                       robots=("robot_a",))
+        # west_hall ends at x = 2 and the passage at x = 8, both boundaries; the west_hall step
+        # passes room_2 on the way, which does not make room_2 its end.
+        assert end_nodes(c.plans["robot_a"]) == [None, None, "corridor_1"]
+        assert c.origins["robot_a"][0].nodes == ("room_2",)
+
+    def test_standing_steps_end_where_they_stand(self, samples_map):
+        c = compile_on(samples_map, sample("valid_two_robots.json"))
+        assert end_nodes(c.plans["robot_b"])[:2] == ["corridor_2", "corridor_2"]   # drives there, waits
+        plan = team(("robot_a", [task("a1", "navigate", "corridor_1")]),
+                    ("robot_b", [task("b1", "navigate", "room_2", depends_on=["a1"])]))
+        assert compile_on(samples_map, plan).plans["robot_b"].steps[0].end_node == "east_n"
+
+    def test_a_parked_robot_ends_at_its_start(self, samples_map):
+        c = compile_on(samples_map, team(("robot_a", [task("a1", "navigate", "room_2")])))
+        assert end_nodes(c.plans["robot_b"]) == ["east_n"]
+
+
 # ---------------- robots that do not move ----------------
 
 class TestParkedRobots:
