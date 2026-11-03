@@ -154,6 +154,22 @@ def test_path_survives_a_json_round_trip():
     assert errors == [] and again == plan
 
 
+# ---------------- end_node: the waypoint a step ends at ----------------
+
+def test_end_node_is_optional_and_survives_a_json_round_trip():
+    assert make_plan("r1", [("wait", "room_a")]).steps[0].end_node is None
+    plan = Plan.model_validate({"plan_id": "p", "robot_id": "r1", "task_type": "delivery", "steps": [
+        {"action": "navigate", "region": "room_a", "t_start": 0, "t_end": 5, "end_node": "n1"},
+        {"action": "wait", "region": "room_a", "t_start": 5, "t_end": 9, "end_node": "n1"}]})
+    again, errors = parse_plan(plan.model_dump_json())
+    assert errors == [] and again == plan and again.steps[1].end_node == "n1"
+
+
+def test_end_node_may_not_be_empty():
+    with pytest.raises(ValidationError):
+        PlanStep(action="wait", region="room_a", t_start=0, t_end=1, end_node="")
+
+
 def test_world_map_rejects_one_way_adjacency():
     with pytest.raises(ValidationError, match="not symmetric"):
         WorldMap(regions={

@@ -176,6 +176,22 @@ def test_people_near_a_route_are_checked_for_crowding(samples_map):
     assert d.ledger == ledger(0, 1, 0, 0)               # counts toward F-2 like an S-1 REJECT
 
 
+# ---------------- S-4: two robots stopped at one node ----------------
+
+BOTH_AT_ROOM_3 = TeamPlan.model_validate({"assignments": [
+    {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "hold_position", "target": "room_3", "priority": 1}]},
+    {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "hold_position", "target": "room_3", "priority": 1}]},
+]}).model_dump_json()
+
+
+def test_two_robots_ending_at_one_node_are_rejected_like_any_conflict(session):
+    """robot_b reaches room_3 first and stays; robot_a gives way, which counts toward F-2."""
+    d = decide(session, BOTH_AT_ROOM_3)
+    assert (d.verdict.verdict, d.verdict.rule_ids) == (REJECT, (R.NODE_OCCUPIED,))
+    assert list(d.result.must_replan) == ["robot_a"]
+    assert d.ledger == ledger(0, 1, 0, 0)
+
+
 # ---------------- from the node's settings ----------------
 
 def settings(**changes):

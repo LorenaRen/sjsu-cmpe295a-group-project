@@ -26,6 +26,7 @@ PLANNING_EXHAUSTED = "planning_exhausted"  # attempt cap reached without an appr
 CAPACITY_EXCEEDED = "capacity_exceeded"                  # S-1: more robots in a zone at once than its capacity
 EDGE_SWAP = "edge_swap"                                  # S-1: two robots swap adjacent zones head-on
 HUMAN_CROWDING = "human_crowding"                        # S-2: more robots within R of one person at once than allowed
+NODE_OCCUPIED = "node_occupied"                          # S-4: two robots stopped at one node at once
 FINAL_STOP_IN_PASSTHROUGH = "final_stop_in_passthrough"  # P-1: plan ends in a narrow, doorway or keep-clear zone
 REGION_ACCESS_DENIED = "region_access_denied"            # P-2: robot enters a zone its task type may not enter
 MAX_DURATION_EXCEEDED = "max_duration_exceeded"          # P-3: plan takes longer than the time limit

@@ -220,6 +220,17 @@ def test_people_without_a_limit_are_refused(aisle_map):
         check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E])
 
 
+def test_a_node_conflict_names_the_node(parking):
+    plan = TeamPlan.model_validate({"assignments": [
+        {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "hold_position", "target": "c", "priority": 1}]},
+        {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "hold_position", "target": "c", "priority": 1}]},
+    ]})
+    result = check_team_plan(plan, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0)
+    [c] = conflicts(result)
+    assert (c.reason, c.where, c.robots, c.yielders) == (R.NODE_OCCUPIED, "c", ("robot_a", "robot_b"), ("robot_a",))
+    assert c.key == "node_occupied@c:robot_a+robot_b"
+
+
 def test_a_crowding_conflict_names_the_person(aisle_map):
     [c] = conflicts(check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E], crowding=LIMIT))
     assert (c.reason, c.where, c.robots, c.yielders) == (
@@ -265,7 +276,7 @@ def test_max_duration_is_passed_to_p3(samples_map):
 
 
 @pytest.mark.parametrize("code", [
-    "CAPACITY_EXCEEDED", "EDGE_SWAP", "HUMAN_CROWDING", "FINAL_STOP_IN_PASSTHROUGH",
+    "CAPACITY_EXCEEDED", "EDGE_SWAP", "HUMAN_CROWDING", "NODE_OCCUPIED", "FINAL_STOP_IN_PASSTHROUGH",
     "REGION_ACCESS_DENIED", "MAX_DURATION_EXCEEDED", "UNKNOWN_ROBOT", "UNKNOWN_TARGET", "NO_ROUTE",
     "DEPENDENCY_DEADLOCK",
 ])
