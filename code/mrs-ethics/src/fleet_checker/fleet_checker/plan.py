@@ -274,7 +274,7 @@ def validate_plan(plan: Plan, world: WorldMap,
 # --------------------------------------------------------------------------
 
 class Claim(NamedTuple):
-    resource_id: str     # a region id or a resource id; for S-2, a person's id
+    resource_id: str     # a region id or a resource id; for S-2, a person's id; for S-4, a node
     robot_id: str
     step_index: int
     start: float
@@ -301,3 +301,25 @@ def claims(plan: Plan, margin: float = 0.0, hold_final: bool = True) -> Iterator
         yield Claim(step.region, plan.robot_id, i, start, region_end)
         for r in sorted(step.holds):
             yield Claim(r, plan.robot_id, i, start, step_end)
+
+
+def stop_claims(plan: Plan, margin: float = 0.0, hold_final: bool = True) -> Iterator[Claim]:
+    """Where and when the robot stands still at a waypoint (S-4): one Claim(node, robot,
+    step, start, end) for each step that stands at its end_node, and, with hold_final,
+    one for the node the plan ends at, from the end of the plan to +inf.
+
+    Every step but a navigate step stands still. Driving through a node is not a stop,
+    and a plan without end_node (not from the compiler) has no stops. margin widens each
+    claim on both sides, as in claims().
+    """
+    if margin < 0:
+        raise ValueError("margin must be >= 0")
+    last = len(plan.steps) - 1
+    for i, step in enumerate(plan.steps):
+        if step.end_node is None:
+            continue
+        if step.action != Action.NAVIGATE:
+            end = math.inf if (hold_final and i == last) else step.t_end + margin
+            yield Claim(step.end_node, plan.robot_id, i, step.t_start - margin, end)
+        elif hold_final and i == last:
+            yield Claim(step.end_node, plan.robot_id, i, step.t_end - margin, math.inf)

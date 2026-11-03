@@ -13,6 +13,12 @@ S-2: Human crowding
     come from crowding.py, the sweep is S-1's (sweep_over_capacity), and the
     conflicts go to the same R-1.
 
+S-4: Node occupancy
+    Two robots standing still at the same node at once. Each node is a
+    resource of capacity 1, with claims from plan.stop_claims (standing
+    steps and where each plan ends); the same sweep and the same R-1. Stops
+    in a zone of capacity 1 are left to S-1.
+
 R-1: Yield assignment
     When a conflict is detected, decide which robots yield (n robots in a
     capacity-c region: n - c of them) based on:
@@ -34,7 +40,8 @@ from dataclasses import dataclass, field
 from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from .crowding import CrowdingLimit, crowding_claims
-from .plan import TIME_EPS, Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims
+from .plan import (TIME_EPS, Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims,
+                   stop_claims)
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +298,55 @@ def crowding_conflicts_to_violations(conflicts: list[CapacityConflict],
             message=(f"robots {', '.join(robot_ids)} are within {limit.radius:g} m of "
                      f"{conflict.resource_id} at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f}); "
                      f"at most {most} may be"),
+            refs=refs,
+            resource_id=conflict.resource_id,
+        ))
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# S-4: Node occupancy (S-1's sweep, over each node where robots stop)
+# ---------------------------------------------------------------------------
+
+def check_node_occupancy(
+    plans: list[Plan],
+    world: WorldMap,
+    margin: float = 0.0,
+    hold_final: bool = True,
+) -> list[CapacityConflict]:
+    """Detect every stretch of time in which two robots stand still at the same node.
+
+    Each node is swept like one of S-1's regions, with capacity 1; a conflict's
+    resource_id is the node. Stops in a zone of capacity 1 are left out: S-1 already
+    allows only one robot in the whole zone, stopped or not, and one problem should
+    be reported once. Driving through a node where another robot stands is not checked.
+    """
+    by_node: dict[str, list[Claim]] = defaultdict(list)
+    for plan in plans:
+        for c in stop_claims(plan, margin=margin, hold_final=hold_final):
+            region = plan.steps[c.step_index].region
+            if world.knows(region) and world.capacity(region) == 1:
+                continue
+            by_node[c.resource_id].append(c)
+    conflicts: list[CapacityConflict] = []
+    for node, node_claims in by_node.items():
+        for s in sweep_over_capacity(node_claims, 1):
+            conflicts.append(CapacityConflict(node, s.claims, s.t_start, s.t_end,
+                                              is_edge_swap=False, capacity=1))
+    return conflicts
+
+
+def node_conflicts_to_violations(conflicts: list[CapacityConflict]) -> list[Violation]:
+    """NODE_OCCUPIED violations. resource_id is the node; each step is referred to once."""
+    violations: list[Violation] = []
+    for conflict in conflicts:
+        robot_ids = sorted({c.robot_id for c in conflict.claims})
+        refs = tuple(dict.fromkeys(StepRef(robot_id=c.robot_id, step_index=c.step_index)
+                                   for c in conflict.claims))
+        violations.append(Violation(
+            code="NODE_OCCUPIED",
+            message=(f"robots {', '.join(robot_ids)} would stop at {conflict.resource_id} at once, "
+                     f"at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f})"),
             refs=refs,
             resource_id=conflict.resource_id,
         ))
