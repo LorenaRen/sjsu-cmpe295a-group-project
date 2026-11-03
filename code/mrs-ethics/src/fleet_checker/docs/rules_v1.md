@@ -324,8 +324,7 @@ revisit if experiments show chained overlaps are common.
 - **Scope:** cross-plan
 - **Data:** `FairnessLedger` (cumulative yields per robot);
   `Plan.task_type`
-- **Source:** project-defined; informed by Pozanco & Borrajo 2022
-  (workload-based fairness)
+- **Source:** Project-defined, inspired by Pozanco & Borrajo (2022).
 
 ---
 
@@ -343,7 +342,7 @@ Not a violation that rejects a plan.  Instead it is:
 
 - **Data:** `FairnessLedger` — `yields: dict[str, list[YieldRecord]]`,
   each record: `conflict_id`, `timestamp`, `opponent_robot_id`
-- **Source:** Pozanco & Borrajo 2022 (workload-based fairness)
+- **Source:** Project-defined, inspired by Pozanco & Borrajo (2022).
 
 ### F-2  Starvation
 
