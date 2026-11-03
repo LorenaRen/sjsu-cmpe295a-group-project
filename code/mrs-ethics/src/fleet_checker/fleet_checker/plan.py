@@ -207,6 +207,8 @@ class Violation(_Frozen):
     code: str
     message: str
     refs: tuple[StepRef, ...] = ()
+    # What a cross-plan conflict is over: a region or resource (S-1), a person (S-2).
+    resource_id: str | None = None
 
 
 def parse_plan(raw: str | bytes | dict[str, Any]) -> tuple[Plan | None, list[Violation]]:
@@ -269,7 +271,7 @@ def validate_plan(plan: Plan, world: WorldMap,
 # --------------------------------------------------------------------------
 
 class Claim(NamedTuple):
-    resource_id: str     # a region id or a resource id
+    resource_id: str     # a region id or a resource id; for S-2, a person's id
     robot_id: str
     step_index: int
     start: float

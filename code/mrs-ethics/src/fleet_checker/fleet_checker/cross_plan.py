@@ -7,6 +7,12 @@ S-1: Interval capacity violation
     When two robots swap adjacent regions head-on (A→B while B→A), the detector
     labels it `EDGE_SWAP` instead of `CAPACITY_EXCEEDED`.
 
+S-2: Human crowding
+    More than N robots within R metres of the same person at once. Each
+    person's surroundings are one more resource, of capacity N: the claims
+    come from crowding.py, the sweep is S-1's (sweep_over_capacity), and the
+    conflicts go to the same R-1.
+
 R-1: Yield assignment
     When a conflict is detected, decide which robots yield (n robots in a
     capacity-c region: n - c of them) based on:
@@ -25,9 +31,10 @@ from __future__ import annotations
 import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Mapping, NamedTuple
+from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence
 
-from .plan import Claim, Plan, StepRef, TaskType, Violation, WorldMap, claims
+from .crowding import CrowdingLimit, crowding_claims
+from .plan import Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +245,58 @@ def capacity_conflicts_to_violations(
 
         violations.append(Violation(code=code, message=message, refs=refs))
 
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# S-2: Human crowding (S-1's sweep, over each person's surroundings)
+# ---------------------------------------------------------------------------
+
+def check_crowding(
+    plans: list[Plan],
+    people: Sequence[HumanObservation],
+    limit: CrowdingLimit,
+    margin: float = 0.0,
+    hold_final: bool = True,
+) -> list[CapacityConflict]:
+    """Detect every stretch of time in which more than limit.max_robots robots are
+    within limit.radius metres of the same person.
+
+    Each person's surroundings are swept like one of S-1's regions, with capacity N;
+    a conflict's resource_id is the person's id. They are never edge swaps.
+    """
+    ids = [p.human_id for p in people]
+    shared = sorted({i for i in ids if ids.count(i) > 1})
+    if shared:
+        raise ValueError(f"two people have the id {shared[0]!r}; every person needs an id of their own")
+    conflicts: list[CapacityConflict] = []
+    for person in people:
+        person_claims = [c for plan in plans
+                         for c in crowding_claims(plan, [person], limit.radius, margin, hold_final)]
+        for s in sweep_over_capacity(person_claims, limit.max_robots):
+            conflicts.append(CapacityConflict(person.human_id, s.claims, s.t_start, s.t_end,
+                                              is_edge_swap=False, capacity=limit.max_robots))
+    return conflicts
+
+
+def crowding_conflicts_to_violations(conflicts: list[CapacityConflict],
+                                     limit: CrowdingLimit) -> list[Violation]:
+    """HUMAN_CROWDING violations. resource_id is the person; each step is referred to once,
+    even when the robot was near the person twice during it."""
+    most = "1 robot" if limit.max_robots == 1 else f"{limit.max_robots} robots"
+    violations: list[Violation] = []
+    for conflict in conflicts:
+        robot_ids = sorted({c.robot_id for c in conflict.claims})
+        refs = tuple(dict.fromkeys(StepRef(robot_id=c.robot_id, step_index=c.step_index)
+                                   for c in conflict.claims))
+        violations.append(Violation(
+            code="HUMAN_CROWDING",
+            message=(f"robots {', '.join(robot_ids)} are within {limit.radius:g} m of "
+                     f"{conflict.resource_id} at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f}); "
+                     f"at most {most} may be"),
+            refs=refs,
+            resource_id=conflict.resource_id,
+        ))
     return violations
 
 

@@ -22,22 +22,81 @@ adjacent regions with swapped directions and tags accordingly.
 - **Data:** `Claim.resource_id`, `Claim.start/end` (from each Plan via
   `claims()`); `WorldMap.capacity()`; `WorldMap.regions[].neighbors`
   (for EDGE_SWAP identification)
-- **Source:** ISO 3691-4 (industrial truck safety clearance, clause TBD);
-  project-defined
+- **Source:** Project-defined.  Related standard: ISO 3691-4 (driverless
+  industrial trucks; not yet reviewed; clause TBD).
 
 ### S-2  Human crowding
 
-At a given moment, more than N robots are within radius R metres of the
-same observed human.  Each robot individually keeps a safe distance, but
-their combined presence violates the limit — this is the cross-plan case
-that per-robot guardrails cannot catch.
+At some moment, more than **N** robots are within **R** metres of the same
+person.  Each robot on its own may keep its distance; it is their combined
+presence that breaks the limit, and no per-robot guardrail can see that.
+
+**How it is checked.**  The surroundings of a person, the disc of radius R
+around them, are treated as one more resource with capacity N.  S-2 is then
+S-1's problem again: claims on a resource, swept for moments with more
+distinct robots than the capacity (`cross_plan.sweep_over_capacity`), with
+R-1 choosing who yields.  Only the claims are new (`crowding.py`):
+
+- Every compiled step has a path (`PlanStep.path`) driven at constant speed.
+  On one straight piece the robot's position is linear in time, so "within
+  R" is a quadratic inequality in t, and its roots, cut to the piece's time
+  span, say exactly when the robot is inside.  Nothing is sampled.  Example:
+  driving from (−5, 0) to (5, 0) at 1 m/s past a person at (0, 1) with
+  R = 2 m gives (t − 5)² + 1 ≤ 4, so t ∈ [5 − √3, 5 + √3] ≈ [3.27, 6.73] s.
+- A robot standing still is inside or outside for its whole step.  The disc
+  is closed, but touching its edge for an instant is not a stay.
+- One claim for each stretch of a step spent inside; a robot that leaves and
+  comes back within one step gets two.  The sweep counts robots, not claims.
+- `margin` widens each claim on both sides, as in S-1: it absorbs the timing
+  error of the compiled timeline.  R is what absorbs position error
+  (`WorldState.at` can be 0.5 m off; the CBF moves robots off the straight
+  line).
+- A robot whose plan ends inside the disc stays there (`hold_final`), so a
+  robot parked next to a person takes one of the N places for good.
+- People are taken to stand where they were observed for the whole plan.
+
+**R and N** are parameters with no default in the checker
+(`CrowdingLimit`), and both are **placeholders**: neither has been
+measured, and neither comes from a standard.
+
+**Where people come from.**  The checker takes the people with every
+check, as `HumanObservation`s (id, position in the map frame), the way it
+takes the robots' start nodes.  Neither `narrow_aisle` nor the test map
+`samples_world` has people, and the map format has no place for them (both
+mrs_sim's loader and `sim_map.py` reject unknown keys).  People belong to a
+scenario rather than to a world: `PerceivedEntity.msg` describes them as
+actors from the scenario YAML.  Tests place people in code.
+
+**What S-2 does not do.**  A single robot too close to a person is the job
+of each robot's own safety layer: the previous team's per-robot gate (speed
+set to zero when too close) and Module 6's CBF filter (people are obstacles
+with a larger clearance, `PerceivedEntity.msg`).  With N ≥ 1, one robot near
+a person never fails S-2, and S-3 stays deferred.  S-2 predicts from the
+plan: if the timings or the people's positions differ at run time, it can
+miss crowding that does happen.  How often more than N robots really were
+near a person is for the evaluation to count (Module 9's violation
+monitor, Module 11), not for S-2.
+
+**Known limitations.**
+
+1. **Straight-line distance, through walls.**  A robot on the other side of
+   a wall counts as near the person.  This errs towards reporting.
+2. **Once people come from `/mrs/team_state`, only people a robot sees are
+   checked.**  `TeamState` has no list of everyone in the scenario; people
+   appear in each robot's `WorldState.obstacles`, within its perception
+   range.  S-2 checks the route ahead, so a person on it whom no robot sees
+   yet is missed.  To raise with Modules 3 and 9: publish every person in
+   the scenario.
+3. **R has to agree with Module 6's CBF clearance for people.**  R should be
+   at least that clearance; otherwise S-2 counts positions the CBF never
+   lets a robot reach.  Module 6 has not set the clearance yet.
 
 - **Scope:** cross-plan
-- **Data:** `Claim` (which robot is in which region and when);
-  `WorldMap.regions[].center` (approximate robot position);
-  `WorldSnapshot.humans[].position`
-- **Source:** ISO 13482 (personal-care robot safety distance, clause TBD);
-  BS 8611 (ethical risk assessment, clause TBD)
+- **Data:** each step's `path` and times (`Plan`); the people
+  (`HumanObservation`); R and N (`CrowdingLimit`)
+- **Source:** Project-defined.  Related standards: ISO 13482 (personal care
+  robots; not yet reviewed; clause TBD); BS 8611 (ethical design of robots;
+  not yet reviewed; clause TBD).  R and N do not come from either.
 
 ### S-3  Unsafe action near humans — DEFERRED
 
@@ -500,7 +559,7 @@ tested in a plain venv.
 | Code | Name | Cat. | Scope | Impl. status |
 |------|------|------|-------|:---:|
 | S-1 | Interval capacity / edge-swap | safety | cross | implemented |
-| S-2 | Human crowding | safety | cross | not yet (Sprint 2) |
+| S-2 | Human crowding | safety | cross | detector built (`crowding.py`, `check_crowding`); not yet run by `check_team_plan` |
 | S-3 | Unsafe action near humans | safety | single | deferred |
 | P-1 | Final stop in passthrough zone | policy | single | implemented |
 | P-2 | Region access restriction | policy | single | implemented |
