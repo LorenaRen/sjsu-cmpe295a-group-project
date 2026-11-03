@@ -6,14 +6,13 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan
 
-from checker.adapters.sim_map import load_sim_map, spawn_starts
-from checker.adapters.team_check import check_team_plan, reason_of
-from checker.cross_plan import FairnessLedger
-from checker.plan import Violation
+from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
+from fleet_checker.adapters.team_check import check_team_plan, conflicts, reason_of
+from fleet_checker.cross_plan import FairnessLedger
+from fleet_checker.plan import Violation
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
-NARROW_AISLE = (Path(__file__).resolve().parents[2]
-                / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml")
+NARROW_AISLE = Path(__file__).resolve().parents[2] / "mrs_sim/worlds/narrow_aisle.yaml"  # parents[2] = src/
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
 
 
@@ -142,6 +141,32 @@ def test_symmetric_swap_ties_on_entry_time_and_falls_back_to_robot_id(aisle_map)
 
 def test_narrow_aisle_swap_passes_when_one_robot_waits(aisle_map):
     assert check(aisle_map, swap_rooms(robot_b_waits=True)).approved
+
+
+# ---------------- conflicts(): the S-1 conflicts, for the ledger ----------------
+
+def test_a_conflict_names_its_zone_robots_and_yielder(samples_map):
+    [c] = conflicts(check(samples_map, drop_dependencies(sample("valid_two_robots.json"))))
+    assert (c.reason, c.zone, c.robots, c.yielders, c.keepers) == (
+        R.CAPACITY_EXCEEDED, "passage", ("robot_a", "robot_b"), ("robot_b",), ("robot_a",))
+    assert c.key == "capacity_exceeded@passage:robot_a+robot_b"
+
+
+def test_a_head_on_swap_is_one_conflict(two_narrow_zones):
+    plan = TeamPlan.model_validate({"assignments": [
+        {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "navigate", "target": "er", "priority": 1}]},
+        {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "navigate", "target": "wr", "priority": 1}]},
+    ]})
+    result = check_team_plan(plan, two_narrow_zones, {"robot_a": "wr", "robot_b": "er"}, speed=1.0)
+    assert codes(result) == ["EDGE_SWAP", "EDGE_SWAP"]           # one finding per zone
+    [c] = conflicts(result)
+    assert (c.reason, c.zone, c.robots, c.yielders) == (R.EDGE_SWAP, None, ("robot_a", "robot_b"), ("robot_a",))
+    assert c.key == "edge_swap@-:robot_a+robot_b"
+
+
+def test_policy_findings_and_approved_plans_have_no_conflicts(samples_map):
+    assert conflicts(check(samples_map, sample("keep_clear_stop.json"))) == ()
+    assert conflicts(check(samples_map, sample("valid_two_robots.json"))) == ()
 
 
 # ---------------- plumbing ----------------

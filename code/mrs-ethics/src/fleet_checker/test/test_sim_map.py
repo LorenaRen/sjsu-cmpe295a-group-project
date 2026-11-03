@@ -4,15 +4,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from checker.adapters.sim_map import (
+from fleet_checker.adapters.sim_map import (
     NO_LIMIT, MapError, load_sim_map, sim_map_from_dict, spawn_starts,
 )
-from checker.plan import RegionKind
+from fleet_checker.plan import RegionKind
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
 # Shervan's world, read from the mrs_sim package itself.
-NARROW_AISLE = (Path(__file__).resolve().parents[2]
-                / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml")
+NARROW_AISLE = Path(__file__).resolve().parents[2] / "mrs_sim/worlds/narrow_aisle.yaml"  # parents[2] = src/
 
 
 @pytest.fixture(scope="module")

@@ -7,6 +7,7 @@
   P-1 final_stop_in_passthrough      forbid_node for every node of the zone
   P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
   P-3 and compile errors             custom
+  plan_json is not a TeamPlan        custom, rule llm_malformed (unreadable_plan_verdict)
 
 Every node of the zone, not only the one in the plan: otherwise the next plan
 can stop at, or route through, a neighbouring node of the same zone and be
@@ -58,6 +59,7 @@ SEVERITY: dict[str, int] = {
     R.UNKNOWN_TARGET: 1,
     R.NO_ROUTE: 1,
     R.DEPENDENCY_DEADLOCK: 1,
+    R.LLM_MALFORMED: 1,              # plan_json is not a TeamPlan (no code of its own yet)
 }
 TOP_LEVEL = 3
 
@@ -108,6 +110,39 @@ def to_verdict(result: TeamCheckResult) -> VerdictContent:
         rationale=_rationale(result),
         constraints=tuple(constraints),
     )
+
+
+def unreadable_plan_verdict(error: ValueError) -> VerdictContent:
+    """REJECT for a ProposedPlan whose plan_json is not a TeamPlan, so nothing could be checked.
+
+    `error` is what mrs_common's plan_from_json raised (pydantic's ValidationError is a
+    ValueError). The rule id is llm_malformed, the closest code mrs_common has; a code of
+    its own is a TODO for Module 1 (rules_v1.md).
+    """
+    problem = _describe_read_error(error)
+    return VerdictContent(
+        verdict=REJECT,
+        rule_ids=(R.LLM_MALFORMED,),
+        standard_refs=(),
+        risk_score=SEVERITY[R.LLM_MALFORMED] / TOP_LEVEL,
+        rationale=(f"Plan rejected: plan_json is not a valid TeamPlan ({problem}). "
+                   "Propose a new plan that follows the constraints."),
+        constraints=(Constraint(kind="custom", rule_id=R.LLM_MALFORMED,
+                                text=f"plan_json is not a valid TeamPlan: {problem}. "
+                                     "Send a plan that matches the TeamPlan JSON schema."),),
+    )
+
+
+def _describe_read_error(error: ValueError) -> str:
+    """The first problem, located the way plan_echo does it: 'assignments.0.tasks.0.action: ...'."""
+    if not isinstance(error, ValidationError):
+        return str(error)
+    errors = error.errors()
+    where = ".".join(str(p) for p in errors[0]["loc"])
+    text = f"{where}: {errors[0]['msg']}" if where else errors[0]["msg"]
+    if len(errors) > 1:
+        text += f" (and {len(errors) - 1} more error{'s' if len(errors) > 2 else ''})"
+    return text
 
 
 # --------------------------------------------------------------------------

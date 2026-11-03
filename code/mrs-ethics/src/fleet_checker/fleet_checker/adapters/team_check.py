@@ -73,6 +73,41 @@ class TeamCheckResult:
         return _check(team_plan, self.sim_map, self.start_nodes, self.ledger, self.settings)
 
 
+class Conflict(NamedTuple):
+    """One S-1 conflict of a result, as R-1 resolved it in that round."""
+    reason: str                 # R.CAPACITY_EXCEEDED or R.EDGE_SWAP
+    zone: str | None            # None for a head-on swap: it spans two zones
+    robots: tuple[str, ...]     # every robot in the conflict, sorted
+    yielders: tuple[str, ...]   # the robots R-1 told to yield
+
+    @property
+    def keepers(self) -> tuple[str, ...]:
+        return tuple(r for r in self.robots if r not in self.yielders)
+
+    @property
+    def key(self) -> str:
+        """Names the conflict across replan rounds, e.g. 'capacity_exceeded@passage:robot_a+robot_b'."""
+        return f"{self.reason}@{self.zone or '-'}:{'+'.join(self.robots)}"
+
+
+_CONFLICT_REASONS = (R.CAPACITY_EXCEEDED, R.EDGE_SWAP)
+
+
+def conflicts(result: TeamCheckResult) -> tuple[Conflict, ...]:
+    """The S-1 conflicts of a result, one entry each. A head-on swap is reported as
+    one finding per zone (EDGE_SWAP); both halves are the same conflict."""
+    found: dict[str, Conflict] = {}
+    for f in result.findings:
+        if f.reason not in _CONFLICT_REASONS:
+            continue
+        ref = f.violation.refs[0]
+        zone = (None if f.reason == R.EDGE_SWAP
+                else result.compiled.plans[ref.robot_id].steps[ref.step_index].region)
+        c = Conflict(f.reason, zone, tuple(sorted({r.robot_id for r in f.violation.refs})), f.must_fix)
+        found.setdefault(c.key, c)
+    return tuple(found.values())
+
+
 def reason_of(violation: Violation) -> str:
     """The mrs_common.reasons code for a checker violation (its code in lower case).
     Raises ValueError if reasons.py does not list it, so a new checker code cannot

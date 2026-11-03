@@ -3,10 +3,10 @@ import math
 
 import pytest
 
-from checker.plan import (
+from fleet_checker.plan import (
     Plan, PlanStep, Region, RegionKind, Resource, TaskType, WorldMap,
 )
-from checker.cross_plan import (
+from fleet_checker.cross_plan import (
     CapacityConflict, FairnessLedger, assign_yield,
     capacity_conflicts_to_violations, check_capacity_violations,
     check_cross_plan_conflicts,
@@ -256,8 +256,8 @@ class TestYieldAssignment:
 
         ledger = FairnessLedger()
         # r1 has been rejected 3 times consecutively (starving)
-        for i in range(3):
-            ledger.record_yield("r1", f"c{i}", float(i), "r2")
+        for _ in range(3):
+            ledger.record_rejection("r1")
 
         conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
         yielders = assign_yield(conflicts[0], plans, ledger)
@@ -265,14 +265,26 @@ class TestYieldAssignment:
         # r1 is starving, so r2 must yield even though it's DELIVERY
         assert yielders == ["r2"]
 
+    def test_starvation_threshold_comes_from_the_ledger(self):
+        """With M = 1, a single rejection is enough for F-2."""
+        r1 = make_plan("r1", [("wait", "aisle_1")], task_type="service")
+        r2 = make_plan("r2", [("wait", "aisle_1")], task_type="delivery")
+        plans = {"r1": r1, "r2": r2}
+
+        ledger = FairnessLedger(starvation_threshold=1)
+        ledger.record_rejection("r1")
+
+        conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert assign_yield(conflicts[0], plans, ledger) == ["r2"]
+
     def test_starvation_picks_yielder_in_same_direction_as_r1(self):
         """Among non-starving robots, the one with FEWER yields yields, as in R-1."""
         # 4 robots in capacity-3 room_a: exactly one must yield
         plans = {f"r{i}": make_plan(f"r{i}", [("wait", "room_a")]) for i in range(4)}
 
         ledger = FairnessLedger()
-        for i in range(3):
-            ledger.record_yield("r0", f"s{i}", float(i), "r1")  # r0 starving
+        for _ in range(3):
+            ledger.record_rejection("r0")                       # r0 starving
         ledger.record_yield("r2", "c1", 10.0, "r1")
         ledger.record_yield("r2", "c2", 11.0, "r1")             # r2: 2 yields
         ledger.record_yield("r3", "c3", 12.0, "r1")             # r3: 1 yield, r1: 0
@@ -315,9 +327,11 @@ class TestYieldAssignment:
 
         ledger = FairnessLedger()
         for i in range(3):
-            ledger.record_yield("r0", f"a{i}", float(i), "r2")  # r0 starving, 3 yields
+            ledger.record_yield("r0", f"a{i}", float(i), "r2")  # r0: 3 yields
+            ledger.record_rejection("r0")                       #     and starving
         for i in range(4):
-            ledger.record_yield("r1", f"b{i}", float(i), "r2")  # r1 starving, 4 yields
+            ledger.record_yield("r1", f"b{i}", float(i), "r2")  # r1: 4 yields
+            ledger.record_rejection("r1")                       #     and starving
         # r2 not starving
 
         conflicts = check_capacity_violations(list(plans.values()), WORLD,
@@ -349,22 +363,42 @@ class TestFairnessLedger:
         ledger = FairnessLedger()
         assert not ledger.is_starving("r1")
 
-        ledger.record_yield("r1", "c1", 0.0, "r2")
-        ledger.record_yield("r1", "c2", 10.0, "r2")
+        ledger.record_rejection("r1")
+        ledger.record_rejection("r1")
         assert not ledger.is_starving("r1")
 
-        ledger.record_yield("r1", "c3", 20.0, "r2")
+        ledger.record_rejection("r1")
         assert ledger.is_starving("r1")
+
+    def test_yields_do_not_count_as_rejections(self):
+        """A yield is recorded when a conflict is resolved; it does not feed F-2."""
+        ledger = FairnessLedger()
+        for i in range(3):
+            ledger.record_yield("r1", f"c{i}", float(i), "r2")
+
+        assert ledger.yield_count("r1") == 3
+        assert ledger.consecutive_rejections["r1"] == 0
+        assert not ledger.is_starving("r1")
+
+    def test_rejections_do_not_count_as_yields(self):
+        ledger = FairnessLedger()
+        for _ in range(3):
+            ledger.record_rejection("r1")
+        assert ledger.yield_count("r1") == 0
 
     def test_acceptance_resets_consecutive_rejections(self):
         """Plan acceptance resets consecutive rejection count."""
         ledger = FairnessLedger()
-        ledger.record_yield("r1", "c1", 0.0, "r2")
-        ledger.record_yield("r1", "c2", 10.0, "r2")
+        ledger.record_rejection("r1")
+        ledger.record_rejection("r1")
 
         ledger.record_acceptance("r1")
         assert ledger.consecutive_rejections["r1"] == 0
         assert not ledger.is_starving("r1")
+
+    def test_starvation_threshold_must_be_at_least_one(self):
+        with pytest.raises(ValueError, match="starvation_threshold"):
+            FairnessLedger(starvation_threshold=0)
 
 
 # ---------------- Integration Tests ----------------

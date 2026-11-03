@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mrs_ethical_gate</name>
+  <version>0.1.0</version>
+  <description>Module 5 gate of the MRS ethical gating project: checks every ProposedPlan with the
+    shared checker (fleet_checker) and publishes the EthicalVerdict, plus the ValidatedPlan when the
+    plan is approved.</description>
+  <maintainer email="team@example.com">MRS Ethics Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>mrs_msgs</depend>
+  <depend>mrs_common</depend>
+  <exec_depend>fleet_checker</exec_depend>
+  <!-- finds a world's map file the same way sim.launch.py does (mrs_sim.world_map.resolve_world) -->
+  <exec_depend>mrs_sim</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

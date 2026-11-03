@@ -7,34 +7,16 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan, constraints_from_json, constraints_to_json
 
-from checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
-from checker.adapters.team_check import check_team_plan
-from checker.adapters.verdict import APPROVE, MODIFY, REJECT, to_verdict
-from checker.policy import AccessPolicy
+from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
+from fleet_checker.adapters.team_check import check_team_plan
+from fleet_checker.adapters.verdict import APPROVE, MODIFY, REJECT, to_verdict, unreadable_plan_verdict
+from fleet_checker.policy import AccessPolicy
 
-ROOT = Path(__file__).resolve().parents[2]
+SRC = Path(__file__).resolve().parents[2]    # the workspace's src/
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
-NARROW_AISLE = ROOT / "code/mrs-ethics/src/mrs_sim/worlds/narrow_aisle.yaml"
-VERDICT_MSG = ROOT / "code/mrs-ethics/src/mrs_msgs/msg/EthicalVerdict.msg"
+NARROW_AISLE = SRC / "mrs_sim/worlds/narrow_aisle.yaml"
+VERDICT_MSG = SRC / "mrs_msgs/msg/EthicalVerdict.msg"
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
-
-# Two one-robot zones side by side between two rooms: robots crossing in
-# opposite directions swap places head-on at x = 2.
-TWO_NARROW_ZONES = {
-    "world": "two_narrow_zones",
-    "nodes": {"wr": {"x": 0.0, "y": 0.0}, "w": {"x": 1.5, "y": 0.0},
-              "e": {"x": 2.5, "y": 0.0}, "er": {"x": 4.0, "y": 0.0}},
-    "edges": [["wr", "w"], ["w", "e"], ["e", "er"]],
-    "zones": [
-        {"id": "west_room", "type": "room", "rect": {"x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1}},
-        {"id": "west", "type": "narrow", "capacity": 1,
-         "rect": {"x_min": 1, "x_max": 2, "y_min": -0.4, "y_max": 0.4}},
-        {"id": "east", "type": "narrow", "capacity": 1,
-         "rect": {"x_min": 2, "x_max": 3, "y_min": -0.4, "y_max": 0.4}},
-        {"id": "east_room", "type": "room", "rect": {"x_min": 3, "x_max": 5, "y_min": -1, "y_max": 1}},
-    ],
-    "spawns": [{"node": "wr"}, {"node": "er"}],
-}
 
 
 @pytest.fixture(scope="module")
@@ -154,10 +136,9 @@ def test_narrow_aisle_swap_puts_robot_a_after_robot_b(aisle_map):
     assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_a", "b2", "a1")]
 
 
-def test_head_on_swap_is_one_problem_and_one_ordering():
-    sim_map = sim_map_from_dict(TWO_NARROW_ZONES)
+def test_head_on_swap_is_one_problem_and_one_ordering(two_narrow_zones):
     plan = team(("robot_a", [task("a1", "navigate", "er")]), ("robot_b", [task("b1", "navigate", "wr")]))
-    v = verdict_for(sim_map, plan, starts={"robot_a": "wr", "robot_b": "er"}, speed=1.0)
+    v = verdict_for(two_narrow_zones, plan, starts={"robot_a": "wr", "robot_b": "er"}, speed=1.0)
     assert v.rule_ids == (R.EDGE_SWAP,)
     assert v.rationale.count("head-on") == 1                    # two findings, one problem
     assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_a", "b1", "a1")]
@@ -207,6 +188,33 @@ def test_compile_error_is_custom(samples_map):
     [c] = v.constraints
     assert c.kind == "custom" and "room_9" in c.text
     assert v.risk_score == pytest.approx(1 / 3)
+
+
+# ---------------- plan_json that is not a TeamPlan -> custom ----------------
+
+def read_error(text: str) -> Exception:
+    with pytest.raises(ValueError) as e:      # pydantic's ValidationError is a ValueError
+        plan_from_json(text)
+    return e.value
+
+
+def test_unreadable_plan_is_rejected_as_malformed():
+    v = unreadable_plan_verdict(read_error(load_sample("invalid_bad_action.json")))
+    assert (v.verdict, v.rule_ids, v.standard_refs) == (REJECT, (R.LLM_MALFORMED,), ())
+    assert v.risk_score == pytest.approx(1 / 3)
+    [c] = v.constraints
+    assert (c.kind, c.rule_id, c.robot_id) == ("custom", R.LLM_MALFORMED, None)
+    # Names the field and what is allowed, like plan_echo does.
+    assert "assignments.0.tasks.0.action: Input should be 'navigate', 'wait' or 'hold_position'" in c.text
+    assert v.rationale.startswith("Plan rejected: plan_json is not a valid TeamPlan (")
+    assert tuple(constraints_from_json(constraints_to_json(v.constraints))) == v.constraints
+
+
+def test_plan_level_and_json_errors_are_described_without_a_location():
+    duplicate = unreadable_plan_verdict(read_error(load_sample("invalid_duplicate_task.json")))
+    assert "duplicate task_id(s): ['t1']" in duplicate.constraints[0].text
+    empty = unreadable_plan_verdict(read_error(""))
+    assert "Invalid JSON" in empty.constraints[0].text
 
 
 # ---------------- rationale ----------------

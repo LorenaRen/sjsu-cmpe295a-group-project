@@ -8,9 +8,9 @@ import pytest
 from mrs_common import hold_all_plan, load_sample, plan_from_json
 from mrs_common.plan_schema import TeamPlan
 
-from checker.adapters.compiler import PARKED_S, StepOrigin, compile_team_plan
-from checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
-from checker.plan import validate_plan
+from fleet_checker.adapters.compiler import PARKED_S, StepOrigin, compile_team_plan
+from fleet_checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
+from fleet_checker.plan import validate_plan
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
 SPEED = 0.5  # m/s; a test value, not Module 6's speed (mrs_sim clamps cmd_vel at 0.5)
