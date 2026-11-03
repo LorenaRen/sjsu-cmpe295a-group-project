@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.7, 2026-11-02
+Status: draft v0.8, 2026-11-03
 
 ---
 
@@ -645,6 +645,40 @@ tested in a plain venv.
   (`hold_all_plan`, `source_verdict` FALLBACK) does not pass through the
   gate; Module 4 publishes it on `/mrs/validated_plan` itself.  The gate
   subscribes only to `/mrs/proposed_plan`, so it never sees one.
+  - *Why Module 4.*  Only the planner counts attempts.  The gate judges
+    each message on its own and does not know the cap; to know it, the
+    gate would need P-4's replan history, which leaving P-4 to Module 4's
+    cap avoids.  mrs_common is written this way: `hold_all_plan` is for
+    "Module 4, after attempts are exhausted", and `planning_exhausted` is a
+    planner code.
+  - *Why not through the gate.*  The fallback is the last step: if the gate
+    rejected it, nothing would be left to do.  And the gate might well
+    reject it.  Holding where they are can break P-1 (a robot stopped in a
+    doorway) or S-1 (two robots already inside a capacity-1 zone), but that
+    is where the robots are, not a choice of plan, and rejecting it makes no
+    robot safer.  Standing still starts no new motion between robots, and
+    each robot's CBF still applies.  Not passing through the gate also
+    keeps the fallback out of the ledger: it is not an APPROVE.
+  - The fake planner (`mrs_ethical_gate/dev_nodes`, a development node that
+    applies the gate's constraints without an LLM) does it this way:
+    `hold_all_plan` for the whole fleet at its start nodes, reason
+    `planning_exhausted`, carrying the attempt of the last REJECT, and a
+    `planning_exhausted` EpisodeEvent with it.
+  - *To align with Module 4:* whether Module 4 publishes the FALLBACK and
+    the `planning_exhausted` event; which attempt the FALLBACK carries;
+    what Module 4 does when the gate does not answer; and the attempt cap.
+    **If the cap is 3 or less, F-2 (M = 3) never acts within one planning
+    cycle**: a robot rejected 3 times in a row is put first only at the 4th
+    check.  The count carries over to the episode's next planning cycle,
+    since only an APPROVE resets it and the gate never sees the fallback.
+  - *To align with Module 6:* `/mrs/validated_plan` then has two
+    publishers, the gate (APPROVE) and Module 4 (FALLBACK).  It is transient
+    local with depth 1, kept per publisher, so an executor that joins late
+    gets the last message of each, in no set order.  It has to take the
+    newest (by stamp, or by transaction_id and attempt), not the last to
+    arrive.
+  - The fallback holds each robot at its current node.  With `team_state`,
+    a robot on an edge has none, as for the gate's start nodes (above).
 
 ---
 
