@@ -51,6 +51,60 @@ class CapacityConflict(NamedTuple):
     capacity: int  # of resource_id; R-1 needs it to know how many robots must yield
 
 
+class OverCapacity(NamedTuple):
+    """A stretch of time in which more distinct robots hold claims on one resource than it allows."""
+    claims: tuple[Claim, ...]  # every claim taking part, sorted by robot, step, start, end
+    t_start: float
+    t_end: float
+
+
+def sweep_over_capacity(claims: Iterable[Claim], capacity: int) -> list[OverCapacity]:
+    """Sweep line over the claims on ONE resource: every stretch of time in which more
+    than `capacity` distinct robots hold a claim, in time order.
+
+    Shared by S-1 (a region or resource) and S-2 (the surroundings of a person).
+
+    Intervals are half-open, so a claim ending at t and another starting at t do not
+    overlap: ends are processed before starts at the same time. Robots are counted, not
+    claims: with margin > 0 a robot's consecutive steps overlap, and that is still one
+    robot. A Counter (not a set of robot_ids) keeps the robot active until its last claim
+    ends. A stretch lasts until the count is back within capacity, so overlaps that chain
+    (r1 with r2, r2 with r3) are one stretch with all three robots (see assign_yield).
+    """
+    events: list[ConflictEvent] = []
+    for claim in claims:
+        events.append(ConflictEvent(claim.start, True, claim))
+        events.append(ConflictEvent(claim.end, False, claim))
+    events.sort(key=lambda e: (e.time, e.is_start))
+
+    out: list[OverCapacity] = []
+    active_claims: set[Claim] = set()
+    active_robots: Counter[str] = Counter()
+    stretch_start: float | None = None
+    stretch_claims: set[Claim] = set()
+
+    for event in events:
+        robot_id = event.claim.robot_id
+        if event.is_start:
+            active_claims.add(event.claim)
+            active_robots[robot_id] += 1
+            if len(active_robots) > capacity:
+                if stretch_start is None:
+                    stretch_start = event.time
+                stretch_claims.update(active_claims)
+        else:
+            active_claims.discard(event.claim)
+            active_robots[robot_id] -= 1
+            if active_robots[robot_id] == 0:
+                del active_robots[robot_id]
+            if stretch_start is not None and len(active_robots) <= capacity:
+                ordered = tuple(sorted(stretch_claims, key=lambda c: (c.robot_id, c.step_index, c.start, c.end)))
+                out.append(OverCapacity(ordered, stretch_start, event.time))
+                stretch_start = None
+                stretch_claims.clear()
+    return out
+
+
 def _capacity_of(resource_id: str, world: WorldMap) -> int:
     # Unknown ids are rejected by validate_plan; default to the strictest value.
     return world.capacity(resource_id) if world.knows(resource_id) else 1
@@ -131,58 +185,12 @@ def check_capacity_violations(
         for claim in claims(plan, margin=margin, hold_final=hold_final):
             resource_claims[claim.resource_id].append(claim)
 
-    # First pass: detect all capacity violations without edge swap labeling
+    # First pass: detect all capacity violations without edge swap labeling,
+    # each resource on its own
     raw_conflicts: list[tuple[str, tuple[Claim, ...], float, float]] = []
-
-    # Check each resource independently
     for resource_id, resource_claims_list in resource_claims.items():
-        if len(resource_claims_list) < 2:
-            continue
-
-        capacity = _capacity_of(resource_id, world)
-
-        # Build sweep-line events
-        events: list[ConflictEvent] = []
-        for claim in resource_claims_list:
-            events.append(ConflictEvent(claim.start, True, claim))
-            events.append(ConflictEvent(claim.end, False, claim))
-
-        # Sort: by time, then ends before starts at same time (half-open intervals)
-        events.sort(key=lambda e: (e.time, e.is_start))
-
-        # Sweep through events. Capacity counts distinct robots, not claims:
-        # with margin > 0 a robot's consecutive steps in the same region
-        # overlap, and that is still one robot. A Counter (not a set of
-        # robot_ids) keeps the robot active until its last claim ends.
-        active_claims: set[Claim] = set()
-        active_robots: Counter[str] = Counter()
-        conflict_start: float | None = None
-        conflict_claims: set[Claim] = set()
-
-        for event in events:
-            robot_id = event.claim.robot_id
-            if event.is_start:
-                active_claims.add(event.claim)
-                active_robots[robot_id] += 1
-
-                if len(active_robots) > capacity:
-                    # Entering a conflict state
-                    if conflict_start is None:
-                        conflict_start = event.time
-                    conflict_claims.update(active_claims)
-            else:
-                active_claims.discard(event.claim)
-                active_robots[robot_id] -= 1
-                if active_robots[robot_id] == 0:
-                    del active_robots[robot_id]
-
-                if conflict_start is not None and len(active_robots) <= capacity:
-                    # Exiting conflict state - record the conflict
-                    conflict_tuple = tuple(sorted(conflict_claims, key=lambda c: (c.robot_id, c.step_index)))
-                    raw_conflicts.append((resource_id, conflict_tuple, conflict_start, event.time))
-
-                    conflict_start = None
-                    conflict_claims.clear()
+        for s in sweep_over_capacity(resource_claims_list, _capacity_of(resource_id, world)):
+            raw_conflicts.append((resource_id, s.claims, s.t_start, s.t_end))
 
     # Second pass: detect edge swaps by looking at pairs of conflicts
     swap_indices = _detect_edge_swap(raw_conflicts, world)

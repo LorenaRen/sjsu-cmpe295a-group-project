@@ -4,12 +4,12 @@ import math
 import pytest
 
 from fleet_checker.plan import (
-    Plan, PlanStep, Region, RegionKind, Resource, TaskType, WorldMap,
+    Claim, Plan, PlanStep, Region, RegionKind, Resource, TaskType, WorldMap,
 )
 from fleet_checker.cross_plan import (
-    CapacityConflict, FairnessLedger, assign_yield,
+    CapacityConflict, FairnessLedger, OverCapacity, assign_yield,
     capacity_conflicts_to_violations, check_capacity_violations,
-    check_cross_plan_conflicts,
+    check_cross_plan_conflicts, sweep_over_capacity,
 )
 
 
@@ -131,6 +131,54 @@ class TestCapacityViolation:
         conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=True)
         aisle_conflicts = [c for c in conflicts if c.resource_id == "aisle_1"]
         assert len(aisle_conflicts) == 1
+
+
+def claim(robot_id: str, start: float, end: float, step: int = 0) -> Claim:
+    return Claim("aisle_1", robot_id, step, start, end)
+
+
+class TestSweepOverCapacity:
+    """The sweep S-1 and S-2 share: the claims on one resource -> stretches of time over capacity."""
+
+    def test_overlap_beyond_capacity_is_one_stretch(self):
+        out = sweep_over_capacity([claim("r1", 0, 10), claim("r2", 5, 15)], capacity=1)
+        assert out == [OverCapacity((claim("r1", 0, 10), claim("r2", 5, 15)), 5, 10)]
+
+    def test_end_and_start_at_the_same_moment_do_not_overlap(self):
+        """Half-open intervals: r1 leaving at t=10 and r2 arriving at t=10 is a clean handover."""
+        assert sweep_over_capacity([claim("r1", 0, 10), claim("r2", 10, 20)], capacity=1) == []
+
+    def test_counts_robots_not_claims(self):
+        """r1's two claims overlap, as consecutive steps do with a margin: still one robot."""
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 9, 20, step=1), claim("r2", 5, 15)]
+        assert sweep_over_capacity(claims, capacity=2) == []
+        [stretch] = sweep_over_capacity(claims, capacity=1)
+        assert (stretch.t_start, stretch.t_end) == (5, 15)
+        assert stretch.claims == (claim("r1", 0, 10, step=0), claim("r1", 9, 20, step=1),
+                                  claim("r2", 5, 15))
+
+    def test_chained_overlaps_are_one_stretch(self):
+        """r1 meets r2 and r2 meets r3: one stretch with all three (assign_yield's over-yield note)."""
+        claims = [claim("r1", 0, 10), claim("r2", 5, 15), claim("r3", 8, 20)]
+        [stretch] = sweep_over_capacity(claims, capacity=1)
+        assert (stretch.t_start, stretch.t_end) == (5, 15)
+        assert [c.robot_id for c in stretch.claims] == ["r1", "r2", "r3"]
+
+    def test_separate_stretches_come_in_time_order(self):
+        claims = [claim("r1", 0, 10), claim("r2", 5, 11), claim("r3", 12, 20), claim("r4", 15, 25)]
+        out = sweep_over_capacity(claims, capacity=1)
+        assert [(s.t_start, s.t_end) for s in out] == [(5, 10), (15, 20)]
+        assert [[c.robot_id for c in s.claims] for s in out] == [["r1", "r2"], ["r3", "r4"]]
+
+    def test_claims_held_to_infinity(self):
+        out = sweep_over_capacity([claim("r1", 0, math.inf), claim("r2", 5, math.inf)], capacity=1)
+        assert [(s.t_start, s.t_end) for s in out] == [(5, math.inf)]
+
+    def test_capacity_two_needs_a_third_robot(self):
+        claims = [claim("r1", 0, 10), claim("r2", 2, 10), claim("r3", 4, 6)]
+        out = sweep_over_capacity(claims, capacity=2)
+        assert [(s.t_start, s.t_end) for s in out] == [(4, 6)]
+        assert [c.robot_id for c in out[0].claims] == ["r1", "r2", "r3"]
 
 
 class TestCapacityConflictToViolation:
