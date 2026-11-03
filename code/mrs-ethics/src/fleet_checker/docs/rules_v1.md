@@ -275,7 +275,7 @@ checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 |------|------|
 | `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
 | `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
-| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check on a changed plan. |
+| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check on a changed plan.  `conflicts(result)` lists the S-1 conflicts once each (both halves of a head-on swap are one), with their yielders, for the ledger. |
 | `verdict.py` | `to_verdict`: a `check_team_plan` result → the decision fields of an `EthicalVerdict` (see "Verdict for Module 5" below). |
 
 `TeamPlan.priority` is kept for logs only; who yields is decided by R-1
@@ -327,6 +327,7 @@ are produced; MODIFY is designed (below) but not built.
 | P-2 `region_access_denied` | `avoid_node` for every node of the zone; `custom` if the zone has no node |
 | P-3 `max_duration_exceeded` | `custom`, with the plan's duration and the limit |
 | Plan does not compile | `custom`, with the violation message |
+| `plan_json` is not a TeamPlan (nothing could be checked) | `custom`, with the first validation error and where it is (`unreadable_plan_verdict`); rule id `llm_malformed` |
 
 P-1 and P-2 name every node of the zone, not only the one in the plan:
 otherwise the next plan can stop at, or route through, a neighbouring
@@ -362,6 +363,14 @@ MODIFY must check the whole modified plan again before approving it.
   | `region_access_denied` | P-2 |
   | `max_duration_exceeded` | P-3 |
   | `unknown_robot`, `unknown_target`, `no_route`, `dependency_deadlock` | plan does not compile (no rule number) |
+  | `llm_malformed` | `plan_json` is not a TeamPlan (no rule number) |
+
+  **TODO (Module 1):** `llm_malformed` is the planner's code for "output
+  still invalid after the one retry"; the gate reuses it because
+  `mrs_common.reasons` has nothing closer, and this step does not change
+  mrs_common.  Ask Module 1 for a code of its own (e.g. `plan_unreadable`),
+  so that the analysis can tell the planner giving up from the gate
+  rejecting a plan it could not read.
 
 - **`risk_score`**: the worst finding's level divided by 3.
 
@@ -369,7 +378,7 @@ MODIFY must check the whole modified plan again before approving it.
   |-------|--------------|----------|---------|
   | 3 | 1.0 | S-1 | robots predicted to collide or block each other |
   | 2 | 0.67 | P-1, P-2 | a rule about where robots may be is broken |
-  | 1 | 0.33 | P-3, plan does not compile | the plan cannot run as written, or runs too long |
+  | 1 | 0.33 | P-3, plan does not compile, `plan_json` unreadable | the plan cannot run as written, or runs too long |
   | 0 | 0.0 | approved | |
 
   **This is an ordinal level, not a probability.**  Only the order of the
