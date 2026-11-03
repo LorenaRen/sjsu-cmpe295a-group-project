@@ -224,6 +224,90 @@ def test_a_robot_that_stays_next_to_the_person_gets_custom(aisle_map):
     assert "robot_b stays within 1.5 m of person_1 until the end of its plan" in c.text
 
 
+# ---------------- S-4 -> verified order_before, forbid_node or custom ----------------
+
+def s4(v):
+    """The S-4 constraints of a verdict: (kind, robot, task, node, value, text)."""
+    return [(c.kind, c.robot_id, c.task_id, c.node, c.value, c.text)
+            for c in v.constraints if c.rule_id == R.NODE_OCCUPIED]
+
+
+PARKING_THREE = {"robot_a": "w", "robot_b": "n", "robot_c": "f"}
+SLOW_C = ("robot_c", [task("c1", "navigate", "h"), task("c2", "navigate", "f")])   # done at 8 s, far from c
+
+
+def test_a_too_tight_handover_at_a_node_gives_a_verified_order_before(parking):
+    """robot_b stops at c until robot_a reaches p, 0.5 m away; robot_a then drives on to c and
+    stays. robot_b leaves at 4.5 s and robot_a arrives at 5.0 s: within the margin."""
+    plan = team(("robot_a", [task("a0", "navigate", "p"), task("a1", "hold_position", "c")]),
+                ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["a0"])]))
+    v = verdict_for(parking, plan, speed=1.0)
+    assert (v.verdict, v.rule_ids, v.risk_score) == (REJECT, (R.NODE_OCCUPIED,), 1.0)
+    assert v.rationale == ("Plan rejected: robot_a and robot_b would stop at c at the same time. "
+                           "Propose a new plan that follows the constraints.")
+    assert s4(v) == [("order_before", "robot_a", "b2", None, "a1",
+                      "robot_a: start task a1 only after robot_b has finished task b2; both would stop "
+                      "at c, where only one robot can stand.")]
+    fixed = edited(plan, lambda t: t["depends_on"].append("b2") if t["task_id"] == "a1" else None)
+    assert verdict_for(parking, fixed, speed=1.0).verdict == APPROVE
+
+
+def test_waiting_where_the_other_robot_stays_is_forbidden(parking):
+    """robot_a reaches c (a1) and would wait there for robot_c before a2; robot_b ends at c.
+    c is not where a2 goes, so robot_a can wait somewhere else."""
+    plan = team(("robot_a", [task("a1", "navigate", "c"), task("a2", "navigate", "e", depends_on=["c2"])]),
+                ("robot_b", [task("b1", "hold_position", "c")]), SLOW_C)
+    v = verdict_for(parking, plan, starts=PARKING_THREE, speed=1.0)
+    assert s4(v) == [("forbid_node", "robot_a", "a2", "c", None,
+                      "robot_a: do not wait at c; robot_b stays there until the end of its plan.")]
+
+
+def test_waiting_where_the_other_robot_waits_too_is_forbidden_when_ordering_cannot_help(parking):
+    """As above, but robot_b leaves c only after robot_a has gone (b2 waits for a2): making
+    robot_a wait for b2 would close a cycle."""
+    plan = team(("robot_a", [task("a1", "navigate", "c"), task("a2", "navigate", "e", depends_on=["c2"])]),
+                ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["a2"])]),
+                SLOW_C)
+    v = verdict_for(parking, plan, starts=PARKING_THREE, speed=1.0)
+    assert s4(v) == [("forbid_node", "robot_a", "a2", "c", None,
+                      "robot_a: do not wait at c; robot_b is stopped there until it leaves with task b2.")]
+
+
+def test_a_target_held_for_a_while_means_wait_nearby_then_go(parking):
+    """c is where a1 ends. robot_b waits at c until a1 is done, so ordering a1 after b2 would
+    close a cycle; forbidding c would make robot_a give up a1. It is told to wait nearby."""
+    plan = team(("robot_a", [task("a1", "hold_position", "c")]),
+                ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["a1"])]))
+    v = verdict_for(parking, plan, speed=1.0)
+    assert s4(v) == [("custom", "robot_a", "a1", "c", None,
+                      "robot_a: c is where task a1 ends, but robot_b is stopped there until it leaves "
+                      "with task b2. Wait at another node near c first, and go to c only after robot_b "
+                      "has left it.")]
+    assert all(c.kind != "forbid_node" for c in v.constraints)
+
+
+def test_a_target_held_to_the_end_cannot_be_reached_as_planned(parking):
+    """Both robots end at c; robot_b gets there first and stays."""
+    plan = team(("robot_a", [task("a1", "hold_position", "c")]), ("robot_b", [task("b1", "hold_position", "c")]))
+    v = verdict_for(parking, plan, speed=1.0)
+    assert s4(v) == [("custom", "robot_a", "a1", "c", None,
+                      "robot_a: task a1 cannot be done with the plan as it is: its target c is where "
+                      "robot_b stays until the end of its plan. Change where robot_b ends, so that c "
+                      "is free when robot_a gets there.")]
+
+
+def test_a_yielder_standing_at_the_node_from_its_start_gets_custom(parking):
+    """robot_a ends at n, where robot_b stands from the start; the ledger makes robot_b give way."""
+    from fleet_checker.cross_plan import FairnessLedger
+    ledger = FairnessLedger()
+    ledger.record_yield("robot_a", "earlier", 0.0, "robot_b")
+    plan = team(("robot_a", [task("a1", "hold_position", "n")]))
+    v = verdict_for(parking, plan, speed=1.0, ledger=ledger)
+    assert s4(v) == [("custom", "robot_b", None, "n", None,
+                      "robot_b stands at n from the start of its plan, and robot_a would stop there "
+                      "while it does. Have robot_b leave n before robot_a gets there.")]
+
+
 # ---------------- P-3 and compile errors -> custom ----------------
 
 def test_too_long_plan_is_custom(samples_map):

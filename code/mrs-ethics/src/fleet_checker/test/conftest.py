@@ -42,3 +42,23 @@ CROSSROADS = {
 @pytest.fixture(scope="session")
 def crossroads():
     return sim_map_from_dict(CROSSROADS)
+
+
+# An open hall around a node c that several routes end at: w - p - c - e - f - h, with n and s
+# off c. p is 0.5 m from c, close enough for a handover at c to be too tight for the margin.
+# A room has no capacity limit, so S-1 never stops robots meeting at c; S-4 stops two robots
+# from standing there at once.
+PARKING = {
+    "world": "parking",
+    "nodes": {"w": {"x": 0.0, "y": 0.0}, "p": {"x": 4.5, "y": 0.0}, "c": {"x": 5.0, "y": 0.0},
+              "n": {"x": 5.0, "y": 4.0}, "s": {"x": 5.0, "y": -4.0}, "e": {"x": 10.0, "y": 0.0},
+              "f": {"x": 10.0, "y": 4.0}, "h": {"x": 14.0, "y": 4.0}},
+    "edges": [["w", "p"], ["p", "c"], ["n", "c"], ["c", "s"], ["c", "e"], ["e", "f"], ["f", "h"]],
+    "zones": [{"id": "hall", "type": "room", "rect": {"x_min": -1, "x_max": 15, "y_min": -5, "y_max": 5}}],
+    "spawns": [{"node": "w"}, {"node": "n"}, {"node": "f"}],
+}
+
+
+@pytest.fixture(scope="session")
+def parking():
+    return sim_map_from_dict(PARKING)

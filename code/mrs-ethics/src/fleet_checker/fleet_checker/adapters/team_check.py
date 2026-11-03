@@ -3,11 +3,11 @@
   TeamPlan + mrs_sim map + where each robot is
     -> compile (compiler.py)      unknown robot or target, no route, deadlock: stop here
     -> each robot: P-1, P-2, P-3  (policy.validate_policy)
-    -> all robots: S-1 + S-2 + R-1 (cross_plan.check_cross_plan_conflicts; S-2 when
-                                    people are given)
+    -> all robots: S-1 + S-2 + S-4 + R-1 (cross_plan.check_cross_plan_conflicts; S-2
+                                          when people are given)
 
 A policy violation is for the robot that proposed the step to fix. For a
-conflict (S-1 or S-2), R-1 and the fairness ledger choose which robots replan;
+conflict (S-1, S-2 or S-4), R-1 and the fairness ledger choose which robots replan;
 TeamPlan priority plays no part. The ledger is only read here: recording yields
 belongs to whatever runs the replan loop.
 """
@@ -79,10 +79,10 @@ class TeamCheckResult:
 
 
 class Conflict(NamedTuple):
-    """One S-1 or S-2 conflict of a result, as R-1 resolved it in that round."""
-    reason: str                 # R.CAPACITY_EXCEEDED, R.EDGE_SWAP or R.HUMAN_CROWDING
-    where: str | None           # the zone (S-1) or the person (S-2); None for a head-on
-                                # swap, which spans two zones
+    """One S-1, S-2 or S-4 conflict of a result, as R-1 resolved it in that round."""
+    reason: str                 # R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.HUMAN_CROWDING or R.NODE_OCCUPIED
+    where: str | None           # the zone (S-1), the person (S-2) or the node (S-4); None for
+                                # a head-on swap, which spans two zones
     robots: tuple[str, ...]     # every robot in the conflict, sorted
     yielders: tuple[str, ...]   # the robots R-1 told to yield
 
@@ -97,11 +97,11 @@ class Conflict(NamedTuple):
         return f"{self.reason}@{self.where or '-'}:{'+'.join(self.robots)}"
 
 
-_CONFLICT_REASONS = (R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.HUMAN_CROWDING)
+_CONFLICT_REASONS = (R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.HUMAN_CROWDING, R.NODE_OCCUPIED)
 
 
 def conflicts(result: TeamCheckResult) -> tuple[Conflict, ...]:
-    """The S-1 and S-2 conflicts of a result, one entry each. A head-on swap is reported
+    """The S-1, S-2 and S-4 conflicts of a result, one entry each. A head-on swap is reported
     as one finding per zone (EDGE_SWAP); both halves are the same conflict."""
     found: dict[str, Conflict] = {}
     for f in result.findings:

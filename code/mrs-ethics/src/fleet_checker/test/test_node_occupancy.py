@@ -172,3 +172,27 @@ class TestYielding:
         violations, must_fix = check_cross_plan_conflicts([a, b], WORLD, ledger, margin=0.0)
         assert [v.code for v in violations] == ["CAPACITY_EXCEEDED", "NODE_OCCUPIED"]
         assert list(must_fix) == ["a"] and must_fix["a"] == violations
+
+
+# ---------------- regression: the scenarios S-1 and S-2 are tested on ----------------
+
+def test_no_tested_scenario_has_two_robots_stopped_at_one_node():
+    """S-4 runs on every compiled plan now; none of the scenarios the S-1 and S-2 tests use
+    has two robots standing at one node, so none of their results change."""
+    from fleet_checker.adapters.sim_map import spawn_starts
+    from fleet_checker.adapters.team_check import check_team_plan
+    from fleet_checker.crowding import CrowdingLimit
+    from fleet_checker.plan import HumanObservation
+    from test_sweep_regression import SCENARIOS
+
+    checked = 0
+    for name, (load, team_plans, speed, people) in SCENARIOS.items():
+        sim_map = load()
+        # The scenarios name every person person_1 (they are checked one at a time there).
+        people = [HumanObservation(human_id=f"person_{i}", position=p.position) for i, p in enumerate(people, 1)]
+        for team_plan in team_plans:
+            result = check_team_plan(team_plan, sim_map, spawn_starts(sim_map, ["robot_a", "robot_b"]),
+                                     speed=speed, people=people, crowding=CrowdingLimit(1.5, 1))
+            assert "NODE_OCCUPIED" not in [f.violation.code for f in result.findings], name
+            checked += 1
+    assert checked == sum(len(plans) for _, plans, _, _ in SCENARIOS.values())
