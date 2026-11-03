@@ -57,7 +57,9 @@ R-1 choosing who yields.  Only the claims are new (`crowding.py`):
 
 **R and N** are parameters with no default in the checker
 (`CrowdingLimit`), and both are **placeholders**: neither has been
-measured, and neither comes from a standard.
+measured, and neither comes from a standard.  The gate's
+`config/gate.yaml` sets R = 1.5 m and N = 1; N = 1 because with two
+robots, N ≥ 2 can never be exceeded.
 
 **Where people come from.**  The checker takes the people with every
 check, as `HumanObservation`s (id, position in the map frame), the way it
@@ -65,7 +67,12 @@ takes the robots' start nodes.  Neither `narrow_aisle` nor the test map
 `samples_world` has people, and the map format has no place for them (both
 mrs_sim's loader and `sim_map.py` reject unknown keys).  People belong to a
 scenario rather than to a world: `PerceivedEntity.msg` describes them as
-actors from the scenario YAML.  Tests place people in code.
+actors from the scenario YAML.  Tests place people in code.  The gate
+reads them from a people file (`people_file`; by default
+`config/people.yaml`, which lists nobody, so S-2 finds nothing) and refuses
+two people with one id, or a person outside every zone of the map (most
+likely mistyped coordinates).  Later the positions are to come from
+`/mrs/team_state` (see the limitations).
 
 **What S-2 does not do.**  A single robot too close to a person is the job
 of each robot's own safety layer: the previous team's per-robot gate (speed
@@ -548,10 +555,15 @@ tested in a plain venv.
   incomparable): `world` / `map_file`, `robots`, `start_source`, `speed`
   (no default; `config/gate.yaml` holds a placeholder until Module 6's
   speed is measured), `margin`, `max_duration`, `starvation_threshold`,
-  `policy_file`.  The access policy and task types are a YAML file
-  (`config/policy.yaml`) because ROS parameters cannot hold nested
-  tables.  The node logs the effective settings as one JSON line at
-  start-up, and one JSON line per decision.
+  `policy_file`, and for S-2 `crowding_radius` (R) and
+  `crowding_max_robots` (N), which have no default either
+  (`config/gate.yaml` holds placeholders) and `people_file`.  The access
+  policy and task types are a YAML file (`config/policy.yaml`) because ROS
+  parameters cannot hold nested tables; the people are a YAML list
+  (`config/people.yaml`, nobody), named by the launch argument
+  `people_file` because they belong to the scenario.  The node logs the
+  effective settings as one JSON line at start-up, and one JSON line per
+  decision.
 - **FALLBACK** (assumption, to confirm with Module 4): the all-hold plan
   (`hold_all_plan`, `source_verdict` FALLBACK) does not pass through the
   gate; Module 4 publishes it on `/mrs/validated_plan` itself.  The gate
@@ -574,7 +586,7 @@ tested in a plain venv.
 | Code | Name | Cat. | Scope | Impl. status |
 |------|------|------|-------|:---:|
 | S-1 | Interval capacity / edge-swap | safety | cross | implemented |
-| S-2 | Human crowding | safety | cross | implemented in the checker (`check_team_plan(people=..., crowding=...)`); not yet in the gate |
+| S-2 | Human crowding | safety | cross | implemented (checker and gate); people from a static file until `/mrs/team_state` |
 | S-3 | Unsafe action near humans | safety | single | deferred |
 | P-1 | Final stop in passthrough zone | policy | single | implemented |
 | P-2 | Region access restriction | policy | single | implemented |

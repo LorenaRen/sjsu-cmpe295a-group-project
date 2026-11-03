@@ -17,11 +17,15 @@ The gate node hands every message to decide() and publishes what comes back:
 A message is identified by (transaction_id, attempt): the planner reuses the transaction_id
 for later attempts. A new episode_id starts from scratch (empty ledger, nothing remembered,
 no messages seen), so that episodes stay independent trials.
+
+S-2 checks around the people of the people file, taken to stand still where listed; when
+Module 3's /mrs/team_state exists, their live positions will come from there instead. S-2
+conflicts update the ledger exactly as S-1's do.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from mrs_common.plan_schema import TeamPlan, plan_from_json
 
@@ -30,10 +34,11 @@ from fleet_checker.adapters.team_check import (NO_ENTRY_TO_RESTRICTED, Conflict,
                                                check_team_plan, conflicts)
 from fleet_checker.adapters.verdict import APPROVE, VerdictContent, to_verdict, unreadable_plan_verdict
 from fleet_checker.cross_plan import FairnessLedger
-from fleet_checker.plan import TaskType
+from fleet_checker.crowding import CrowdingLimit
+from fleet_checker.plan import HumanObservation, TaskType
 from fleet_checker.policy import DEFAULT_MAX_DURATION, AccessPolicy
 
-from .settings import GateSettings
+from .settings import GateSettings, SettingsError
 from .starts import spawn_start_nodes
 
 
@@ -57,21 +62,33 @@ class GateSession:
     def __init__(self, sim_map: SimMap, start_nodes: Mapping[str, str], *, speed: float,
                  margin: float = 0.5, max_duration: float = DEFAULT_MAX_DURATION,
                  access_policy: AccessPolicy = NO_ENTRY_TO_RESTRICTED,
-                 task_types: Mapping[str, TaskType] | None = None, starvation_threshold: int = 3):
+                 task_types: Mapping[str, TaskType] | None = None, starvation_threshold: int = 3,
+                 people: Sequence[HumanObservation] = (), crowding: CrowdingLimit | None = None):
+        if people and crowding is None:
+            raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
         self.sim_map = sim_map
         self.start_nodes = dict(start_nodes)    # the whole fleet
         self._check_args = dict(speed=speed, margin=margin, max_duration=max_duration,
-                                access_policy=access_policy, task_types=task_types)
+                                access_policy=access_policy, task_types=task_types,
+                                people=tuple(people), crowding=crowding)
         self.starvation_threshold = starvation_threshold
         self._start_episode(None)
 
     @classmethod
     def from_settings(cls, settings: GateSettings) -> GateSession:
+        """Raises SettingsError for a person outside every zone of the map: most likely a typo
+        in the coordinates, which would otherwise mean S-2 never sees that person."""
         sim_map = load_sim_map(settings.map_path)
+        for person in settings.people:
+            if not sim_map.zones_at(*person.position):
+                x, y = person.position
+                raise SettingsError(f"people_file {settings.people_file}: {person.human_id} at "
+                                    f"({x:g}, {y:g}) is outside every zone of map {sim_map.name!r}")
         return cls(sim_map, spawn_start_nodes(sim_map, settings.robots), speed=settings.speed,
                    margin=settings.margin, max_duration=settings.max_duration,
                    access_policy=settings.access_policy, task_types=settings.task_types,
-                   starvation_threshold=settings.starvation_threshold)
+                   starvation_threshold=settings.starvation_threshold,
+                   people=settings.people, crowding=settings.crowding)
 
     def decide(self, plan_json: str, *, transaction_id: str, episode_id: str, attempt: int,
                now: float) -> Decision:

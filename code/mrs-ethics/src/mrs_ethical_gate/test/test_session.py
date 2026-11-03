@@ -9,12 +9,16 @@ from mrs_common.plan_schema import TeamPlan
 
 from fleet_checker.adapters.sim_map import load_sim_map
 from fleet_checker.adapters.verdict import APPROVE, REJECT
+from fleet_checker.crowding import CrowdingLimit
+from fleet_checker.plan import HumanObservation
 from mrs_ethical_gate.session import GateSession
-from mrs_ethical_gate.settings import PARAMETERS, REQUIRED, load_settings
+from mrs_ethical_gate.settings import PARAMETERS, REQUIRED, SettingsError, load_settings
 
 SRC = Path(__file__).resolve().parents[2]
 SAMPLES_WORLD = SRC / "fleet_checker/test/fixtures/samples_world.yaml"
 POLICY = Path(__file__).resolve().parents[1] / "config" / "policy.yaml"
+NOBODY = Path(__file__).resolve().parents[1] / "config" / "people.yaml"
+SAMPLES_PEOPLE = Path(__file__).parent / "fixtures" / "samples_world_people.yaml"
 
 
 def edited(text: str, edit) -> str:
@@ -158,12 +162,45 @@ def test_summary_is_plain_json_for_the_log(session):
         "replayed": False, "new_episode": True, "ledger": ledger(0, 0, 0, 1)}
 
 
+# ---------------- S-2: people ----------------
+
+def test_people_near_a_route_are_checked_for_crowding(samples_map):
+    """In valid_two_robots robot_b waits at corridor_2 for robot_a; with a person 1.1 m from
+    corridor_2, robot_b waits next to them while robot_a drives past."""
+    person = HumanObservation(human_id="person_1", position=(10.0, -1.0))
+    session = GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5,
+                          people=[person], crowding=CrowdingLimit(radius=1.5, max_robots=1))
+    d = decide(session, VALID)
+    assert (d.verdict.verdict, d.verdict.rule_ids) == (REJECT, (R.HUMAN_CROWDING,))
+    assert list(d.result.must_replan) == ["robot_a"]   # robot_b was next to the person first
+    assert d.ledger == ledger(0, 1, 0, 0)               # counts toward F-2 like an S-1 REJECT
+
+
 # ---------------- from the node's settings ----------------
 
-def test_from_settings_places_the_whole_fleet_at_the_spawn_slots():
+def settings(**changes):
+    """The node's settings on samples_world, the required parameters set as in config/gate.yaml."""
     values = {name: (None if default is REQUIRED else default) for name, (_, default, _) in PARAMETERS.items()}
-    values.update(speed=0.5, map_file=str(SAMPLES_WORLD))
-    session = GateSession.from_settings(load_settings(values, default_policy_file=POLICY))
+    values.update(speed=0.5, crowding_radius=1.5, crowding_max_robots=1, map_file=str(SAMPLES_WORLD))
+    values.update(changes)
+    return load_settings(values, default_policy_file=POLICY, default_people_file=NOBODY)
+
+
+def test_from_settings_reads_the_people_file():
+    assert decide(GateSession.from_settings(settings()), VALID).verdict.verdict == APPROVE   # nobody
+    session = GateSession.from_settings(settings(people_file=str(SAMPLES_PEOPLE)))
+    assert decide(session, VALID).verdict.rule_ids == (R.HUMAN_CROWDING,)
+
+
+def test_a_person_outside_every_zone_is_refused(tmp_path):
+    path = tmp_path / "people.yaml"
+    path.write_text("people:\n  - {id: person_1, x: 100.0, y: -1.0}\n")   # 100 m, not 10 m
+    with pytest.raises(SettingsError, match=r"person_1 at \(100, -1\) is outside every zone"):
+        GateSession.from_settings(settings(people_file=str(path)))
+
+
+def test_from_settings_places_the_whole_fleet_at_the_spawn_slots():
+    session = GateSession.from_settings(settings())
     assert session.start_nodes == {"robot_a": "west_s", "robot_b": "east_n"}
     # A plan that names only robot_b finds it at slot 1, with robot_a parked at slot 0.
     only_b = TeamPlan.model_validate({"assignments": [{"robot_id": "robot_b", "tasks": [

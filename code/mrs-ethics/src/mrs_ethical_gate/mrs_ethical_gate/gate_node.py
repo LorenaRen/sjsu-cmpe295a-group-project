@@ -2,6 +2,7 @@
 
   ros2 launch mrs_ethical_gate gate.launch.py
   ros2 launch mrs_ethical_gate gate.launch.py map_file:=/path/to/map.yaml use_sim_time:=false
+  ros2 launch mrs_ethical_gate gate.launch.py people_file:=/path/to/people.yaml   # S-2
 
 The callback receives, calls GateSession.decide and publishes; what it decides is in
 session.py and tested without ROS. A message seen before gets the same verdict (and
@@ -45,7 +46,8 @@ _ROS_TYPES = {str: Parameter.Type.STRING, int: Parameter.Type.INTEGER, float: Pa
 class GateNode(Node):
     def __init__(self, **kwargs):
         super().__init__("mrs_ethical_gate", **kwargs)
-        settings = load_settings(self._declare_parameters(), default_policy_file=_default_policy_file())
+        settings = load_settings(self._declare_parameters(), default_policy_file=_config("policy.yaml"),
+                                 default_people_file=_config("people.yaml"))
         self.session = GateSession.from_settings(settings)
         self.get_logger().info("settings " + json.dumps(settings.describe()))
         self.verdict_pub = self.create_publisher(EthicalVerdict, N.VERDICT, qos_for(N.VERDICT))
@@ -82,8 +84,9 @@ class GateNode(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
 
-def _default_policy_file() -> Path:
-    return Path(get_package_share_directory("mrs_ethical_gate")) / "config" / "policy.yaml"
+def _config(name: str) -> Path:
+    """A file of this package's installed config/ directory."""
+    return Path(get_package_share_directory("mrs_ethical_gate")) / "config" / name
 
 
 def main(args=None) -> None:
