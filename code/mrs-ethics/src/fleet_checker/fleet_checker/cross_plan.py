@@ -491,7 +491,7 @@ def _yield_key(robot_id: str, plans: dict[str, Plan], ledger: FairnessLedger,
 
 
 # ---------------------------------------------------------------------------
-# Main check function combining S-1, S-2 and R-1
+# Main check function combining S-1, S-2, S-4 and R-1
 # ---------------------------------------------------------------------------
 
 def check_cross_plan_conflicts(
@@ -505,10 +505,11 @@ def check_cross_plan_conflicts(
 ) -> tuple[list[Violation], dict[str, list[Violation]]]:
     """Check multiple plans for cross-plan conflicts and assign yields.
 
-    Every conflict of the round, S-1 and S-2 alike, ranks robots by the same entry
-    times (first_entry_times over all of them). One sort key per robot keeps the
-    yield relations of a round free of cycles across the two rules as well: ranked
-    per rule, S-1 could have b wait for a while S-2 has a wait for b.
+    S-4 runs on the stops the plans declare (PlanStep.end_node, from the compiler).
+    Every conflict of the round, S-1, S-2 and S-4 alike, ranks robots by the same
+    entry times (first_entry_times over all of them). One sort key per robot keeps
+    the yield relations of a round free of cycles across the rules as well: ranked
+    per rule, S-1 could have b wait for a while S-2 or S-4 has a wait for b.
 
     Args:
         plans: List of plans to check
@@ -521,7 +522,7 @@ def check_cross_plan_conflicts(
 
     Returns:
         Tuple of:
-        - List of all violations detected, S-1's then S-2's
+        - List of all violations detected: S-1's, S-2's, then S-4's
         - Dict mapping robot_id to violations they are responsible for (should replan)
     """
     if ledger is None:
@@ -538,6 +539,9 @@ def check_cross_plan_conflicts(
         crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final)
         conflicts += crowded
         all_violations += crowding_conflicts_to_violations(crowded, crowding)
+    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final)
+    conflicts += stopped
+    all_violations += node_conflicts_to_violations(stopped)
 
     # Assign yields (R-1), every conflict ranking robots by the same entry times
     robot_violations: dict[str, list[Violation]] = defaultdict(list)

@@ -8,7 +8,10 @@ import math
 
 import pytest
 
-from fleet_checker.cross_plan import check_node_occupancy, node_conflicts_to_violations
+from fleet_checker.cross_plan import (
+    FairnessLedger, assign_yield, check_capacity_violations, check_cross_plan_conflicts,
+    check_node_occupancy, node_conflicts_to_violations,
+)
 from fleet_checker.plan import Plan, Region, RegionKind, StepRef, WorldMap, stop_claims
 
 # A hall with room for everyone, and a one-robot aisle off it.
@@ -133,3 +136,39 @@ class TestViolations:
         [v] = node_conflicts_to_violations(check_node_occupancy([r1, r2], WORLD))
         assert v.refs == (StepRef(robot_id="r1", step_index=0), StepRef(robot_id="r1", step_index=1),
                           StepRef(robot_id="r2", step_index=0))
+
+
+# ---------------- S-4 conflicts go to R-1 with S-1's and S-2's ----------------
+
+class TestYielding:
+
+    def test_s4_is_checked_with_s1(self):
+        r1 = plan_of("r1", ("navigate", 5, "c"))
+        r2 = plan_of("r2", ("navigate", 4, "c"))
+        violations, must_fix = check_cross_plan_conflicts([r1, r2], WORLD, margin=0.0)
+        assert [v.code for v in violations] == ["NODE_OCCUPIED"]
+        assert must_fix == {"r1": violations}     # r2 got there first
+
+    def test_the_robot_with_fewer_yields_gives_way(self):
+        ledger = FairnessLedger()
+        ledger.record_yield("r1", "earlier", 0.0, "r2")
+        r1 = plan_of("r1", ("navigate", 5, "c"))
+        r2 = plan_of("r2", ("navigate", 4, "c"))
+        _, must_fix = check_cross_plan_conflicts([r1, r2], WORLD, ledger, margin=0.0)
+        assert list(must_fix) == ["r2"]
+
+    def test_s1_and_s4_rank_robots_by_the_same_entry_times(self):
+        """b stops at n1 first and a enters the aisle first. Ranked per conflict, S-4 would send
+        a back and S-1 would send b back, in one round. Ranked by each robot's first entry
+        over the whole round (a at 6 s, b at 3 s), a gives way in both."""
+        a = plan_of("a", ("navigate", 6, "n1"), ("wait", 4, "n1"), ("navigate", 10, None, "aisle"))
+        b = plan_of("b", ("navigate", 3, "n1"), ("wait", 5, "n1"), ("navigate", 4, "x"),
+                    ("navigate", 10, None, "aisle"))
+        ledger = FairnessLedger()
+        [s1] = check_capacity_violations([a, b], WORLD, margin=0.0)
+        [s4] = check_node_occupancy([a, b], WORLD)
+        assert assign_yield(s1, {"a": a, "b": b}, ledger) == ["b"]   # each conflict on its own
+        assert assign_yield(s4, {"a": a, "b": b}, ledger) == ["a"]
+        violations, must_fix = check_cross_plan_conflicts([a, b], WORLD, ledger, margin=0.0)
+        assert [v.code for v in violations] == ["CAPACITY_EXCEEDED", "NODE_OCCUPIED"]
+        assert list(must_fix) == ["a"] and must_fix["a"] == violations
