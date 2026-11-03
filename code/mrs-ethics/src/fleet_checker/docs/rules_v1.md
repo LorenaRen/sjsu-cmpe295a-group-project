@@ -252,7 +252,9 @@ robot_a has finished a1" and "robot_a: start a1 only after robot_b has
 finished b2" in alternate rounds; a planner that keeps earlier constraints
 would end up holding both, which is a deadlock.  Under the new rule the
 yielder changes only where F-2 is meant to change it, after M = 3
-rejections in a row.
+rejections in a row.  `mrs_ethical_gate/test/test_session.py`
+(`test_six_rounds_of_the_same_conflict`) runs the new column through the
+gate's session.
 
 **Known limitation.**  The yield is credited to the robot R-1 told to
 yield; the approved plan is not examined.  If the planner resolved the
