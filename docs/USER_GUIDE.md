@@ -17,7 +17,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
-| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 55 gate + 223 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
+| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 55 gate + 233 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
