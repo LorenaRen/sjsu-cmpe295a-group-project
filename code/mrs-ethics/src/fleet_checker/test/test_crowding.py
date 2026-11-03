@@ -196,6 +196,13 @@ class TestCheckCrowding:
         assert [c.resource_id for c in check_crowding(together, [ORIGIN, far], ONE,
                                                       hold_final=False)] == ["person_1"]
 
+    def test_a_robot_near_the_person_across_two_steps_is_one_conflict_without_margin(self):
+        """r1 is near the person from 5 - sqrt(3) s to 5 + sqrt(3) s, over two steps that meet at 5 s."""
+        r1 = plan_of("r1", (((-5, 1), (0, 1)), 5), (((0, 1), (5, 1)), 5))
+        [c] = check_crowding([r1, along("r2", -1)], [ORIGIN], ONE, margin=0.0, hold_final=False)
+        assert (c.t_start, c.t_end) == pytest.approx((5 - ROOT3, 5 + ROOT3))
+        assert [(x.robot_id, x.step_index) for x in c.claims] == [("r1", 0), ("r1", 1), ("r2", 0)]
+
     def test_a_robot_parked_near_a_person_takes_the_place_for_good(self):
         parked = plan_of("r1", (((0, 1),), 1))
         later = along("r2", -1, t0=100)

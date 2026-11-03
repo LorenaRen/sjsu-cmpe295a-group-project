@@ -114,6 +114,14 @@ class TestCapacityViolation:
         conflicts = check_capacity_violations([r1], WORLD, margin=0.5, hold_final=False)
         assert conflicts == []
 
+    def test_consecutive_steps_in_one_region_are_one_conflict_without_margin(self):
+        """r1 waits in aisle_1 for two steps in a row; r2 is there from 5 s to 15 s."""
+        r1 = make_plan("r1", [("wait", "aisle_1"), ("wait", "aisle_1")])
+        r2 = make_plan("r2", [("wait", "aisle_1")], t0=5.0)
+        [c] = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert (c.t_start, c.t_end) == (5.0, 15.0)
+        assert [(x.robot_id, x.step_index) for x in c.claims] == [("r1", 0), ("r1", 1), ("r2", 0)]
+
     def test_capacity_counts_robots_not_claims(self):
         """Three robots in capacity-3 room_a is fine even if one robot holds two overlapping claims."""
         r1 = make_plan("r1", [("wait", "room_a"), ("wait", "room_a")])
@@ -179,6 +187,23 @@ class TestSweepOverCapacity:
         out = sweep_over_capacity(claims, capacity=2)
         assert [(s.t_start, s.t_end) for s in out] == [(4, 6)]
         assert [c.robot_id for c in out[0].claims] == ["r1", "r2", "r3"]
+
+    def test_a_robot_handing_over_to_its_next_claim_stays_present(self):
+        """With margin = 0, r1's consecutive steps touch at t = 10. It is there throughout:
+        one stretch, not one that ends at 10 and another that starts at 10."""
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 10, 20, step=1), claim("r2", 5, 15)]
+        [stretch] = sweep_over_capacity(claims, capacity=1)
+        assert (stretch.t_start, stretch.t_end) == (5, 15)
+        assert stretch.claims == tuple(claims)
+
+    def test_a_gap_of_up_to_1e_6_s_is_a_handover_too(self):
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 10 + 5e-7, 20, step=1), claim("r2", 5, 15)]
+        assert [(s.t_start, s.t_end) for s in sweep_over_capacity(claims, capacity=1)] == [(5, 15)]
+
+    def test_a_longer_gap_means_the_robot_was_away(self):
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 10.5, 20, step=1), claim("r2", 5, 15)]
+        out = sweep_over_capacity(claims, capacity=1)
+        assert [(s.t_start, s.t_end) for s in out] == [(5, 10), (10.5, 15)]
 
 
 class TestCapacityConflictToViolation:

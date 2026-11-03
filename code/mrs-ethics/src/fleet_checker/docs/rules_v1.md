@@ -18,6 +18,13 @@ head-on (A→B while B→A), the detector labels it `EDGE_SWAP` instead of
 overlap; the detector checks whether the two offending claims involve
 adjacent regions with swapped directions and tags accordingly.
 
+The sweep counts robots, not claims.  A robot whose consecutive claims on
+a resource overlap (margin > 0) or touch, to 1e-6 s (margin = 0), is there
+throughout, so a conflict is not reported in two pieces split at that
+robot's handover from one step to the next.  Between different robots the
+intervals stay half-open: one leaving at t and another arriving at t is a
+clean handover.
+
 - **Scope:** cross-plan
 - **Data:** `Claim.resource_id`, `Claim.start/end` (from each Plan via
   `claims()`); `WorldMap.capacity()`; `WorldMap.regions[].neighbors`

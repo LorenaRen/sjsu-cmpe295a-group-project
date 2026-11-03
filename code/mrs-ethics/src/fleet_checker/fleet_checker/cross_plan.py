@@ -29,24 +29,17 @@ F-2: Starvation override
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from .crowding import CrowdingLimit, crowding_claims
-from .plan import Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims
+from .plan import TIME_EPS, Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims
 
 
 # ---------------------------------------------------------------------------
 # S-1: Capacity violation detection (sweep-line algorithm)
 # ---------------------------------------------------------------------------
-
-class ConflictEvent(NamedTuple):
-    """An event in the sweep-line algorithm."""
-    time: float
-    is_start: bool  # True = claim starts, False = claim ends
-    claim: Claim
-
 
 class CapacityConflict(NamedTuple):
     """A detected capacity conflict between claims."""
@@ -71,44 +64,47 @@ def sweep_over_capacity(claims: Iterable[Claim], capacity: int) -> list[OverCapa
 
     Shared by S-1 (a region or resource) and S-2 (the surroundings of a person).
 
-    Intervals are half-open, so a claim ending at t and another starting at t do not
-    overlap: ends are processed before starts at the same time. Robots are counted, not
-    claims: with margin > 0 a robot's consecutive steps overlap, and that is still one
-    robot. A Counter (not a set of robot_ids) keeps the robot active until its last claim
-    ends. A stretch lasts until the count is back within capacity, so overlaps that chain
-    (r1 with r2, r2 with r3) are one stretch with all three robots (see assign_yield).
+    Robots are counted, not claims. A robot is present from the start of a claim until the
+    end of the last of its claims that overlap or touch (to TIME_EPS): its consecutive steps
+    overlap with margin > 0 and touch with margin = 0, and either way it is one robot,
+    there throughout, so a stretch is not cut in two at its handover. Between robots,
+    intervals are half-open: one leaving at t and another arriving at t do not overlap
+    (ends are processed before starts). A stretch lasts until the count is back within
+    capacity, so overlaps that chain (r1 with r2, r2 with r3) are one stretch with all
+    three robots (see assign_yield). A stretch's claims are every claim overlapping it.
     """
-    events: list[ConflictEvent] = []
-    for claim in claims:
-        events.append(ConflictEvent(claim.start, True, claim))
-        events.append(ConflictEvent(claim.end, False, claim))
-    events.sort(key=lambda e: (e.time, e.is_start))
+    claims = list(claims)
+    presence: list[tuple[float, float]] = []      # each robot's stretches of being there
+    by_robot: dict[str, list[Claim]] = defaultdict(list)
+    for c in claims:
+        by_robot[c.robot_id].append(c)
+    for robot_claims in by_robot.values():
+        robot_claims.sort(key=lambda c: (c.start, c.end))
+        start, end = robot_claims[0].start, robot_claims[0].end
+        for c in robot_claims[1:]:
+            if c.start <= end + TIME_EPS:
+                end = max(end, c.end)
+            else:
+                presence.append((start, end))
+                start, end = c.start, c.end
+        presence.append((start, end))
 
+    events = sorted([(end, False) for _, end in presence] + [(start, True) for start, _ in presence])
     out: list[OverCapacity] = []
-    active_claims: set[Claim] = set()
-    active_robots: Counter[str] = Counter()
+    present = 0
     stretch_start: float | None = None
-    stretch_claims: set[Claim] = set()
-
-    for event in events:
-        robot_id = event.claim.robot_id
-        if event.is_start:
-            active_claims.add(event.claim)
-            active_robots[robot_id] += 1
-            if len(active_robots) > capacity:
-                if stretch_start is None:
-                    stretch_start = event.time
-                stretch_claims.update(active_claims)
+    for time, is_start in events:
+        if is_start:
+            present += 1
+            if present > capacity and stretch_start is None:
+                stretch_start = time
         else:
-            active_claims.discard(event.claim)
-            active_robots[robot_id] -= 1
-            if active_robots[robot_id] == 0:
-                del active_robots[robot_id]
-            if stretch_start is not None and len(active_robots) <= capacity:
-                ordered = tuple(sorted(stretch_claims, key=lambda c: (c.robot_id, c.step_index, c.start, c.end)))
-                out.append(OverCapacity(ordered, stretch_start, event.time))
+            present -= 1
+            if stretch_start is not None and present <= capacity:
+                taking_part = sorted((c for c in claims if c.start < time and c.end > stretch_start),
+                                     key=lambda c: (c.robot_id, c.step_index, c.start, c.end))
+                out.append(OverCapacity(tuple(taking_part), stretch_start, time))
                 stretch_start = None
-                stretch_claims.clear()
     return out
 
 
