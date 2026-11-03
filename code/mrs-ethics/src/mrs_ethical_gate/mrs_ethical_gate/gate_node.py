@@ -18,6 +18,7 @@ publishes them on /mrs/validated_plan itself (an assumption to confirm, rules_v1
 from __future__ import annotations
 
 import json
+import signal
 import time
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from ament_index_python.packages import get_package_share_directory
 from mrs_msgs.msg import EthicalVerdict, ProposedPlan, ValidatedPlan
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.exceptions import ParameterUninitializedException
+from rclpy.executors import ExternalShutdownException
 from rclpy.logging import get_logger
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -90,16 +92,19 @@ def main(args=None) -> None:
         node = GateNode()
     except SettingsError as e:
         get_logger("mrs_ethical_gate").fatal(f"not starting: {e}")
-        rclpy.shutdown()
+        rclpy.try_shutdown()
         raise SystemExit(1)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        # Under ros2 launch, Ctrl-C reaches the node twice: from the terminal and then from
+        # launch. Without this, the second SIGINT interrupts destroy_node() and launch reports
+        # the node as died (exit code -2) with a traceback.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
