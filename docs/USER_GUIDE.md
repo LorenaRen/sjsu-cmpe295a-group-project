@@ -17,7 +17,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
-| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 55 gate + 233 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
+| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 57 gate + 266 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
@@ -519,8 +519,9 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
 
 **Each verdict:**
 - `rule_ids` are `mrs_common.reasons` codes.
-- `risk_score` is an ordinal level (1.0 a conflict between robots or too many robots near a person,
-  0.67 a zone rule, 0.33 a plan that cannot run or cannot be read), not a probability.
+- `risk_score` is an ordinal level (1.0 a conflict between robots, too many robots near a person, or
+  two robots stopped at one node; 0.67 a zone rule; 0.33 a plan that cannot run or cannot be read), not a
+  probability.
 - `latency_ms` is the time the check took inside the gate.
 - A plan whose `plan_json` cannot be read is rejected with `llm_malformed`.
 - A repeated message (same `transaction_id` and `attempt`) gets the same verdict again.
@@ -535,7 +536,7 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
   directly, not through the gate.
 
 Tests: `cd src/fleet_checker && pytest -q` and `cd src/mrs_ethical_gate && pytest -q`. Both run without
-ROS, for example in a plain venv; the five tests in `test_gate_node.py` also need the built and
+ROS, for example in a plain venv; the six tests in `test_gate_node.py` also need the built and
 sourced workspace and skip otherwise.
 
 ---
