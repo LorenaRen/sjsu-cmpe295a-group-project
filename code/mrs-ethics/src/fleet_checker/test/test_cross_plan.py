@@ -197,6 +197,12 @@ class TestCapacityConflictToViolation:
         assert "aisle_1" in violations[0].message
         assert len(violations[0].refs) == 2
 
+    def test_violation_names_the_region_it_is_about(self):
+        r1 = make_plan("r1", [("wait", "aisle_1")], t0=0.0)
+        r2 = make_plan("r2", [("wait", "aisle_1")], t0=5.0)
+        conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert [v.resource_id for v in capacity_conflicts_to_violations(conflicts)] == ["aisle_1"]
+
     def test_edge_swap_violation_format(self):
         """EDGE_SWAP violation has correct format."""
         r1 = make_plan("r1", [("navigate", "aisle_1"), ("navigate", "door_2")])

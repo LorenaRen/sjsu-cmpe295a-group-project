@@ -9,18 +9,32 @@ from itertools import pairwise
 
 import pytest
 
-from fleet_checker.cross_plan import check_crowding, crowding_conflicts_to_violations
+from fleet_checker.cross_plan import (
+    FairnessLedger, assign_yield, check_capacity_violations, check_cross_plan_conflicts,
+    check_crowding, crowding_conflicts_to_violations,
+)
 from fleet_checker.crowding import CrowdingLimit, crowding_claims
-from fleet_checker.plan import HumanObservation, Plan, StepRef
+from fleet_checker.plan import HumanObservation, Plan, Region, RegionKind, StepRef, WorldMap
 
 ROOT3 = math.sqrt(3)
 
+# For check_cross_plan_conflicts, which runs S-1 as well: a hall with room for everyone,
+# and a one-robot aisle off it.
+WORLD = WorldMap(regions={
+    "hall": Region(id="hall", kind=RegionKind.OPEN_AREA, capacity=100, center=(0, 0),
+                   neighbors=frozenset({"aisle"})),
+    "aisle": Region(id="aisle", kind=RegionKind.AISLE, capacity=1, center=(20, 0),
+                    neighbors=frozenset({"hall"})),
+})
+
 
 def plan_of(robot_id, *steps, t0=0.0):
-    """steps: (path, seconds) pairs, back to back from t0; a one-point path stands still."""
+    """steps: (path, seconds) or (path, seconds, region) back to back from t0; region "hall"
+    unless given. A one-point path stands still."""
     rows, t = [], t0
-    for path, seconds in steps:
-        rows.append({"action": "navigate" if len(path) > 1 else "wait", "region": "hall",
+    for path, seconds, *region in steps:
+        rows.append({"action": "navigate" if len(path) > 1 else "wait",
+                     "region": region[0] if region else "hall",
                      "t_start": t, "t_end": t + seconds, "path": path})
         t += seconds
     return Plan.model_validate({"plan_id": f"{robot_id}-p", "robot_id": robot_id,
@@ -219,3 +233,68 @@ class TestViolations:
         [v] = crowding_conflicts_to_violations([c], limit)
         assert v.refs == (StepRef(robot_id="r1", step_index=0), StepRef(robot_id="r2", step_index=0),
                           StepRef(robot_id="r3", step_index=0))
+
+
+# ---------------- S-2 conflicts go to R-1 and F-2, as S-1's do ----------------
+
+def both_near(*robots):
+    """Every robot drives past the person at once (heights 1, -1, 0.5, ...)."""
+    heights = (1, -1, 0.5)
+    return [along(r, y) for r, y in zip(robots, heights)]
+
+
+class TestYielding:
+
+    def test_s2_is_checked_with_s1_when_people_are_given(self):
+        violations, must_fix = check_cross_plan_conflicts(both_near("r1", "r2"), WORLD, margin=0.0,
+                                                          people=[ORIGIN], crowding=ONE)
+        assert [v.code for v in violations] == ["HUMAN_CROWDING"]
+        assert must_fix == {"r1": violations}   # a full tie: robot_id decides
+
+    def test_without_people_s2_is_not_checked(self):
+        assert check_cross_plan_conflicts(both_near("r1", "r2"), WORLD) == ([], {})
+
+    def test_people_without_a_limit_are_refused(self):
+        with pytest.raises(ValueError, match="CrowdingLimit"):
+            check_cross_plan_conflicts(both_near("r1"), WORLD, people=[ORIGIN])
+
+    def test_the_robot_with_fewer_yields_gives_way(self):
+        ledger = FairnessLedger()
+        ledger.record_yield("r1", "earlier", 0.0, "r2")
+        _, must_fix = check_cross_plan_conflicts(both_near("r1", "r2"), WORLD, ledger, margin=0.0,
+                                                 people=[ORIGIN], crowding=ONE)
+        assert list(must_fix) == ["r2"]
+
+    def test_a_starving_robot_keeps_its_place(self):
+        ledger = FairnessLedger()
+        ledger.record_yield("r2", "earlier", 0.0, "r1")   # by R-1 alone, r1 would give way
+        for _ in range(ledger.starvation_threshold):
+            ledger.record_rejection("r1")
+        _, must_fix = check_cross_plan_conflicts(both_near("r1", "r2"), WORLD, ledger, margin=0.0,
+                                                 people=[ORIGIN], crowding=ONE)
+        assert list(must_fix) == ["r2"]
+
+    def test_n_robots_near_a_person_with_room_for_one_send_n_minus_one_back(self):
+        # r3 drives closest to the x axis, so it is the first within 2 m of the person.
+        _, must_fix = check_cross_plan_conflicts(both_near("r1", "r2", "r3"), WORLD, margin=0.0,
+                                                 people=[ORIGIN], crowding=ONE)
+        assert sorted(must_fix) == ["r1", "r2"]
+
+    def test_s1_and_s2_rank_robots_by_the_same_entry_times(self):
+        """b reaches the person first and a reaches the aisle first. Ranked per conflict, S-2
+        would send a back and S-1 would send b back: "a waits for b" and "b waits for a" in
+        one round. Ranked by each robot's first entry over the whole round, a gives way in both."""
+        a = plan_of("a", (((3, 0),), 4), (((3, 0), (0.5, 0)), 2.5), (((0.5, 0),), 3.5),
+                    (((0.5, 0), (10.5, 0)), 10, "aisle"))     # near the person from 6 s, aisle from 10 s
+        b = plan_of("b", (((-3, 0),), 0.5), (((-3, 0), (-0.5, 0)), 2.5), (((-0.5, 0),), 9),
+                    (((-0.5, 0), (-10.5, 0)), 10, "aisle"))   # near the person from 2.5 s, aisle from 12 s
+        near = CrowdingLimit(radius=1.0, max_robots=1)
+        ledger = FairnessLedger()
+        [s1] = check_capacity_violations([a, b], WORLD, margin=0.5)
+        [s2] = check_crowding([a, b], [ORIGIN], near, margin=0.5)
+        assert assign_yield(s1, {"a": a, "b": b}, ledger) == ["b"]   # each conflict on its own
+        assert assign_yield(s2, {"a": a, "b": b}, ledger) == ["a"]
+        violations, must_fix = check_cross_plan_conflicts([a, b], WORLD, ledger, margin=0.5,
+                                                          people=[ORIGIN], crowding=near)
+        assert [v.code for v in violations] == ["CAPACITY_EXCEEDED", "HUMAN_CROWDING"]
+        assert list(must_fix) == ["a"] and must_fix["a"] == violations

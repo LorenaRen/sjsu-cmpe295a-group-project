@@ -243,7 +243,8 @@ def capacity_conflicts_to_violations(
                 f"but capacity is exceeded at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f})"
             )
 
-        violations.append(Violation(code=code, message=message, refs=refs))
+        violations.append(Violation(code=code, message=message, refs=refs,
+                                    resource_id=conflict.resource_id))
 
     return violations
 
@@ -438,7 +439,7 @@ def _yield_key(robot_id: str, plans: dict[str, Plan], ledger: FairnessLedger,
 
 
 # ---------------------------------------------------------------------------
-# Main check function combining S-1 and R-1
+# Main check function combining S-1, S-2 and R-1
 # ---------------------------------------------------------------------------
 
 def check_cross_plan_conflicts(
@@ -447,29 +448,44 @@ def check_cross_plan_conflicts(
     ledger: FairnessLedger | None = None,
     margin: float = 0.5,
     hold_final: bool = True,
+    people: Sequence[HumanObservation] = (),
+    crowding: CrowdingLimit | None = None,
 ) -> tuple[list[Violation], dict[str, list[Violation]]]:
     """Check multiple plans for cross-plan conflicts and assign yields.
+
+    Every conflict of the round, S-1 and S-2 alike, ranks robots by the same entry
+    times (first_entry_times over all of them). One sort key per robot keeps the
+    yield relations of a round free of cycles across the two rules as well: ranked
+    per rule, S-1 could have b wait for a while S-2 has a wait for b.
 
     Args:
         plans: List of plans to check
         world: World map
         ledger: FairnessLedger for yield tracking (optional)
-        margin: Time margin for swap detection
+        margin: Time margin for swap detection and timing error (S-1 and S-2)
         hold_final: Whether robots hold final position
+        people: People to check S-2 around; none, no S-2
+        crowding: S-2's R and N; needed when there are people
 
     Returns:
         Tuple of:
-        - List of all violations detected
+        - List of all violations detected, S-1's then S-2's
         - Dict mapping robot_id to violations they are responsible for (should replan)
     """
     if ledger is None:
         ledger = FairnessLedger()
+    if people and crowding is None:
+        raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
 
     plans_dict = {p.robot_id: p for p in plans}
 
-    # Detect capacity violations (S-1)
+    # Detect capacity violations (S-1) and crowding around people (S-2)
     conflicts = check_capacity_violations(plans, world, margin=margin, hold_final=hold_final)
     all_violations = capacity_conflicts_to_violations(conflicts)
+    if people:
+        crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final)
+        conflicts += crowded
+        all_violations += crowding_conflicts_to_violations(crowded, crowding)
 
     # Assign yields (R-1), every conflict ranking robots by the same entry times
     robot_violations: dict[str, list[Violation]] = defaultdict(list)

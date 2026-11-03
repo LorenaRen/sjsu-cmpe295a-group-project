@@ -207,8 +207,9 @@ def test_max_duration_is_passed_to_p3(samples_map):
 
 
 @pytest.mark.parametrize("code", [
-    "CAPACITY_EXCEEDED", "EDGE_SWAP", "FINAL_STOP_IN_PASSTHROUGH", "REGION_ACCESS_DENIED",
-    "MAX_DURATION_EXCEEDED", "UNKNOWN_ROBOT", "UNKNOWN_TARGET", "NO_ROUTE", "DEPENDENCY_DEADLOCK",
+    "CAPACITY_EXCEEDED", "EDGE_SWAP", "HUMAN_CROWDING", "FINAL_STOP_IN_PASSTHROUGH",
+    "REGION_ACCESS_DENIED", "MAX_DURATION_EXCEEDED", "UNKNOWN_ROBOT", "UNKNOWN_TARGET", "NO_ROUTE",
+    "DEPENDENCY_DEADLOCK",
 ])
 def test_every_code_the_pipeline_emits_is_a_reason_code(code):
     assert reason_of(Violation(code=code, message="")) == code.lower()

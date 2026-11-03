@@ -212,6 +212,16 @@ region), each robot is "first" in the region it starts in, so each half
 would send the *other* robot back, and the two resulting orderings would
 contradict each other.  With a single conflict, the two definitions agree.
 
+The round includes **S-2's conflicts as well as S-1's**
+(`check_cross_plan_conflicts`): a robot's entry time is its earliest claim
+start over both, whether that claim is on a region or on a person's
+surroundings.  Ranked per rule, S-1 could have b wait for a in an aisle
+while S-2 has a wait for b next to a person, in the same round
+(`test_crowding.py::test_s1_and_s2_rank_robots_by_the_same_entry_times`).
+The cost: when people are near the routes, an S-1 tie can be decided
+differently from a check without people.  For S-2 a person's surroundings
+have capacity N, so n robots near one person send n − N back.
+
 In the TeamPlan pipeline every robot has the same task type, so after the
 ledger the entry time decides; `robot_id` decides only when both robots
 reach the conflict at the same moment (e.g. the mirror-symmetric swap in
@@ -559,7 +569,7 @@ tested in a plain venv.
 | Code | Name | Cat. | Scope | Impl. status |
 |------|------|------|-------|:---:|
 | S-1 | Interval capacity / edge-swap | safety | cross | implemented |
-| S-2 | Human crowding | safety | cross | detector built (`crowding.py`, `check_crowding`); not yet run by `check_team_plan` |
+| S-2 | Human crowding | safety | cross | detector built (`crowding.py`, `check_crowding`) and resolved by R-1 with S-1 (`check_cross_plan_conflicts`); not yet run by `check_team_plan` |
 | S-3 | Unsafe action near humans | safety | single | deferred |
 | P-1 | Final stop in passthrough zone | policy | single | implemented |
 | P-2 | Region access restriction | policy | single | implemented |
