@@ -1,0 +1,344 @@
+{
+  "what": "The Module 5 gate and the fake planner (a development tool with no LLM, mrs_ethical_gate/dev_nodes) in a closed loop on samples_world. Round 1: the gate rejects the plan of mrs_common's valid_two_robots without its depends_on (S-1: both robots would be in the one-robot passage at once) and sends an order_before. The fake planner adds it to the plan as a depends_on and sends the plan again; round 2 is approved, and the gate's ledger records robot_b's yield.",
+  "how_produced": {
+    "date": "2026-11-03",
+    "commit": "f20718a",
+    "machine": "M2 MacBook, macOS 26.5.2, ROS 2 Jazzy (RoboStack conda env mrs-ethics), no simulation",
+    "command": "ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s1_passage_no_order map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml summary_file:=<a file>",
+    "gate_settings": {
+      "speed": 0.5,
+      "margin": 0.5,
+      "max_duration": 3600.0,
+      "starvation_threshold": 3,
+      "start_source": "spawns",
+      "robots": [
+        "robot_a",
+        "robot_b"
+      ]
+    },
+    "recorded_by": "messages: a separate listener node subscribed to /mrs/proposed_plan, /mrs/verdict, /mrs/validated_plan and /mrs/episode_event; fake_planner_summary: the fake planner's summary_file; gate_decisions: the gate's decision log lines",
+    "notes": "speed 0.5 m/s is a placeholder (mrs_sim's cmd_vel limit), not a measured speed. latency_ms is the gate's own measurement of one decide() call on this machine, for these two messages. The fake planner applies the gate's constraints mechanically; it is not Module 4."
+  },
+  "scenario": {
+    "name": "s1_passage_no_order",
+    "file": "src/mrs_ethical_gate/scenarios/s1_passage_no_order.yaml"
+  },
+  "messages": [
+    {
+      "topic": "/mrs/proposed_plan",
+      "attempt": 0,
+      "transaction_id": "67200b1d-2f23-4f3f-9a48-6d5eb739cbd1",
+      "model_name": "fake",
+      "dialogue_digest": "fake planner: the scenario's plan",
+      "plan": {
+        "schema_version": "1.1",
+        "assignments": [
+          {
+            "robot_id": "robot_a",
+            "tasks": [
+              {
+                "task_id": "a1",
+                "action": "navigate",
+                "target": "corridor_1",
+                "priority": 1,
+                "justification": "Drive through the narrow passage.",
+                "depends_on": []
+              },
+              {
+                "task_id": "a2",
+                "action": "hold_position",
+                "target": "room_3",
+                "priority": 1,
+                "justification": "Goal for robot_a.",
+                "depends_on": []
+              }
+            ]
+          },
+          {
+            "robot_id": "robot_b",
+            "tasks": [
+              {
+                "task_id": "b1",
+                "action": "wait",
+                "target": "corridor_2",
+                "priority": 2,
+                "justification": "Stop at corridor_2 on the way; it waits for no other task.",
+                "depends_on": []
+              },
+              {
+                "task_id": "b2",
+                "action": "hold_position",
+                "target": "room_2",
+                "priority": 2,
+                "justification": "Goal for robot_b.",
+                "depends_on": []
+              }
+            ]
+          }
+        ],
+        "rationale": "Both robots need the narrow passage; nobody waits."
+      }
+    },
+    {
+      "topic": "/mrs/verdict",
+      "attempt": 0,
+      "verdict": "REJECT",
+      "rule_ids": [
+        "capacity_exceeded"
+      ],
+      "risk_score": 1.0,
+      "rationale": "Plan rejected: robot_a and robot_b would be in passage at the same time, but it holds 1 robot. Propose a new plan that follows the constraints.",
+      "constraints": [
+        {
+          "kind": "order_before",
+          "rule_id": "capacity_exceeded",
+          "robot_id": "robot_b",
+          "task_id": "a1",
+          "value": "b2",
+          "text": "robot_b: start task b2 only after robot_a has finished task a1; both need passage, which holds 1 robot."
+        }
+      ],
+      "latency_ms": 1.168
+    },
+    {
+      "topic": "/mrs/proposed_plan",
+      "attempt": 1,
+      "transaction_id": "67200b1d-2f23-4f3f-9a48-6d5eb739cbd1",
+      "model_name": "fake",
+      "dialogue_digest": "fake planner: b2.depends_on += a1",
+      "plan": {
+        "schema_version": "1.1",
+        "assignments": [
+          {
+            "robot_id": "robot_a",
+            "tasks": [
+              {
+                "task_id": "a1",
+                "action": "navigate",
+                "target": "corridor_1",
+                "priority": 1,
+                "justification": "Drive through the narrow passage.",
+                "depends_on": []
+              },
+              {
+                "task_id": "a2",
+                "action": "hold_position",
+                "target": "room_3",
+                "priority": 1,
+                "justification": "Goal for robot_a.",
+                "depends_on": []
+              }
+            ]
+          },
+          {
+            "robot_id": "robot_b",
+            "tasks": [
+              {
+                "task_id": "b1",
+                "action": "wait",
+                "target": "corridor_2",
+                "priority": 2,
+                "justification": "Stop at corridor_2 on the way; it waits for no other task.",
+                "depends_on": []
+              },
+              {
+                "task_id": "b2",
+                "action": "hold_position",
+                "target": "room_2",
+                "priority": 2,
+                "justification": "Goal for robot_b.",
+                "depends_on": [
+                  "a1"
+                ]
+              }
+            ]
+          }
+        ],
+        "rationale": "Both robots need the narrow passage; nobody waits."
+      }
+    },
+    {
+      "topic": "/mrs/verdict",
+      "attempt": 1,
+      "verdict": "APPROVE",
+      "rule_ids": [],
+      "risk_score": 0.0,
+      "rationale": "Plan approved: no rule violations found.",
+      "constraints": [],
+      "latency_ms": 0.203
+    },
+    {
+      "topic": "/mrs/validated_plan",
+      "attempt": 1,
+      "source_verdict": "APPROVE",
+      "plan": {
+        "schema_version": "1.1",
+        "assignments": [
+          {
+            "robot_id": "robot_a",
+            "tasks": [
+              {
+                "task_id": "a1",
+                "action": "navigate",
+                "target": "corridor_1",
+                "priority": 1,
+                "justification": "Drive through the narrow passage.",
+                "depends_on": []
+              },
+              {
+                "task_id": "a2",
+                "action": "hold_position",
+                "target": "room_3",
+                "priority": 1,
+                "justification": "Goal for robot_a.",
+                "depends_on": []
+              }
+            ]
+          },
+          {
+            "robot_id": "robot_b",
+            "tasks": [
+              {
+                "task_id": "b1",
+                "action": "wait",
+                "target": "corridor_2",
+                "priority": 2,
+                "justification": "Stop at corridor_2 on the way; it waits for no other task.",
+                "depends_on": []
+              },
+              {
+                "task_id": "b2",
+                "action": "hold_position",
+                "target": "room_2",
+                "priority": 2,
+                "justification": "Goal for robot_b.",
+                "depends_on": [
+                  "a1"
+                ]
+              }
+            ]
+          }
+        ],
+        "rationale": "Both robots need the narrow passage; nobody waits."
+      }
+    }
+  ],
+  "fake_planner_summary": {
+    "scenario": "s1_passage_no_order",
+    "description": "Both robots drive through the one-robot passage and neither waits for the other: robot_b enters it while robot_a is still inside (S-1).",
+    "map": "samples_world",
+    "fleet": [
+      "robot_a",
+      "robot_b"
+    ],
+    "max_attempts": 5,
+    "transaction_id": "67200b1d-2f23-4f3f-9a48-6d5eb739cbd1",
+    "episode_id": "fake-planner-s1-passage-no-order-20261103T194611Z-e887ba",
+    "outcome": "approved",
+    "rounds": 2,
+    "passed_in_round": 2,
+    "constraints": [
+      {
+        "kind": "order_before",
+        "rule_id": "capacity_exceeded",
+        "received": 1,
+        "changed": 1,
+        "noted": 0,
+        "not_applied": 0
+      }
+    ],
+    "not_applied": [],
+    "targets_changed": {},
+    "tasks_inserted": [],
+    "fallback": null,
+    "round_log": [
+      {
+        "round": 1,
+        "attempt": 0,
+        "verdict": "REJECT",
+        "rule_ids": [
+          "capacity_exceeded"
+        ],
+        "risk_score": 1.0,
+        "gate_latency_ms": 1.168,
+        "rationale": "Plan rejected: robot_a and robot_b would be in passage at the same time, but it holds 1 robot. Propose a new plan that follows the constraints.",
+        "constraints": [
+          {
+            "kind": "order_before",
+            "rule_id": "capacity_exceeded",
+            "robot_id": "robot_b",
+            "task_id": "a1",
+            "value": "b2",
+            "text": "robot_b: start task b2 only after robot_a has finished task a1; both need passage, which holds 1 robot.",
+            "result": "changed",
+            "change": "b2.depends_on += a1"
+          }
+        ],
+        "changes": [
+          "b2.depends_on += a1"
+        ],
+        "then": "attempt 1 sent"
+      },
+      {
+        "round": 2,
+        "attempt": 1,
+        "verdict": "APPROVE",
+        "rule_ids": [],
+        "risk_score": 0.0,
+        "gate_latency_ms": 0.203,
+        "rationale": "Plan approved: no rule violations found.",
+        "constraints": [],
+        "changes": [],
+        "then": "approved"
+      }
+    ]
+  },
+  "gate_decisions": [
+    {
+      "transaction_id": "67200b1d-2f23-4f3f-9a48-6d5eb739cbd1",
+      "episode_id": "fake-planner-s1-passage-no-order-20261103T194611Z-e887ba",
+      "attempt": 0,
+      "latency_ms": 1.168,
+      "verdict": "REJECT",
+      "rule_ids": [
+        "capacity_exceeded"
+      ],
+      "must_replan": [
+        "robot_b"
+      ],
+      "replayed": false,
+      "new_episode": true,
+      "ledger": {
+        "robot_a": {
+          "yields": 0,
+          "rejections_in_a_row": 0
+        },
+        "robot_b": {
+          "yields": 0,
+          "rejections_in_a_row": 1
+        }
+      }
+    },
+    {
+      "transaction_id": "67200b1d-2f23-4f3f-9a48-6d5eb739cbd1",
+      "episode_id": "fake-planner-s1-passage-no-order-20261103T194611Z-e887ba",
+      "attempt": 1,
+      "latency_ms": 0.203,
+      "verdict": "APPROVE",
+      "rule_ids": [],
+      "must_replan": [],
+      "replayed": false,
+      "new_episode": false,
+      "ledger": {
+        "robot_a": {
+          "yields": 0,
+          "rejections_in_a_row": 0
+        },
+        "robot_b": {
+          "yields": 1,
+          "rejections_in_a_row": 0
+        }
+      }
+    }
+  ]
+}
