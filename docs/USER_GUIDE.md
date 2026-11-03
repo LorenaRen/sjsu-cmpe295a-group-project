@@ -17,7 +17,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
-| 5 Ethical gatekeeper | `mrs_ethical_gate` | — | — |
+| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 42 gate + 152 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
@@ -463,6 +463,68 @@ upstream's `ethics_bot` body (0.45 × 0.30 m, 0.06 m wheels, 0.36 m track) plus 
 each robot in its own colour (a orange, b blue, c green, d purple). Sizes, sensor mounts and speed limits
 are constants at the top of `robot_model.py`; the static sensor transforms are generated from the same
 numbers, so edit them there, not in the template.
+
+### 4.3 Module 5 — ethical gatekeeper (`mrs_ethical_gate`, `fleet_checker`)
+
+Checks every plan on `/mrs/proposed_plan` against the shared checker's rules and answers each one with
+an `EthicalVerdict` on `/mrs/verdict`. On APPROVE it also publishes the plan on `/mrs/validated_plan`
+(`source_verdict` APPROVE), the only topic the executor listens to. REJECT carries a rationale and
+structured constraints (`constraints_from_verdict`) for the planner's next attempt.
+
+Two packages: `fleet_checker` is the checker itself, pure Python with no ROS imports;
+`mrs_ethical_gate` is the node around it. The rules, the verdict mapping and the gate's behaviour are
+documented in `src/fleet_checker/docs/rules_v1.md`.
+
+```bash
+ros2 launch mrs_ethical_gate gate.launch.py                          # narrow_aisle, 2 robots, sim time
+ros2 launch mrs_ethical_gate gate.launch.py world:=aisle_bypass robots:=3   # same values as sim.launch.py
+
+# without a simulation, on the map the sample plans were written for:
+ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false \
+    map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml
+ros2 topic echo /mrs/verdict                                      # second terminal
+ros2 run mrs_common sample_plan_pub                               # third: APPROVE, plus a ValidatedPlan
+ros2 run mrs_common sample_plan_pub --ros-args -p sample:=keep_clear_stop.json   # REJECT, forbid_node door_A
+```
+
+The sample plans use node names (`corridor_1`, `door_A`, `office_1`, ...) that exist only in the test
+map `samples_world.yaml`, not in `narrow_aisle`; on `narrow_aisle` every sample is rejected as
+`unknown_target`.
+
+| Launch argument | Default | Meaning |
+|---|---|---|
+| `world` | `narrow_aisle` | world name in `mrs_sim/worlds/`, or a path to a `.sdf` with its `.yaml` next to it |
+| `map_file` | empty | a map `.yaml` to use instead of `world` (e.g. a test map with no `.sdf`) |
+| `robots` | `2` | robot count; robot *i* starts at the map's spawn slot *i*, as in `sim.launch.py` |
+| `params_file` | `config/gate.yaml` | the check settings below |
+| `use_sim_time` | `true` | stamp messages with simulation time; `false` when no simulation runs |
+
+`config/gate.yaml` holds `speed` (nominal driving speed in m/s, used to time each robot's plan; no
+default in the code, and the file's value is a placeholder until Module 6's speed is measured),
+`margin`, `max_duration`, `starvation_threshold` and `start_source`. `config/policy.yaml` says which
+task types may enter which zones; by default no robot may enter a `restricted` zone. Parameters are
+read once at start-up: restart the node to change them. The node logs its settings as one JSON line at
+start-up and one JSON line per decision (verdict, rule ids, who must replan, fairness ledger,
+`latency_ms`).
+
+**Each verdict:**
+- `rule_ids` are `mrs_common.reasons` codes.
+- `risk_score` is an ordinal level (1.0 conflict, 0.67 a zone rule, 0.33 a plan that cannot run or
+  cannot be read), not a probability.
+- `latency_ms` is the time the check took inside the gate.
+- A plan whose `plan_json` cannot be read is rejected with `llm_malformed`.
+- A repeated message (same `transaction_id` and `attempt`) gets the same verdict again.
+
+**Not done yet:**
+- Robots always start at the spawn slots, so verdicts are right only until robots move. Reading
+  Module 3's `/mrs/team_state` is the next step.
+- No MODIFY: the gate never repairs a plan itself.
+- Assumed, to confirm with Module 4: FALLBACK plans (`hold_all_plan`) go to `/mrs/validated_plan`
+  directly, not through the gate.
+
+Tests: `cd src/fleet_checker && pytest -q` and `cd src/mrs_ethical_gate && pytest -q`. Both run without
+ROS, for example in a plain venv; the four tests in `test_gate_node.py` also need the built and
+sourced workspace and skip otherwise.
 
 ---
 
