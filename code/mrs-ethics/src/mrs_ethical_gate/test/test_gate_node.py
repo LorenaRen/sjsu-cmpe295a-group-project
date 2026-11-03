@@ -37,6 +37,7 @@ pytestmark = pytest.mark.skipif(
 PKG = Path(__file__).resolve().parents[1]
 SAMPLES_WORLD = PKG.parent / "fleet_checker/test/fixtures/samples_world.yaml"
 POLICY = PKG / "config" / "policy.yaml"
+SAMPLES_PEOPLE = PKG / "test" / "fixtures" / "samples_world_people.yaml"
 
 
 def spin_until(executor, done, timeout=5.0) -> bool:
@@ -67,9 +68,21 @@ def ros():
 
 @pytest.fixture
 def wired(ros):
+    yield from _wired()
+
+
+@pytest.fixture
+def wired_with_a_person(ros):
+    yield from _wired(Parameter("people_file", value=str(SAMPLES_PEOPLE)))
+
+
+def _wired(*more):
+    """The gate on samples_world, required parameters as in config/gate.yaml, and a probe."""
     gate = GateNode(parameter_overrides=[Parameter("speed", value=0.5),
+                                         Parameter("crowding_radius", value=1.5),
+                                         Parameter("crowding_max_robots", value=1),
                                          Parameter("map_file", value=str(SAMPLES_WORLD)),
-                                         Parameter("policy_file", value=str(POLICY))])
+                                         Parameter("policy_file", value=str(POLICY)), *more])
     probe = Probe()
     executor = SingleThreadedExecutor()
     executor.add_node(gate)
@@ -117,6 +130,13 @@ def test_an_unreadable_plan_gets_a_reject(wired):
     executor, probe = wired
     _, v = send(executor, probe, load_sample("invalid_bad_action.json"))
     assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.LLM_MALFORMED])
+
+
+def test_a_person_from_the_people_file_is_checked_for_crowding(wired_with_a_person):
+    executor, probe = wired_with_a_person
+    _, v = send(executor, probe, load_sample("valid_two_robots.json"))
+    assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.HUMAN_CROWDING])
+    assert v.risk_score == pytest.approx(1.0)
 
 
 def test_the_gate_does_not_start_without_a_speed(ros):

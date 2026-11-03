@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.5, 2026-11-02
+Status: draft v0.6, 2026-11-02
 
 ---
 
@@ -18,26 +18,99 @@ head-on (A→B while B→A), the detector labels it `EDGE_SWAP` instead of
 overlap; the detector checks whether the two offending claims involve
 adjacent regions with swapped directions and tags accordingly.
 
+The sweep counts robots, not claims.  A robot whose consecutive claims on
+a resource overlap (margin > 0) or touch, to 1e-6 s (margin = 0), is there
+throughout, so a conflict is not reported in two pieces split at that
+robot's handover from one step to the next.  Between different robots the
+intervals stay half-open: one leaving at t and another arriving at t is a
+clean handover.
+
 - **Scope:** cross-plan
 - **Data:** `Claim.resource_id`, `Claim.start/end` (from each Plan via
   `claims()`); `WorldMap.capacity()`; `WorldMap.regions[].neighbors`
   (for EDGE_SWAP identification)
-- **Source:** ISO 3691-4 (industrial truck safety clearance, clause TBD);
-  project-defined
+- **Source:** Project-defined.  Related standard: ISO 3691-4 (driverless
+  industrial trucks; not yet reviewed; clause TBD).
 
 ### S-2  Human crowding
 
-At a given moment, more than N robots are within radius R metres of the
-same observed human.  Each robot individually keeps a safe distance, but
-their combined presence violates the limit — this is the cross-plan case
-that per-robot guardrails cannot catch.
+At some moment, more than **N** robots are within **R** metres of the same
+person.  Each robot on its own may keep its distance; it is their combined
+presence that breaks the limit, and no per-robot guardrail can see that.
+
+**How it is checked.**  The surroundings of a person, the disc of radius R
+around them, are treated as one more resource with capacity N.  S-2 is then
+S-1's problem again: claims on a resource, swept for moments with more
+distinct robots than the capacity (`cross_plan.sweep_over_capacity`), with
+R-1 choosing who yields.  Only the claims are new (`crowding.py`):
+
+- Every compiled step has a path (`PlanStep.path`) driven at constant speed.
+  On one straight piece the robot's position is linear in time, so "within
+  R" is a quadratic inequality in t, and its roots, cut to the piece's time
+  span, say exactly when the robot is inside.  Nothing is sampled.  Example:
+  driving from (−5, 0) to (5, 0) at 1 m/s past a person at (0, 1) with
+  R = 2 m gives (t − 5)² + 1 ≤ 4, so t ∈ [5 − √3, 5 + √3] ≈ [3.27, 6.73] s.
+- A robot standing still is inside or outside for its whole step.  The disc
+  is closed, but touching its edge for an instant is not a stay.
+- One claim for each stretch of a step spent inside; a robot that leaves and
+  comes back within one step gets two.  The sweep counts robots, not claims.
+- `margin` widens each claim on both sides, as in S-1: it absorbs the timing
+  error of the compiled timeline.  R is what absorbs position error
+  (`WorldState.at` can be 0.5 m off; the CBF moves robots off the straight
+  line).
+- A robot whose plan ends inside the disc stays there (`hold_final`), so a
+  robot parked next to a person takes one of the N places for good.
+- People are taken to stand where they were observed for the whole plan.
+
+**R and N** are parameters with no default in the checker
+(`CrowdingLimit`), and both are **placeholders**: neither has been
+measured, and neither comes from a standard.  The gate's
+`config/gate.yaml` sets R = 1.5 m and N = 1; N = 1 because with two
+robots, N ≥ 2 can never be exceeded.
+
+**Where people come from.**  The checker takes the people with every
+check, as `HumanObservation`s (id, position in the map frame), the way it
+takes the robots' start nodes.  Neither `narrow_aisle` nor the test map
+`samples_world` has people, and the map format has no place for them (both
+mrs_sim's loader and `sim_map.py` reject unknown keys).  People belong to a
+scenario rather than to a world: `PerceivedEntity.msg` describes them as
+actors from the scenario YAML.  Tests place people in code.  The gate
+reads them from a people file (`people_file`; by default
+`config/people.yaml`, which lists nobody, so S-2 finds nothing) and refuses
+two people with one id, or a person outside every zone of the map (most
+likely mistyped coordinates).  Later the positions are to come from
+`/mrs/team_state` (see the limitations).
+
+**What S-2 does not do.**  A single robot too close to a person is the job
+of each robot's own safety layer: the previous team's per-robot gate (speed
+set to zero when too close) and Module 6's CBF filter (people are obstacles
+with a larger clearance, `PerceivedEntity.msg`).  With N ≥ 1, one robot near
+a person never fails S-2, and S-3 stays deferred.  S-2 predicts from the
+plan: if the timings or the people's positions differ at run time, it can
+miss crowding that does happen.  How often more than N robots really were
+near a person is for the evaluation to count (Module 9's violation
+monitor, Module 11), not for S-2.
+
+**Known limitations.**
+
+1. **Straight-line distance, through walls.**  A robot on the other side of
+   a wall counts as near the person.  This errs towards reporting.
+2. **Once people come from `/mrs/team_state`, only people a robot sees are
+   checked.**  `TeamState` has no list of everyone in the scenario; people
+   appear in each robot's `WorldState.obstacles`, within its perception
+   range.  S-2 checks the route ahead, so a person on it whom no robot sees
+   yet is missed.  To raise with Modules 3 and 9: publish every person in
+   the scenario.
+3. **R has to agree with Module 6's CBF clearance for people.**  R should be
+   at least that clearance; otherwise S-2 counts positions the CBF never
+   lets a robot reach.  Module 6 has not set the clearance yet.
 
 - **Scope:** cross-plan
-- **Data:** `Claim` (which robot is in which region and when);
-  `WorldMap.regions[].center` (approximate robot position);
-  `WorldSnapshot.humans[].position`
-- **Source:** ISO 13482 (personal-care robot safety distance, clause TBD);
-  BS 8611 (ethical risk assessment, clause TBD)
+- **Data:** each step's `path` and times (`Plan`); the people
+  (`HumanObservation`); R and N (`CrowdingLimit`)
+- **Source:** Project-defined.  Related standards: ISO 13482 (personal care
+  robots; not yet reviewed; clause TBD); BS 8611 (ethical design of robots;
+  not yet reviewed; clause TBD).  R and N do not come from either.
 
 ### S-3  Unsafe action near humans — DEFERRED
 
@@ -49,7 +122,9 @@ that per-robot guardrails cannot catch.
 > Shervan provides speed parameters for each `Action`.
 
 - **Scope:** single-plan
-- **Source:** ISO 13482 (speed/force limits, clause TBD); BS 8611
+- **Source:** Project-defined.  Related standards: ISO 13482 (personal care
+  robots; not yet reviewed; clause TBD); BS 8611 (ethical design of robots;
+  not yet reviewed; clause TBD).
 
 ---
 
@@ -92,7 +167,8 @@ decided here (an empty set means nobody).
 
 - **Scope:** single-plan
 - **Data:** `Plan.task_type`; `PlanStep.region`; policy config (new)
-- **Source:** ISO 3691-4 (restricted operating zones, clause TBD)
+- **Source:** Project-defined.  Related standard: ISO 3691-4 (driverless
+  industrial trucks; not yet reviewed; clause TBD).
 
 ### P-3  Maximum plan duration
 
@@ -152,6 +228,16 @@ a head-on swap breaks this: it is reported as two conflicts (one in each
 region), each robot is "first" in the region it starts in, so each half
 would send the *other* robot back, and the two resulting orderings would
 contradict each other.  With a single conflict, the two definitions agree.
+
+The round includes **S-2's conflicts as well as S-1's**
+(`check_cross_plan_conflicts`): a robot's entry time is its earliest claim
+start over both, whether that claim is on a region or on a person's
+surroundings.  Ranked per rule, S-1 could have b wait for a in an aisle
+while S-2 has a wait for b next to a person, in the same round
+(`test_crowding.py::test_s1_and_s2_rank_robots_by_the_same_entry_times`).
+The cost: when people are near the routes, an S-1 tie can be decided
+differently from a check without people.  For S-2 a person's surroundings
+have capacity N, so n robots near one person send n − N back.
 
 In the TeamPlan pipeline every robot has the same task type, so after the
 ledger the entry time decides; `robot_id` decides only when both robots
@@ -281,8 +367,8 @@ checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 | File | Does |
 |------|------|
 | `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
-| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
-| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check on a changed plan.  `conflicts(result)` lists the S-1 conflicts once each (both halves of a head-on swap are one), with their yielders, for the ledger. |
+| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
+| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 (and S-2, when `people` and a `CrowdingLimit` are given) + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check, with the same people, on a changed plan.  `conflicts(result)` lists the S-1 and S-2 conflicts once each (both halves of a head-on swap are one), with where they are (zone or person) and their yielders, for the ledger. |
 | `verdict.py` | `to_verdict`: a `check_team_plan` result → the decision fields of an `EthicalVerdict` (see "Verdict for Module 5" below). |
 
 `TeamPlan.priority` is kept for logs only; who yields is decided by R-1
@@ -330,6 +416,7 @@ are produced; MODIFY is designed (below) but not built.
 | Finding | Constraint (`mrs_common.plan_schema.Constraint`) |
 |---------|--------------------------------------------------|
 | S-1 `capacity_exceeded`, `edge_swap` | `order_before`: the keeper's task that takes it out of the zone (`task_id`) must finish before the yielder's task that takes it in (`value`); `robot_id` is the yielder.  One per (yielder, keeper) pair, verified first (below). |
+| S-2 `human_crowding` | The same, with "away from the person" for "out of the zone" and "near them" for "in": `order_before`, verified first, else `custom`.  The texts give R, N and the person's nearest node, because the planner knows nodes, not where people stand. |
 | P-1 `final_stop_in_passthrough` | `forbid_node` for every node of the zone |
 | P-2 `region_access_denied` | `avoid_node` for every node of the zone; `custom` if the zone has no node |
 | P-3 `max_duration_exceeded` | `custom`, with the plan's duration and the limit |
@@ -350,11 +437,14 @@ starts; the ordering may close a cycle with the plan's `depends_on`; or the
 plan may already contain it (the conflict then comes from the time
 margin).  So each suggested `order_before` is added as a `depends_on` to a
 copy of the TeamPlan, and the copy is checked again with the same map,
-start nodes, ledger and settings.  If the conflict between those two
-robots in that zone is gone, the `order_before` is sent; otherwise a
-`custom` constraint says why ordering them does not help.
+start nodes, people, ledger and settings.  If the conflict between those
+two robots in that zone (for S-2: near that person) is gone, the
+`order_before` is sent; otherwise a `custom` constraint says why ordering
+them does not help.  For S-2 the reasons are the same, with "near the
+person" for "in the zone".
 
-The verification looks only at **that pair of robots in that zone**.  It
+The verification looks only at **that pair of robots in that zone** (or
+near that person).  It
 does not guarantee that the reordered plan creates no new conflict
 elsewhere.  On the REJECT path the next round's check catches those;
 MODIFY must check the whole modified plan again before approving it.
@@ -366,6 +456,7 @@ MODIFY must check the whole modified plan again before approving it.
   | Reason code | Rule |
   |-------------|------|
   | `capacity_exceeded`, `edge_swap` | S-1 |
+  | `human_crowding` | S-2 |
   | `final_stop_in_passthrough` | P-1 |
   | `region_access_denied` | P-2 |
   | `max_duration_exceeded` | P-3 |
@@ -383,7 +474,7 @@ MODIFY must check the whole modified plan again before approving it.
 
   | Level | `risk_score` | Findings | Meaning |
   |-------|--------------|----------|---------|
-  | 3 | 1.0 | S-1 | robots predicted to collide or block each other |
+  | 3 | 1.0 | S-1, S-2 | robots predicted to collide or block each other; too many robots near one person.  S-2's level is a **placeholder**, ranked with S-1 until the team decides |
   | 2 | 0.67 | P-1, P-2 | a rule about where robots may be is broken |
   | 1 | 0.33 | P-3, plan does not compile, `plan_json` unreadable | the plan cannot run as written, or runs too long |
   | 0 | 0.0 | approved | |
@@ -403,7 +494,7 @@ MODIFY must check the whole modified plan again before approving it.
 
 - **Switch.**  A `modify` flag on the gate's entry point (a parameter of
   the gate node), off by default.
-- **When.**  Only if every finding is S-1 and each produced a verified
+- **When.**  Only if every finding is S-1 or S-2 and each produced a verified
   `order_before`.  P-1, P-2, P-3 and compile errors always go back to the
   planner: where else to stop or route needs its judgment.
 - **How.**  Add all of those orderings as `depends_on` to a copy of the
@@ -474,10 +565,15 @@ tested in a plain venv.
   incomparable): `world` / `map_file`, `robots`, `start_source`, `speed`
   (no default; `config/gate.yaml` holds a placeholder until Module 6's
   speed is measured), `margin`, `max_duration`, `starvation_threshold`,
-  `policy_file`.  The access policy and task types are a YAML file
-  (`config/policy.yaml`) because ROS parameters cannot hold nested
-  tables.  The node logs the effective settings as one JSON line at
-  start-up, and one JSON line per decision.
+  `policy_file`, and for S-2 `crowding_radius` (R) and
+  `crowding_max_robots` (N), which have no default either
+  (`config/gate.yaml` holds placeholders) and `people_file`.  The access
+  policy and task types are a YAML file (`config/policy.yaml`) because ROS
+  parameters cannot hold nested tables; the people are a YAML list
+  (`config/people.yaml`, nobody), named by the launch argument
+  `people_file` because they belong to the scenario.  The node logs the
+  effective settings as one JSON line at start-up, and one JSON line per
+  decision.
 - **FALLBACK** (assumption, to confirm with Module 4): the all-hold plan
   (`hold_all_plan`, `source_verdict` FALLBACK) does not pass through the
   gate; Module 4 publishes it on `/mrs/validated_plan` itself.  The gate
@@ -500,7 +596,7 @@ tested in a plain venv.
 | Code | Name | Cat. | Scope | Impl. status |
 |------|------|------|-------|:---:|
 | S-1 | Interval capacity / edge-swap | safety | cross | implemented |
-| S-2 | Human crowding | safety | cross | not yet (Sprint 2) |
+| S-2 | Human crowding | safety | cross | implemented (checker and gate); people from a static file until `/mrs/team_state` |
 | S-3 | Unsafe action near humans | safety | single | deferred |
 | P-1 | Final stop in passthrough zone | policy | single | implemented |
 | P-2 | Region access restriction | policy | single | implemented |

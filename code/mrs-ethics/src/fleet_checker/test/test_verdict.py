@@ -10,6 +10,8 @@ from mrs_common.plan_schema import TeamPlan, constraints_from_json, constraints_
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 from fleet_checker.adapters.team_check import check_team_plan
 from fleet_checker.adapters.verdict import APPROVE, MODIFY, REJECT, to_verdict, unreadable_plan_verdict
+from fleet_checker.crowding import CrowdingLimit
+from fleet_checker.plan import HumanObservation
 from fleet_checker.policy import AccessPolicy
 
 SRC = Path(__file__).resolve().parents[2]    # the workspace's src/
@@ -168,6 +170,58 @@ def test_ordering_that_would_close_a_cycle_gets_custom(samples_map):
     [c] = v.constraints
     assert (c.kind, c.robot_id, c.rule_id) == ("custom", "robot_b", R.CAPACITY_EXCEEDED)
     assert "cycle" in c.text
+
+
+# ---------------- S-2 -> verified order_before, or custom ----------------
+
+LIMIT = CrowdingLimit(radius=1.5, max_robots=1)   # placeholder values, as in the gate's config
+BY_C = HumanObservation(human_id="person_1", position=(5.0, 1.0))         # 1 m from the crossing
+BY_ROOM_E = HumanObservation(human_id="person_1", position=(12.5, 0.5))   # 0.86 m from room_e_n
+
+# robot_a drives w -> c -> e and robot_b n -> c -> s, both past the person at c, around t = 4 s.
+CROSSING = team(("robot_a", [task("a1", "navigate", "e")]), ("robot_b", [task("b1", "navigate", "s")]))
+
+
+def test_crowding_at_a_crossing_gives_a_verified_order_before(crossroads):
+    v = verdict_for(crossroads, CROSSING, speed=1.0, people=[BY_C], crowding=LIMIT)
+    assert (v.verdict, v.rule_ids, v.risk_score) == (REJECT, (R.HUMAN_CROWDING,), 1.0)
+    assert v.rationale == ("Plan rejected: robot_a and robot_b would be within 1.5 m of person_1 "
+                           "(nearest node c) at the same time, but at most 1 robot may be. "
+                           "Propose a new plan that follows the constraints.")
+    # robot_b is next to the person first, so robot_a waits (at w, 5 m away) for b1.
+    [c] = v.constraints
+    assert (c.kind, c.rule_id, c.robot_id, c.task_id, c.value) == (
+        "order_before", R.HUMAN_CROWDING, "robot_a", "b1", "a1")
+    assert c.text == ("robot_a: start task a1 only after robot_b has finished task b1; both would be "
+                      "within 1.5 m of person_1 (nearest node c), where at most 1 robot may be at once.")
+
+
+def test_following_the_crowding_order_before_is_approved(crossroads):
+    fixed = edited(CROSSING, lambda t: t["depends_on"].append("b1") if t["task_id"] == "a1" else None)
+    assert verdict_for(crossroads, fixed, speed=1.0, people=[BY_C], crowding=LIMIT).verdict == APPROVE
+
+
+def test_crowding_that_ordering_would_turn_into_a_cycle_gets_custom(aisle_map):
+    # robot_b waits next to the person for robot_a; robot_a would have to wait for robot_b to leave.
+    plan = team(("robot_a", [task("a1", "hold_position", "room_e_s")]),
+                ("robot_b", [task("b1", "wait", "room_e_n", depends_on=["a1"]),
+                             task("b2", "hold_position", "room_w_n", depends_on=["b1"])]))
+    v = verdict_for(aisle_map, plan, people=[BY_ROOM_E], crowding=LIMIT)
+    [c] = v.constraints
+    assert (c.kind, c.rule_id, c.robot_id, c.task_id) == ("custom", R.HUMAN_CROWDING, "robot_a", "a1")
+    assert c.text == ("robot_a and robot_b would be within 1.5 m of person_1 (nearest node room_e) at "
+                      "the same time, but at most 1 robot may be, and making robot_a wait for robot_b "
+                      "does not fix it: the tasks would wait for each other in a cycle. Change the plan "
+                      "so that robot_a keeps more than 1.5 m from person_1 while robot_b is there.")
+
+
+def test_a_robot_that_stays_next_to_the_person_gets_custom(aisle_map):
+    plan = team(("robot_a", [task("a1", "hold_position", "room_e_s")]),
+                ("robot_b", [task("b1", "hold_position", "room_e_n")]))   # already there
+    v = verdict_for(aisle_map, plan, people=[BY_ROOM_E], crowding=LIMIT)
+    [c] = v.constraints
+    assert (c.kind, c.robot_id) == ("custom", "robot_a")
+    assert "robot_b stays within 1.5 m of person_1 until the end of its plan" in c.text
 
 
 # ---------------- P-3 and compile errors -> custom ----------------

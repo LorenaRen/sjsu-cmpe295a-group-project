@@ -7,6 +7,12 @@ S-1: Interval capacity violation
     When two robots swap adjacent regions head-on (A→B while B→A), the detector
     labels it `EDGE_SWAP` instead of `CAPACITY_EXCEEDED`.
 
+S-2: Human crowding
+    More than N robots within R metres of the same person at once. Each
+    person's surroundings are one more resource, of capacity N: the claims
+    come from crowding.py, the sweep is S-1's (sweep_over_capacity), and the
+    conflicts go to the same R-1.
+
 R-1: Yield assignment
     When a conflict is detected, decide which robots yield (n robots in a
     capacity-c region: n - c of them) based on:
@@ -23,23 +29,17 @@ F-2: Starvation override
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Mapping, NamedTuple
+from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence
 
-from .plan import Claim, Plan, StepRef, TaskType, Violation, WorldMap, claims
+from .crowding import CrowdingLimit, crowding_claims
+from .plan import TIME_EPS, Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims
 
 
 # ---------------------------------------------------------------------------
 # S-1: Capacity violation detection (sweep-line algorithm)
 # ---------------------------------------------------------------------------
-
-class ConflictEvent(NamedTuple):
-    """An event in the sweep-line algorithm."""
-    time: float
-    is_start: bool  # True = claim starts, False = claim ends
-    claim: Claim
-
 
 class CapacityConflict(NamedTuple):
     """A detected capacity conflict between claims."""
@@ -49,6 +49,63 @@ class CapacityConflict(NamedTuple):
     t_end: float
     is_edge_swap: bool
     capacity: int  # of resource_id; R-1 needs it to know how many robots must yield
+
+
+class OverCapacity(NamedTuple):
+    """A stretch of time in which more distinct robots hold claims on one resource than it allows."""
+    claims: tuple[Claim, ...]  # every claim taking part, sorted by robot, step, start, end
+    t_start: float
+    t_end: float
+
+
+def sweep_over_capacity(claims: Iterable[Claim], capacity: int) -> list[OverCapacity]:
+    """Sweep line over the claims on ONE resource: every stretch of time in which more
+    than `capacity` distinct robots hold a claim, in time order.
+
+    Shared by S-1 (a region or resource) and S-2 (the surroundings of a person).
+
+    Robots are counted, not claims. A robot is present from the start of a claim until the
+    end of the last of its claims that overlap or touch (to TIME_EPS): its consecutive steps
+    overlap with margin > 0 and touch with margin = 0, and either way it is one robot,
+    there throughout, so a stretch is not cut in two at its handover. Between robots,
+    intervals are half-open: one leaving at t and another arriving at t do not overlap
+    (ends are processed before starts). A stretch lasts until the count is back within
+    capacity, so overlaps that chain (r1 with r2, r2 with r3) are one stretch with all
+    three robots (see assign_yield). A stretch's claims are every claim overlapping it.
+    """
+    claims = list(claims)
+    presence: list[tuple[float, float]] = []      # each robot's stretches of being there
+    by_robot: dict[str, list[Claim]] = defaultdict(list)
+    for c in claims:
+        by_robot[c.robot_id].append(c)
+    for robot_claims in by_robot.values():
+        robot_claims.sort(key=lambda c: (c.start, c.end))
+        start, end = robot_claims[0].start, robot_claims[0].end
+        for c in robot_claims[1:]:
+            if c.start <= end + TIME_EPS:
+                end = max(end, c.end)
+            else:
+                presence.append((start, end))
+                start, end = c.start, c.end
+        presence.append((start, end))
+
+    events = sorted([(end, False) for _, end in presence] + [(start, True) for start, _ in presence])
+    out: list[OverCapacity] = []
+    present = 0
+    stretch_start: float | None = None
+    for time, is_start in events:
+        if is_start:
+            present += 1
+            if present > capacity and stretch_start is None:
+                stretch_start = time
+        else:
+            present -= 1
+            if stretch_start is not None and present <= capacity:
+                taking_part = sorted((c for c in claims if c.start < time and c.end > stretch_start),
+                                     key=lambda c: (c.robot_id, c.step_index, c.start, c.end))
+                out.append(OverCapacity(tuple(taking_part), stretch_start, time))
+                stretch_start = None
+    return out
 
 
 def _capacity_of(resource_id: str, world: WorldMap) -> int:
@@ -131,58 +188,12 @@ def check_capacity_violations(
         for claim in claims(plan, margin=margin, hold_final=hold_final):
             resource_claims[claim.resource_id].append(claim)
 
-    # First pass: detect all capacity violations without edge swap labeling
+    # First pass: detect all capacity violations without edge swap labeling,
+    # each resource on its own
     raw_conflicts: list[tuple[str, tuple[Claim, ...], float, float]] = []
-
-    # Check each resource independently
     for resource_id, resource_claims_list in resource_claims.items():
-        if len(resource_claims_list) < 2:
-            continue
-
-        capacity = _capacity_of(resource_id, world)
-
-        # Build sweep-line events
-        events: list[ConflictEvent] = []
-        for claim in resource_claims_list:
-            events.append(ConflictEvent(claim.start, True, claim))
-            events.append(ConflictEvent(claim.end, False, claim))
-
-        # Sort: by time, then ends before starts at same time (half-open intervals)
-        events.sort(key=lambda e: (e.time, e.is_start))
-
-        # Sweep through events. Capacity counts distinct robots, not claims:
-        # with margin > 0 a robot's consecutive steps in the same region
-        # overlap, and that is still one robot. A Counter (not a set of
-        # robot_ids) keeps the robot active until its last claim ends.
-        active_claims: set[Claim] = set()
-        active_robots: Counter[str] = Counter()
-        conflict_start: float | None = None
-        conflict_claims: set[Claim] = set()
-
-        for event in events:
-            robot_id = event.claim.robot_id
-            if event.is_start:
-                active_claims.add(event.claim)
-                active_robots[robot_id] += 1
-
-                if len(active_robots) > capacity:
-                    # Entering a conflict state
-                    if conflict_start is None:
-                        conflict_start = event.time
-                    conflict_claims.update(active_claims)
-            else:
-                active_claims.discard(event.claim)
-                active_robots[robot_id] -= 1
-                if active_robots[robot_id] == 0:
-                    del active_robots[robot_id]
-
-                if conflict_start is not None and len(active_robots) <= capacity:
-                    # Exiting conflict state - record the conflict
-                    conflict_tuple = tuple(sorted(conflict_claims, key=lambda c: (c.robot_id, c.step_index)))
-                    raw_conflicts.append((resource_id, conflict_tuple, conflict_start, event.time))
-
-                    conflict_start = None
-                    conflict_claims.clear()
+        for s in sweep_over_capacity(resource_claims_list, _capacity_of(resource_id, world)):
+            raw_conflicts.append((resource_id, s.claims, s.t_start, s.t_end))
 
     # Second pass: detect edge swaps by looking at pairs of conflicts
     swap_indices = _detect_edge_swap(raw_conflicts, world)
@@ -228,8 +239,61 @@ def capacity_conflicts_to_violations(
                 f"but capacity is exceeded at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f})"
             )
 
-        violations.append(Violation(code=code, message=message, refs=refs))
+        violations.append(Violation(code=code, message=message, refs=refs,
+                                    resource_id=conflict.resource_id))
 
+    return violations
+
+
+# ---------------------------------------------------------------------------
+# S-2: Human crowding (S-1's sweep, over each person's surroundings)
+# ---------------------------------------------------------------------------
+
+def check_crowding(
+    plans: list[Plan],
+    people: Sequence[HumanObservation],
+    limit: CrowdingLimit,
+    margin: float = 0.0,
+    hold_final: bool = True,
+) -> list[CapacityConflict]:
+    """Detect every stretch of time in which more than limit.max_robots robots are
+    within limit.radius metres of the same person.
+
+    Each person's surroundings are swept like one of S-1's regions, with capacity N;
+    a conflict's resource_id is the person's id. They are never edge swaps.
+    """
+    ids = [p.human_id for p in people]
+    shared = sorted({i for i in ids if ids.count(i) > 1})
+    if shared:
+        raise ValueError(f"two people have the id {shared[0]!r}; every person needs an id of their own")
+    conflicts: list[CapacityConflict] = []
+    for person in people:
+        person_claims = [c for plan in plans
+                         for c in crowding_claims(plan, [person], limit.radius, margin, hold_final)]
+        for s in sweep_over_capacity(person_claims, limit.max_robots):
+            conflicts.append(CapacityConflict(person.human_id, s.claims, s.t_start, s.t_end,
+                                              is_edge_swap=False, capacity=limit.max_robots))
+    return conflicts
+
+
+def crowding_conflicts_to_violations(conflicts: list[CapacityConflict],
+                                     limit: CrowdingLimit) -> list[Violation]:
+    """HUMAN_CROWDING violations. resource_id is the person; each step is referred to once,
+    even when the robot was near the person twice during it."""
+    most = "1 robot" if limit.max_robots == 1 else f"{limit.max_robots} robots"
+    violations: list[Violation] = []
+    for conflict in conflicts:
+        robot_ids = sorted({c.robot_id for c in conflict.claims})
+        refs = tuple(dict.fromkeys(StepRef(robot_id=c.robot_id, step_index=c.step_index)
+                                   for c in conflict.claims))
+        violations.append(Violation(
+            code="HUMAN_CROWDING",
+            message=(f"robots {', '.join(robot_ids)} are within {limit.radius:g} m of "
+                     f"{conflict.resource_id} at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f}); "
+                     f"at most {most} may be"),
+            refs=refs,
+            resource_id=conflict.resource_id,
+        ))
     return violations
 
 
@@ -371,7 +435,7 @@ def _yield_key(robot_id: str, plans: dict[str, Plan], ledger: FairnessLedger,
 
 
 # ---------------------------------------------------------------------------
-# Main check function combining S-1 and R-1
+# Main check function combining S-1, S-2 and R-1
 # ---------------------------------------------------------------------------
 
 def check_cross_plan_conflicts(
@@ -380,29 +444,44 @@ def check_cross_plan_conflicts(
     ledger: FairnessLedger | None = None,
     margin: float = 0.5,
     hold_final: bool = True,
+    people: Sequence[HumanObservation] = (),
+    crowding: CrowdingLimit | None = None,
 ) -> tuple[list[Violation], dict[str, list[Violation]]]:
     """Check multiple plans for cross-plan conflicts and assign yields.
+
+    Every conflict of the round, S-1 and S-2 alike, ranks robots by the same entry
+    times (first_entry_times over all of them). One sort key per robot keeps the
+    yield relations of a round free of cycles across the two rules as well: ranked
+    per rule, S-1 could have b wait for a while S-2 has a wait for b.
 
     Args:
         plans: List of plans to check
         world: World map
         ledger: FairnessLedger for yield tracking (optional)
-        margin: Time margin for swap detection
+        margin: Time margin for swap detection and timing error (S-1 and S-2)
         hold_final: Whether robots hold final position
+        people: People to check S-2 around; none, no S-2
+        crowding: S-2's R and N; needed when there are people
 
     Returns:
         Tuple of:
-        - List of all violations detected
+        - List of all violations detected, S-1's then S-2's
         - Dict mapping robot_id to violations they are responsible for (should replan)
     """
     if ledger is None:
         ledger = FairnessLedger()
+    if people and crowding is None:
+        raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
 
     plans_dict = {p.robot_id: p for p in plans}
 
-    # Detect capacity violations (S-1)
+    # Detect capacity violations (S-1) and crowding around people (S-2)
     conflicts = check_capacity_violations(plans, world, margin=margin, hold_final=hold_final)
     all_violations = capacity_conflicts_to_violations(conflicts)
+    if people:
+        crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final)
+        conflicts += crowded
+        all_violations += crowding_conflicts_to_violations(crowded, crowding)
 
     # Assign yields (R-1), every conflict ranking robots by the same entry times
     robot_violations: dict[str, list[Violation]] = defaultdict(list)

@@ -1,0 +1,5 @@
+# People for the gate's tests on fleet_checker's samples_world test map (S-2), in the
+# format of config/people.yaml. person_1 stands in east_hall, 1.1 m from corridor_2, where
+# the sample plan valid_two_robots has robot_b wait while robot_a drives past.
+people:
+  - {id: person_1, x: 10.0, y: -1.0}

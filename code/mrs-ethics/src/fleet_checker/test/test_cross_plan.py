@@ -4,12 +4,12 @@ import math
 import pytest
 
 from fleet_checker.plan import (
-    Plan, PlanStep, Region, RegionKind, Resource, TaskType, WorldMap,
+    Claim, Plan, PlanStep, Region, RegionKind, Resource, TaskType, WorldMap,
 )
 from fleet_checker.cross_plan import (
-    CapacityConflict, FairnessLedger, assign_yield,
+    CapacityConflict, FairnessLedger, OverCapacity, assign_yield,
     capacity_conflicts_to_violations, check_capacity_violations,
-    check_cross_plan_conflicts,
+    check_cross_plan_conflicts, sweep_over_capacity,
 )
 
 
@@ -114,6 +114,14 @@ class TestCapacityViolation:
         conflicts = check_capacity_violations([r1], WORLD, margin=0.5, hold_final=False)
         assert conflicts == []
 
+    def test_consecutive_steps_in_one_region_are_one_conflict_without_margin(self):
+        """r1 waits in aisle_1 for two steps in a row; r2 is there from 5 s to 15 s."""
+        r1 = make_plan("r1", [("wait", "aisle_1"), ("wait", "aisle_1")])
+        r2 = make_plan("r2", [("wait", "aisle_1")], t0=5.0)
+        [c] = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert (c.t_start, c.t_end) == (5.0, 15.0)
+        assert [(x.robot_id, x.step_index) for x in c.claims] == [("r1", 0), ("r1", 1), ("r2", 0)]
+
     def test_capacity_counts_robots_not_claims(self):
         """Three robots in capacity-3 room_a is fine even if one robot holds two overlapping claims."""
         r1 = make_plan("r1", [("wait", "room_a"), ("wait", "room_a")])
@@ -133,6 +141,71 @@ class TestCapacityViolation:
         assert len(aisle_conflicts) == 1
 
 
+def claim(robot_id: str, start: float, end: float, step: int = 0) -> Claim:
+    return Claim("aisle_1", robot_id, step, start, end)
+
+
+class TestSweepOverCapacity:
+    """The sweep S-1 and S-2 share: the claims on one resource -> stretches of time over capacity."""
+
+    def test_overlap_beyond_capacity_is_one_stretch(self):
+        out = sweep_over_capacity([claim("r1", 0, 10), claim("r2", 5, 15)], capacity=1)
+        assert out == [OverCapacity((claim("r1", 0, 10), claim("r2", 5, 15)), 5, 10)]
+
+    def test_end_and_start_at_the_same_moment_do_not_overlap(self):
+        """Half-open intervals: r1 leaving at t=10 and r2 arriving at t=10 is a clean handover."""
+        assert sweep_over_capacity([claim("r1", 0, 10), claim("r2", 10, 20)], capacity=1) == []
+
+    def test_counts_robots_not_claims(self):
+        """r1's two claims overlap, as consecutive steps do with a margin: still one robot."""
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 9, 20, step=1), claim("r2", 5, 15)]
+        assert sweep_over_capacity(claims, capacity=2) == []
+        [stretch] = sweep_over_capacity(claims, capacity=1)
+        assert (stretch.t_start, stretch.t_end) == (5, 15)
+        assert stretch.claims == (claim("r1", 0, 10, step=0), claim("r1", 9, 20, step=1),
+                                  claim("r2", 5, 15))
+
+    def test_chained_overlaps_are_one_stretch(self):
+        """r1 meets r2 and r2 meets r3: one stretch with all three (assign_yield's over-yield note)."""
+        claims = [claim("r1", 0, 10), claim("r2", 5, 15), claim("r3", 8, 20)]
+        [stretch] = sweep_over_capacity(claims, capacity=1)
+        assert (stretch.t_start, stretch.t_end) == (5, 15)
+        assert [c.robot_id for c in stretch.claims] == ["r1", "r2", "r3"]
+
+    def test_separate_stretches_come_in_time_order(self):
+        claims = [claim("r1", 0, 10), claim("r2", 5, 11), claim("r3", 12, 20), claim("r4", 15, 25)]
+        out = sweep_over_capacity(claims, capacity=1)
+        assert [(s.t_start, s.t_end) for s in out] == [(5, 10), (15, 20)]
+        assert [[c.robot_id for c in s.claims] for s in out] == [["r1", "r2"], ["r3", "r4"]]
+
+    def test_claims_held_to_infinity(self):
+        out = sweep_over_capacity([claim("r1", 0, math.inf), claim("r2", 5, math.inf)], capacity=1)
+        assert [(s.t_start, s.t_end) for s in out] == [(5, math.inf)]
+
+    def test_capacity_two_needs_a_third_robot(self):
+        claims = [claim("r1", 0, 10), claim("r2", 2, 10), claim("r3", 4, 6)]
+        out = sweep_over_capacity(claims, capacity=2)
+        assert [(s.t_start, s.t_end) for s in out] == [(4, 6)]
+        assert [c.robot_id for c in out[0].claims] == ["r1", "r2", "r3"]
+
+    def test_a_robot_handing_over_to_its_next_claim_stays_present(self):
+        """With margin = 0, r1's consecutive steps touch at t = 10. It is there throughout:
+        one stretch, not one that ends at 10 and another that starts at 10."""
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 10, 20, step=1), claim("r2", 5, 15)]
+        [stretch] = sweep_over_capacity(claims, capacity=1)
+        assert (stretch.t_start, stretch.t_end) == (5, 15)
+        assert stretch.claims == tuple(claims)
+
+    def test_a_gap_of_up_to_1e_6_s_is_a_handover_too(self):
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 10 + 5e-7, 20, step=1), claim("r2", 5, 15)]
+        assert [(s.t_start, s.t_end) for s in sweep_over_capacity(claims, capacity=1)] == [(5, 15)]
+
+    def test_a_longer_gap_means_the_robot_was_away(self):
+        claims = [claim("r1", 0, 10, step=0), claim("r1", 10.5, 20, step=1), claim("r2", 5, 15)]
+        out = sweep_over_capacity(claims, capacity=1)
+        assert [(s.t_start, s.t_end) for s in out] == [(5, 10), (10.5, 15)]
+
+
 class TestCapacityConflictToViolation:
     """Tests for converting conflicts to violations."""
 
@@ -148,6 +221,12 @@ class TestCapacityConflictToViolation:
         assert violations[0].code == "CAPACITY_EXCEEDED"
         assert "aisle_1" in violations[0].message
         assert len(violations[0].refs) == 2
+
+    def test_violation_names_the_region_it_is_about(self):
+        r1 = make_plan("r1", [("wait", "aisle_1")], t0=0.0)
+        r2 = make_plan("r2", [("wait", "aisle_1")], t0=5.0)
+        conflicts = check_capacity_violations([r1, r2], WORLD, margin=0.0, hold_final=False)
+        assert [v.resource_id for v in capacity_conflicts_to_violations(conflicts)] == ["aisle_1"]
 
     def test_edge_swap_violation_format(self):
         """EDGE_SWAP violation has correct format."""

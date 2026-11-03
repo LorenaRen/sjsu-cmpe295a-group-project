@@ -1,0 +1,149 @@
+{
+  "what": "EthicalVerdicts published by the Module 5 gate (mrs_ethical_gate) on /mrs/verdict for the same two-robot plan, with and without a person beside robot_b's waiting spot. With the person, S-2 (human crowding) rejects the plan: both robots would be within R of the person at the same time, though either robot alone would be allowed (N = 1). Without the person, the plan is approved.",
+  "how_produced": {
+    "date": "2026-11-02",
+    "commit": "7ff49f1",
+    "machine": "M2 MacBook, macOS 26.5.2, ROS 2 Jazzy (RoboStack conda env mrs-ethics), no simulation",
+    "plan_publisher": "ros2 run mrs_common sample_plan_pub --ros-args -p sample:=valid_two_robots.json -p period:=1.0 (the first verdict of each run is kept)",
+    "notes": "R = 1.5 m and N = 1 are placeholders, neither measured nor from a standard. latency_ms is the gate's own measurement of one decide() call on this machine, for this one message."
+  },
+  "scenario": {
+    "map": "src/fleet_checker/test/fixtures/samples_world.yaml (fleet_checker's test map for the Module 1 sample plans; not a mrs_sim world)",
+    "people": [
+      {
+        "id": "person_1",
+        "x": 10.0,
+        "y": -1.0,
+        "where": "east_hall, 1.1 m from corridor_2, where robot_b waits for robot_a"
+      }
+    ],
+    "plan": {
+      "assignments": [
+        {
+          "robot_id": "robot_a",
+          "tasks": [
+            {
+              "task_id": "a1",
+              "action": "navigate",
+              "target": "corridor_1",
+              "priority": 1,
+              "justification": "Go through the narrow passage first while it is free."
+            },
+            {
+              "task_id": "a2",
+              "action": "hold_position",
+              "target": "room_3",
+              "priority": 1,
+              "justification": "Goal for robot_a.",
+              "depends_on": [
+                "a1"
+              ]
+            }
+          ]
+        },
+        {
+          "robot_id": "robot_b",
+          "tasks": [
+            {
+              "task_id": "b1",
+              "action": "wait",
+              "target": "corridor_2",
+              "priority": 2,
+              "justification": "Wait outside the narrow passage until robot_a is through.",
+              "depends_on": [
+                "a1"
+              ]
+            },
+            {
+              "task_id": "b2",
+              "action": "hold_position",
+              "target": "room_2",
+              "priority": 2,
+              "justification": "Goal for robot_b.",
+              "depends_on": [
+                "b1"
+              ]
+            }
+          ]
+        }
+      ],
+      "rationale": "Both robots need the narrow passage; robot_a goes first and robot_b waits outside it."
+    }
+  },
+  "with_person": {
+    "launch": "ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false map_file:=src/fleet_checker/test/fixtures/samples_world.yaml people_file:=src/mrs_ethical_gate/test/fixtures/samples_world_people.yaml",
+    "gate_settings": {
+      "robots": [
+        "robot_a",
+        "robot_b"
+      ],
+      "start_source": "spawns",
+      "speed": 0.5,
+      "margin": 0.5,
+      "crowding": {
+        "radius": 1.5,
+        "max_robots": 1
+      },
+      "people": [
+        {
+          "id": "person_1",
+          "x": 10.0,
+          "y": -1.0
+        }
+      ]
+    },
+    "verdict": {
+      "verdict": "REJECT",
+      "rule_ids": [
+        "human_crowding"
+      ],
+      "risk_score": 1.0,
+      "rationale": "Plan rejected: robot_a and robot_b would be within 1.5 m of person_1 (nearest node corridor_2) at the same time, but at most 1 robot may be. Propose a new plan that follows the constraints.",
+      "constraints": [
+        {
+          "kind": "custom",
+          "rule_id": "human_crowding",
+          "robot_id": "robot_a",
+          "task_id": "a1",
+          "text": "robot_a and robot_b would be within 1.5 m of person_1 (nearest node corridor_2) at the same time, but at most 1 robot may be, and making robot_a wait for robot_b does not fix it: the tasks would wait for each other in a cycle. Change the plan so that robot_a keeps more than 1.5 m from person_1 while robot_b is there."
+        }
+      ],
+      "standard_refs": [],
+      "transaction_id": "27fbbeba-9a0c-4324-ae0b-97319be531c2",
+      "episode_id": "dev-sample-plan-20261103T055243Z-acd3f9",
+      "attempt": 0,
+      "latency_ms": 4.632
+    },
+    "gate_exit_after_ctrl_c": 0
+  },
+  "without_people": {
+    "launch": "ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false map_file:=src/fleet_checker/test/fixtures/samples_world.yaml",
+    "gate_settings": {
+      "robots": [
+        "robot_a",
+        "robot_b"
+      ],
+      "start_source": "spawns",
+      "speed": 0.5,
+      "margin": 0.5,
+      "crowding": {
+        "radius": 1.5,
+        "max_robots": 1
+      },
+      "people": []
+    },
+    "verdict": {
+      "verdict": "APPROVE",
+      "rule_ids": [],
+      "risk_score": 0.0,
+      "rationale": "Plan approved: no rule violations found.",
+      "constraints": [],
+      "standard_refs": [],
+      "transaction_id": "ccf2a324-29ce-4ab7-a225-aa9ce7a15918",
+      "episode_id": "dev-sample-plan-20261103T055246Z-195f2d",
+      "attempt": 0,
+      "latency_ms": 2.977
+    },
+    "gate_exit_after_ctrl_c": 0
+  }
+}

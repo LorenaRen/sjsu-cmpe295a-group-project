@@ -32,6 +32,11 @@ def pieces(sim_map, a, b):
 
 class TestNarrowAisle:
 
+    def test_zones_at_a_point(self, aisle_map):
+        assert aisle_map.zones_at(12.5, 0.5) == ["room_e"]
+        assert aisle_map.zones_at(2.0, 0.0) == ["room_w", "aisle"]   # on the boundary they share
+        assert aisle_map.zones_at(6.0, 1.0) == []                    # beside the aisle: wall
+
     def test_zones_become_regions(self, aisle_map):
         regions = aisle_map.world.regions
         assert set(regions) == {"room_w", "aisle", "room_e"}

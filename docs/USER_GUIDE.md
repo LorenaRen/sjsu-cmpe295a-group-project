@@ -17,7 +17,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
-| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 42 gate + 152 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
+| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 55 gate + 233 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
@@ -264,7 +264,7 @@ so Module 11 can count them:
 from mrs_common import reasons as R
 
 R.LLM_TIMEOUT, R.LLM_ERROR, R.LLM_MALFORMED, R.PLANNING_EXHAUSTED        # planner (Module 4)
-R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.FINAL_STOP_IN_PASSTHROUGH, R.REGION_ACCESS_DENIED,
+R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.HUMAN_CROWDING, R.FINAL_STOP_IN_PASSTHROUGH, R.REGION_ACCESS_DENIED,
 R.MAX_DURATION_EXCEEDED, R.UNKNOWN_ROBOT, R.UNKNOWN_TARGET, R.DEPENDENCY_DEADLOCK    # shared checker (Module 5)
 R.EDGE_BLOCKED, R.NO_ROUTE, R.ROBOT_STUCK, R.TASK_TIMEOUT               # executor (Module 6)
 R.SAFETY_OVERRIDE, R.QP_INFEASIBLE                                      # CBF filter (Module 6)
@@ -485,6 +485,12 @@ ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false \
 ros2 topic echo /mrs/verdict                                      # second terminal
 ros2 run mrs_common sample_plan_pub                               # third: APPROVE, plus a ValidatedPlan
 ros2 run mrs_common sample_plan_pub --ros-args -p sample:=keep_clear_stop.json   # REJECT, forbid_node door_A
+
+# S-2 (human crowding): the same map with a person 1.1 m from where valid_two_robots has robot_b wait
+ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false \
+    map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml \
+    people_file:=$PWD/src/mrs_ethical_gate/test/fixtures/samples_world_people.yaml
+ros2 run mrs_common sample_plan_pub                               # now REJECT human_crowding
 ```
 
 The sample plans use node names (`corridor_1`, `door_A`, `office_1`, ...) that exist only in the test
@@ -496,12 +502,16 @@ map `samples_world.yaml`, not in `narrow_aisle`; on `narrow_aisle` every sample 
 | `world` | `narrow_aisle` | world name in `mrs_sim/worlds/`, or a path to a `.sdf` with its `.yaml` next to it |
 | `map_file` | empty | a map `.yaml` to use instead of `world` (e.g. a test map with no `.sdf`) |
 | `robots` | `2` | robot count; robot *i* starts at the map's spawn slot *i*, as in `sim.launch.py` |
+| `people_file` | empty | people for S-2: a YAML list of `{id, x, y}` in the map frame, each inside a zone; empty: `config/people.yaml`, which lists nobody |
 | `params_file` | `config/gate.yaml` | the check settings below |
 | `use_sim_time` | `true` | stamp messages with simulation time; `false` when no simulation runs |
 
 `config/gate.yaml` holds `speed` (nominal driving speed in m/s, used to time each robot's plan; no
 default in the code, and the file's value is a placeholder until Module 6's speed is measured),
-`margin`, `max_duration`, `starvation_threshold` and `start_source`. `config/policy.yaml` says which
+`margin`, `max_duration`, `starvation_threshold`, `start_source`, and S-2's `crowding_radius` (R) and
+`crowding_max_robots` (N): at most N robots within R metres of one person at once. Like `speed`, R and N
+have no default in the code, and the file's values (1.5 m, 1) are placeholders, neither measured nor
+taken from a standard. `config/policy.yaml` says which
 task types may enter which zones; by default no robot may enter a `restricted` zone. Parameters are
 read once at start-up: restart the node to change them. The node logs its settings as one JSON line at
 start-up and one JSON line per decision (verdict, rule ids, who must replan, fairness ledger,
@@ -509,8 +519,8 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
 
 **Each verdict:**
 - `rule_ids` are `mrs_common.reasons` codes.
-- `risk_score` is an ordinal level (1.0 conflict, 0.67 a zone rule, 0.33 a plan that cannot run or
-  cannot be read), not a probability.
+- `risk_score` is an ordinal level (1.0 a conflict between robots or too many robots near a person,
+  0.67 a zone rule, 0.33 a plan that cannot run or cannot be read), not a probability.
 - `latency_ms` is the time the check took inside the gate.
 - A plan whose `plan_json` cannot be read is rejected with `llm_malformed`.
 - A repeated message (same `transaction_id` and `attempt`) gets the same verdict again.
@@ -518,12 +528,14 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
 **Not done yet:**
 - Robots always start at the spawn slots, so verdicts are right only until robots move. Reading
   Module 3's `/mrs/team_state` is the next step.
+- People come from a static file and are taken to stand still. S-2 measures straight-line distance,
+  through walls.
 - No MODIFY: the gate never repairs a plan itself.
 - Assumed, to confirm with Module 4: FALLBACK plans (`hold_all_plan`) go to `/mrs/validated_plan`
   directly, not through the gate.
 
 Tests: `cd src/fleet_checker && pytest -q` and `cd src/mrs_ethical_gate && pytest -q`. Both run without
-ROS, for example in a plain venv; the four tests in `test_gate_node.py` also need the built and
+ROS, for example in a plain venv; the five tests in `test_gate_node.py` also need the built and
 sourced workspace and skip otherwise.
 
 ---

@@ -2,6 +2,8 @@
 
 Expected times are worked out by hand from the coordinates in fixtures/samples_world.yaml.
 """
+import math
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -47,6 +49,10 @@ def regions(plan):
     return [s.region for s in plan.steps]
 
 
+def paths(plan):
+    return [tuple((round(x, 6), round(y, 6)) for x, y in s.path) for s in plan.steps]
+
+
 def codes(violations):
     return [v.code for v in violations]
 
@@ -89,6 +95,45 @@ class TestTimeline:
         c = compile_on(samples_map, plan, robots=("robot_a",))
         assert c.timings["a1"] == (0.0, 0.0, 0.0)
         assert spans(c.plans["robot_a"]) == [("navigate", "west_hall", 0.0, 2.4)]
+
+
+# ---------------- paths (where the robot is during each step) ----------------
+
+class TestPaths:
+    """PlanStep.path: what S-2 measures the distance to a person from."""
+
+    def test_route_points_include_where_it_crosses_a_zone_boundary(self, samples_map):
+        c = compile_on(samples_map, team(("robot_a", [task("a1", "navigate", "corridor_1")])),
+                       robots=("robot_a",))
+        # west_s -> room_2 -> pass_w -> pass_e -> corridor_1; the passage runs from x = 2 to x = 8.
+        assert paths(c.plans["robot_a"]) == [
+            ((0.0, -1.2), (0.0, 0.0), (2.0, 0.0)),
+            ((2.0, 0.0), (2.6, 0.0), (7.4, 0.0), (8.0, 0.0)),
+            ((8.0, 0.0), (9.0, 0.0)),
+        ]
+
+    def test_every_step_is_driven_at_the_compile_speed(self, samples_map):
+        c = compile_on(samples_map, sample("restricted_target.json"))
+        for plan in c.plans.values():
+            for s in plan.steps:
+                if len(s.path) > 1:
+                    length = sum(math.dist(p, q) for p, q in pairwise(s.path))
+                    assert length / (s.t_end - s.t_start) == pytest.approx(SPEED)
+
+    def test_a_wait_task_stands_at_its_target(self, samples_map):
+        c = compile_on(samples_map, sample("valid_two_robots.json"))
+        wait = c.plans["robot_b"].steps[1]   # at corridor_2, waiting for a1
+        assert (wait.action.value, wait.path) == ("wait", ((9.0, -1.5),))
+
+    def test_a_navigate_waiting_for_a_dependency_stands_where_it_is(self, samples_map):
+        plan = team(("robot_a", [task("a1", "navigate", "corridor_1")]),
+                    ("robot_b", [task("b1", "navigate", "room_2", depends_on=["a1"])]))
+        c = compile_on(samples_map, plan)
+        assert c.plans["robot_b"].steps[0].path == ((12.0, 1.2),)   # east_n
+
+    def test_a_parked_robot_stands_at_its_start(self, samples_map):
+        c = compile_on(samples_map, team(("robot_a", [task("a1", "navigate", "room_2")])))
+        assert paths(c.plans["robot_b"]) == [((12.0, 1.2),)]
 
 
 # ---------------- robots that do not move ----------------
@@ -196,6 +241,7 @@ def test_compiled_plans_pass_validate_plan(samples_map, name):
     c = compile_on(samples_map, sample(name))
     for plan in c.plans.values():
         assert validate_plan(plan, samples_map.world, c.snapshot) == []
+        assert plan.has_paths   # and Plan itself checked that each step starts where the last ended
 
 
 def test_priority_is_carried_for_logs(samples_map):

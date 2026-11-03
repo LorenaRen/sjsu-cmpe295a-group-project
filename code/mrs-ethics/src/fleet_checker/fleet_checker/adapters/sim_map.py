@@ -126,6 +126,11 @@ class SimMap:
     neighbors: dict[str, dict[str, float]]                # node -> {neighbor: edge length [m]}
     pieces: dict[tuple[str, str], tuple[EdgePiece, ...]]  # (from, to) -> zones in driving order
     spawns: tuple[str, ...]                               # spawn nodes, in slot order
+    zone_rects: dict[str, tuple[float, float, float, float]]  # zone -> (x_min, x_max, y_min, y_max)
+
+    def zones_at(self, x: float, y: float) -> list[str]:
+        """Ids of every zone containing (x, y), boundary included, in map order."""
+        return [z for z, (x0, x1, y0, y1) in self.zone_rects.items() if x0 <= x <= x1 and y0 <= y <= y1]
 
 
 def load_sim_map(path: str | Path,
@@ -187,6 +192,7 @@ def sim_map_from_dict(data: Mapping[str, Any],
         neighbors=neighbors,
         pieces=pieces,
         spawns=tuple(s.node for s in m.spawns),
+        zone_rects={z.id: (z.rect.x_min, z.rect.x_max, z.rect.y_min, z.rect.y_max) for z in m.zones},
     )
 
 
