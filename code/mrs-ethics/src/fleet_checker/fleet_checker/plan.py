@@ -12,7 +12,7 @@ map region, or give itself a higher priority. Every check reads all three.
 
 Time is seconds on the shared simulation clock. Every interval is half-open,
 [t_start, t_end), so a robot leaving a region at t=10 and another entering it
-at t=10 do not overlap.
+at t=10 do not overlap. Positions are metres in the map frame.
 """
 from __future__ import annotations
 
@@ -21,9 +21,12 @@ from enum import Enum
 from itertools import pairwise
 from typing import Any, Iterator, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError, model_validator
 
-TIME_EPS = 1e-6  # tolerance when checking that consecutive steps touch
+TIME_EPS = 1e-6      # tolerance when checking that consecutive steps touch
+POSITION_EPS = 1e-6  # metres; the same for where consecutive steps' paths join
+
+Point = tuple[FiniteFloat, FiniteFloat]  # (x, y), metres, map frame
 
 
 class _Frozen(BaseModel):
@@ -128,6 +131,10 @@ class PlanStep(_Frozen):
     t_start: float = Field(ge=0)
     t_end: float
     holds: frozenset[str] = frozenset()  # extra exclusive resources held
+    # Where the robot is during the step: a polyline driven at constant speed from
+    # t_start to t_end, so the position at any moment follows from the times. One
+    # point: it stands still. Filled in by the compiler, like the times; S-2 needs it.
+    path: tuple[Point, ...] = ()
 
     @model_validator(mode="after")
     def _positive_duration(self) -> "PlanStep":
@@ -155,6 +162,25 @@ class Plan(_Frozen):
                     f"and step {i + 1} (starts {b.t_start})")
         return self
 
+    @model_validator(mode="after")
+    def _paths_join(self) -> "Plan":
+        # Every step has a path or none does, and each one starts where the last ended.
+        with_path = [i for i, s in enumerate(self.steps) if s.path]
+        if with_path and len(with_path) < len(self.steps):
+            missing = next(i for i, s in enumerate(self.steps) if not s.path)
+            raise ValueError(f"step {missing} has no path but step {with_path[0]} has one: "
+                             f"give every step a path, or none")
+        for i, (a, b) in enumerate(pairwise(self.steps)):
+            if a.path and math.dist(a.path[-1], b.path[0]) > POSITION_EPS:
+                raise ValueError(f"path of step {i} ends at {_xy(a.path[-1])} "
+                                 f"but step {i + 1} starts at {_xy(b.path[0])}")
+        return self
+
+    @property
+    def has_paths(self) -> bool:
+        """Whether the steps say where the robot is (all of them do, or none)."""
+        return bool(self.steps[0].path)
+
     @property
     def t_start(self) -> float:
         return self.steps[0].t_start
@@ -162,6 +188,10 @@ class Plan(_Frozen):
     @property
     def t_end(self) -> float:
         return self.steps[-1].t_end
+
+
+def _xy(p: tuple[float, float]) -> str:
+    return f"({p[0]:g}, {p[1]:g})"
 
 
 # --------------------------------------------------------------------------

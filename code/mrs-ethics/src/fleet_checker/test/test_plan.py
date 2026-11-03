@@ -108,6 +108,52 @@ def test_overlap_between_steps_is_rejected():
         })
 
 
+# ---------------- path: where the robot is during a step ----------------
+
+def plan_with_paths(*paths, step_s=10.0):
+    """One navigate step per path, each step_s seconds long."""
+    steps = [{"action": "navigate", "region": "room_a", "t_start": i * step_s,
+              "t_end": (i + 1) * step_s, "path": p} for i, p in enumerate(paths)]
+    return Plan.model_validate({"plan_id": "p", "robot_id": "r1", "task_type": "delivery",
+                                "steps": steps})
+
+
+def test_steps_have_no_path_unless_one_is_given():
+    plan = make_plan("r1", [("wait", "room_a"), ("navigate", "door_1")])
+    assert [s.path for s in plan.steps] == [(), ()]
+    assert not plan.has_paths
+
+
+def test_paths_that_join_up_are_accepted():
+    plan = plan_with_paths([(0, 0), (3, 0)], [(3, 0), (3, 4)], [(3, 4)])
+    assert plan.has_paths
+    assert plan.steps[1].path == ((3.0, 0.0), (3.0, 4.0))
+
+
+def test_path_that_jumps_between_steps_is_rejected():
+    """The robot cannot be in two places at once: step 1 starts where step 0 ended."""
+    with pytest.raises(ValidationError,
+                       match=r"path of step 0 ends at \(3, 0\) but step 1 starts at \(4, 0\)"):
+        plan_with_paths([(0, 0), (3, 0)], [(4, 0), (5, 0)])
+
+
+def test_path_on_only_some_steps_is_rejected():
+    with pytest.raises(ValidationError, match="step 1 has no path but step 0 has one"):
+        plan_with_paths([(0, 0), (3, 0)], [])
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf])
+def test_path_points_must_be_finite(bad):
+    with pytest.raises(ValidationError):
+        PlanStep(action="wait", region="room_a", t_start=0, t_end=1, path=[(0.0, bad)])
+
+
+def test_path_survives_a_json_round_trip():
+    plan = plan_with_paths([(0, 0), (3, 0)], [(3, 0), (3, 4)])
+    again, errors = parse_plan(plan.model_dump_json())
+    assert errors == [] and again == plan
+
+
 def test_world_map_rejects_one_way_adjacency():
     with pytest.raises(ValidationError, match="not symmetric"):
         WorldMap(regions={
