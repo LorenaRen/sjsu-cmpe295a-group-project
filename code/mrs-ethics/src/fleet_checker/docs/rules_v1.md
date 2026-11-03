@@ -351,7 +351,7 @@ checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 |------|------|
 | `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
 | `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
-| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check on a changed plan.  `conflicts(result)` lists the S-1 conflicts once each (both halves of a head-on swap are one), with their yielders, for the ledger. |
+| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1 (and S-2, when `people` and a `CrowdingLimit` are given) + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check, with the same people, on a changed plan.  `conflicts(result)` lists the S-1 and S-2 conflicts once each (both halves of a head-on swap are one), with where they are (zone or person) and their yielders, for the ledger. |
 | `verdict.py` | `to_verdict`: a `check_team_plan` result → the decision fields of an `EthicalVerdict` (see "Verdict for Module 5" below). |
 
 `TeamPlan.priority` is kept for logs only; who yields is decided by R-1
@@ -399,6 +399,7 @@ are produced; MODIFY is designed (below) but not built.
 | Finding | Constraint (`mrs_common.plan_schema.Constraint`) |
 |---------|--------------------------------------------------|
 | S-1 `capacity_exceeded`, `edge_swap` | `order_before`: the keeper's task that takes it out of the zone (`task_id`) must finish before the yielder's task that takes it in (`value`); `robot_id` is the yielder.  One per (yielder, keeper) pair, verified first (below). |
+| S-2 `human_crowding` | The same, with "away from the person" for "out of the zone" and "near them" for "in": `order_before`, verified first, else `custom`.  The texts give R, N and the person's nearest node, because the planner knows nodes, not where people stand. |
 | P-1 `final_stop_in_passthrough` | `forbid_node` for every node of the zone |
 | P-2 `region_access_denied` | `avoid_node` for every node of the zone; `custom` if the zone has no node |
 | P-3 `max_duration_exceeded` | `custom`, with the plan's duration and the limit |
@@ -419,11 +420,14 @@ starts; the ordering may close a cycle with the plan's `depends_on`; or the
 plan may already contain it (the conflict then comes from the time
 margin).  So each suggested `order_before` is added as a `depends_on` to a
 copy of the TeamPlan, and the copy is checked again with the same map,
-start nodes, ledger and settings.  If the conflict between those two
-robots in that zone is gone, the `order_before` is sent; otherwise a
-`custom` constraint says why ordering them does not help.
+start nodes, people, ledger and settings.  If the conflict between those
+two robots in that zone (for S-2: near that person) is gone, the
+`order_before` is sent; otherwise a `custom` constraint says why ordering
+them does not help.  For S-2 the reasons are the same, with "near the
+person" for "in the zone".
 
-The verification looks only at **that pair of robots in that zone**.  It
+The verification looks only at **that pair of robots in that zone** (or
+near that person).  It
 does not guarantee that the reordered plan creates no new conflict
 elsewhere.  On the REJECT path the next round's check catches those;
 MODIFY must check the whole modified plan again before approving it.
@@ -435,6 +439,7 @@ MODIFY must check the whole modified plan again before approving it.
   | Reason code | Rule |
   |-------------|------|
   | `capacity_exceeded`, `edge_swap` | S-1 |
+  | `human_crowding` | S-2 |
   | `final_stop_in_passthrough` | P-1 |
   | `region_access_denied` | P-2 |
   | `max_duration_exceeded` | P-3 |
@@ -452,7 +457,7 @@ MODIFY must check the whole modified plan again before approving it.
 
   | Level | `risk_score` | Findings | Meaning |
   |-------|--------------|----------|---------|
-  | 3 | 1.0 | S-1 | robots predicted to collide or block each other |
+  | 3 | 1.0 | S-1, S-2 | robots predicted to collide or block each other; too many robots near one person.  S-2's level is a **placeholder**, ranked with S-1 until the team decides |
   | 2 | 0.67 | P-1, P-2 | a rule about where robots may be is broken |
   | 1 | 0.33 | P-3, plan does not compile, `plan_json` unreadable | the plan cannot run as written, or runs too long |
   | 0 | 0.0 | approved | |
@@ -472,7 +477,7 @@ MODIFY must check the whole modified plan again before approving it.
 
 - **Switch.**  A `modify` flag on the gate's entry point (a parameter of
   the gate node), off by default.
-- **When.**  Only if every finding is S-1 and each produced a verified
+- **When.**  Only if every finding is S-1 or S-2 and each produced a verified
   `order_before`.  P-1, P-2, P-3 and compile errors always go back to the
   planner: where else to stop or route needs its judgment.
 - **How.**  Add all of those orderings as `depends_on` to a copy of the
@@ -569,7 +574,7 @@ tested in a plain venv.
 | Code | Name | Cat. | Scope | Impl. status |
 |------|------|------|-------|:---:|
 | S-1 | Interval capacity / edge-swap | safety | cross | implemented |
-| S-2 | Human crowding | safety | cross | detector built (`crowding.py`, `check_crowding`) and resolved by R-1 with S-1 (`check_cross_plan_conflicts`); not yet run by `check_team_plan` |
+| S-2 | Human crowding | safety | cross | implemented in the checker (`check_team_plan(people=..., crowding=...)`); not yet in the gate |
 | S-3 | Unsafe action near humans | safety | single | deferred |
 | P-1 | Final stop in passthrough zone | policy | single | implemented |
 | P-2 | Region access restriction | policy | single | implemented |

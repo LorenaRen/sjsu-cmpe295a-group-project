@@ -4,6 +4,8 @@
   S-1 capacity_exceeded, edge_swap   order_before: the keeper's task that takes it out of
                                      the zone finishes before the yielder's task that
                                      takes it in (verified first, see below)
+  S-2 human_crowding                 the same, with "away from the person" for "out of the
+                                     zone" and "near them" for "in"
   P-1 final_stop_in_passthrough      forbid_node for every node of the zone
   P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
   P-3 and compile errors             custom
@@ -19,7 +21,9 @@ with the plan's depends_on, or the plan may already have it (the conflict then
 comes from the time margin). So it is verified before it is suggested: added as
 a depends_on to a copy of the TeamPlan, which is checked again. If the conflict
 between these two robots in this zone is gone, the order_before is sent;
-otherwise a custom constraint says why ordering them does not help.
+otherwise a custom constraint says why ordering them does not help. S-2 works the
+same way, with "near this person" for "in this zone"; its texts name the person's
+nearest node, because the planner knows nodes, not where people stand.
 
 The verification looks only at that pair of robots in that zone. It does not
 guarantee that the reordered plan creates no new conflict elsewhere: on the
@@ -32,8 +36,9 @@ standards' text yet, and EthicalVerdict only allows clauses that were read.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from mrs_common import reasons as R
 from mrs_common.plan_schema import Constraint, TeamPlan
@@ -52,6 +57,7 @@ REJECT = "REJECT"
 SEVERITY: dict[str, int] = {
     R.CAPACITY_EXCEEDED: 3,          # robots predicted to collide or block each other
     R.EDGE_SWAP: 3,
+    R.HUMAN_CROWDING: 3,             # placeholder: ranked with S-1 until the team decides
     R.FINAL_STOP_IN_PASSTHROUGH: 2,  # a rule about where robots may be is broken
     R.REGION_ACCESS_DENIED: 2,
     R.MAX_DURATION_EXCEEDED: 1,      # the plan cannot run as written, or runs too long
@@ -65,7 +71,8 @@ TOP_LEVEL = 3
 
 MAX_PROBLEMS_IN_RATIONALE = 3
 
-_CONFLICT_CODES = frozenset({"CAPACITY_EXCEEDED", "EDGE_SWAP"})
+_S1_CODES = frozenset({"CAPACITY_EXCEEDED", "EDGE_SWAP"})
+_CONFLICT_CODES = _S1_CODES | {"HUMAN_CROWDING"}
 
 # How P-1 describes the zone a robot must not stop in.
 _STAY_CLEAR = {
@@ -186,42 +193,65 @@ def _avoid_zone(f: Finding, result: TeamCheckResult) -> list[Constraint]:
             for node in nodes]
 
 
+class _Where(NamedTuple):
+    """How the place of a conflict is worded: a zone (S-1), or a person's surroundings (S-2)."""
+    first: str      # first mention: "in passage" / "within 1.5 m of person_1 (nearest node c)"
+    inside: str     # later mentions: "in passage" / "within 1.5 m of person_1"
+    because: str    # why the robots must take turns
+    but: str        # the limit, after "at the same time, "
+    stay_out: str   # what the yielder should do instead
+
+
+def _where(f: Finding, result: TeamCheckResult) -> _Where:
+    place = f.violation.resource_id
+    if f.violation.code == "HUMAN_CROWDING":
+        limit = result.settings.crowding
+        r, most = f"{limit.radius:g} m", _robots(limit.max_robots)
+        near = f"{place} (nearest node {_nearest_node(place, result)})"
+        return _Where(first=f"within {r} of {near}", inside=f"within {r} of {place}",
+                      because=f"both would be within {r} of {near}, where at most {most} may be at once",
+                      but=f"but at most {most} may be", stay_out=f"keeps more than {r} from {place}")
+    holds = _robots(result.sim_map.world.capacity(place))
+    return _Where(first=f"in {place}", inside=f"in {place}", because=f"both need {place}, which holds {holds}",
+                  but=f"but it holds {holds}", stay_out=f"stays out of {place}")
+
+
 def _orderings(f: Finding, result: TeamCheckResult) -> list[Constraint]:
     """One constraint for each (yielder, keeper) pair of the conflict."""
-    zone = _zone(f, result)
+    where = _where(f, result)
     steps: dict[str, list[int]] = {}
     for ref in f.violation.refs:
         steps.setdefault(ref.robot_id, []).append(ref.step_index)
-    return [_ordering(f, result, zone, keeper=k, k_step=max(steps[k]), yielder=y, y_step=min(steps[y]))
+    return [_ordering(f, result, where, keeper=k, k_step=max(steps[k]), yielder=y, y_step=min(steps[y]))
             for y in f.must_fix for k in sorted(set(steps) - set(f.must_fix))]
 
 
-def _ordering(f: Finding, result: TeamCheckResult, zone: str, *,
+def _ordering(f: Finding, result: TeamCheckResult, where: _Where, *,
               keeper: str, k_step: int, yielder: str, y_step: int) -> Constraint:
-    k_task = result.compiled.origins[keeper][k_step].task_id    # takes the keeper out of the zone
+    k_task = result.compiled.origins[keeper][k_step].task_id    # takes the keeper out of the place
     y_task = result.compiled.origins[yielder][y_step].task_id   # takes the yielder into it
-    holds = _robots(result.sim_map.world.regions[zone].capacity)
-    why_not = _why_ordering_fails(result, zone, keeper, k_task, k_step, yielder, y_task, y_step)
+    why_not = _why_ordering_fails(f, result, where, keeper, k_task, k_step, yielder, y_task, y_step)
     if why_not is None:
         # A swap is reported once per zone; leaving the zone out of its text makes
         # both halves the same constraint, so the planner gets it once.
         because = ("otherwise they meet head-on and cannot pass each other"
-                   if f.violation.code == "EDGE_SWAP" else f"both need {zone}, which holds {holds}")
+                   if f.violation.code == "EDGE_SWAP" else where.because)
         return Constraint(
             kind="order_before", rule_id=f.reason, robot_id=yielder, task_id=k_task, value=y_task,
             text=f"{yielder}: start task {y_task} only after {keeper} has finished task {k_task}; "
                  f"{because}.")
     return Constraint(
         kind="custom", rule_id=f.reason, robot_id=yielder, task_id=y_task,
-        text=f"{yielder} and {keeper} would be in {zone} at the same time, but it holds {holds}, "
+        text=f"{yielder} and {keeper} would be {where.first} at the same time, {where.but}, "
              f"and making {yielder} wait for {keeper} does not fix it: {why_not}. "
-             f"Change the plan so that {yielder} stays out of {zone} while {keeper} is there.")
+             f"Change the plan so that {yielder} {where.stay_out} while {keeper} is there.")
 
 
-def _why_ordering_fails(result: TeamCheckResult, zone: str, keeper: str, k_task: str | None,
-                        k_step: int, yielder: str, y_task: str | None, y_step: int) -> str | None:
-    """None if making y_task wait for k_task ends this pair's conflict in this zone,
-    otherwise the reason it does not. Other robots and other zones are not looked at."""
+def _why_ordering_fails(f: Finding, result: TeamCheckResult, where: _Where, keeper: str,
+                        k_task: str | None, k_step: int, yielder: str, y_task: str | None,
+                        y_step: int) -> str | None:
+    """None if making y_task wait for k_task ends this pair's conflict in this zone (or near
+    this person), otherwise the reason it does not. Other robots and places are not looked at."""
     if k_task is None or y_task is None:
         return f"{keeper if k_task is None else yielder} has no task in this plan"
     reordered = _with_dependency(result.team_plan, before=k_task, after=y_task)
@@ -230,13 +260,13 @@ def _why_ordering_fails(result: TeamCheckResult, zone: str, keeper: str, k_task:
     again = result.recheck(reordered)
     if again.compiled.violations:   # an added dependency can only make it a deadlock
         return "the tasks would wait for each other in a cycle"
-    if not _in_conflict(again, zone, keeper, yielder):
+    if not _in_conflict(again, f, keeper, yielder):
         return None
     if k_step == len(result.compiled.plans[keeper].steps) - 1:
-        return f"{keeper} stays in {zone} until the end of its plan"
+        return f"{keeper} stays {where.inside} until the end of its plan"
     if y_step == 0:
-        return f"{yielder} is already in {zone} when its plan starts"
-    return f"{yielder} would still be in {zone} while {keeper} is there"
+        return f"{yielder} is already {where.inside} when its plan starts"
+    return f"{yielder} would still be {where.inside} while {keeper} is there"
 
 
 def _with_dependency(plan: TeamPlan, *, before: str, after: str) -> TeamPlan | None:
@@ -253,10 +283,13 @@ def _with_dependency(plan: TeamPlan, *, before: str, after: str) -> TeamPlan | N
         return None
 
 
-def _in_conflict(result: TeamCheckResult, zone: str, a: str, b: str) -> bool:
-    return any(f.violation.code in _CONFLICT_CODES and _zone(f, result) == zone
-               and {a, b} <= {ref.robot_id for ref in f.violation.refs}
-               for f in result.findings)
+def _in_conflict(result: TeamCheckResult, f: Finding, a: str, b: str) -> bool:
+    """Whether result still has f's conflict: a finding of the same rule, over the same
+    zone or person, with both robots in it."""
+    rule = _S1_CODES if f.violation.code in _S1_CODES else {f.violation.code}
+    return any(g.violation.code in rule and g.violation.resource_id == f.violation.resource_id
+               and {a, b} <= {ref.robot_id for ref in g.violation.refs}
+               for g in result.findings)
 
 
 # --------------------------------------------------------------------------
@@ -285,6 +318,10 @@ def _problem(f: Finding, result: TeamCheckResult) -> str:
         robots = sorted({ref.robot_id for ref in refs})
         return (f"{_join(robots)} would be in {zone} at the same time, "
                 f"but it holds {_robots(result.sim_map.world.regions[zone].capacity)}")
+    if code == "HUMAN_CROWDING":
+        robots = sorted({ref.robot_id for ref in refs})
+        where = _where(f, result)
+        return f"{_join(robots)} would be {where.first} at the same time, {where.but}"
     if code == "EDGE_SWAP":
         # Reported once per zone of the swap; the wording leaves the zone out so both halves read the same.
         a, b = sorted({ref.robot_id for ref in refs})
@@ -313,6 +350,13 @@ def _zone(f: Finding, result: TeamCheckResult) -> str:
     """The zone of the finding's steps (all steps of one S-1 conflict share it)."""
     ref = f.violation.refs[0]
     return result.compiled.plans[ref.robot_id].steps[ref.step_index].region
+
+
+def _nearest_node(person_id: str, result: TeamCheckResult) -> str:
+    """The graph node closest to a person (ties: by name)."""
+    position = next(p.position for p in result.people if p.human_id == person_id)
+    nodes = result.sim_map.positions
+    return min(nodes, key=lambda n: (math.dist(nodes[n], position), n))
 
 
 def _zone_nodes(zone: str, result: TeamCheckResult) -> list[str]:

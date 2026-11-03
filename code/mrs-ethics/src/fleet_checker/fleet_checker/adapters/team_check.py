@@ -3,23 +3,25 @@
   TeamPlan + mrs_sim map + where each robot is
     -> compile (compiler.py)      unknown robot or target, no route, deadlock: stop here
     -> each robot: P-1, P-2, P-3  (policy.validate_policy)
-    -> all robots: S-1 + R-1      (cross_plan.check_cross_plan_conflicts)
+    -> all robots: S-1 + S-2 + R-1 (cross_plan.check_cross_plan_conflicts; S-2 when
+                                    people are given)
 
 A policy violation is for the robot that proposed the step to fix. For a
-capacity conflict, R-1 and the fairness ledger choose which robots replan;
+conflict (S-1 or S-2), R-1 and the fairness ledger choose which robots replan;
 TeamPlan priority plays no part. The ledger is only read here: recording yields
 belongs to whatever runs the replan loop.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, NamedTuple
+from typing import Mapping, NamedTuple, Sequence
 
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan
 
 from ..cross_plan import FairnessLedger, check_cross_plan_conflicts
-from ..plan import RegionKind, TaskType, Violation
+from ..crowding import CrowdingLimit
+from ..plan import HumanObservation, RegionKind, TaskType, Violation
 from ..policy import DEFAULT_MAX_DURATION, AccessPolicy, validate_policy
 from .compiler import CompiledTeamPlan, compile_team_plan
 from .sim_map import SimMap
@@ -40,6 +42,7 @@ class CheckSettings:
     task_types: Mapping[str, TaskType] | None
     plan_id: str
     revision: int
+    crowding: CrowdingLimit | None   # S-2's R and N; None when no people are given
 
 
 class Finding(NamedTuple):
@@ -60,6 +63,7 @@ class TeamCheckResult:
     team_plan: TeamPlan
     sim_map: SimMap
     start_nodes: Mapping[str, str]
+    people: tuple[HumanObservation, ...]   # where people are, for S-2
     ledger: FairnessLedger | None
     settings: CheckSettings
 
@@ -68,15 +72,17 @@ class TeamCheckResult:
         return not self.findings
 
     def recheck(self, team_plan: TeamPlan) -> TeamCheckResult:
-        """Run the same check (map, start nodes, ledger, settings) on another plan,
-        e.g. this one with a depends_on added."""
-        return _check(team_plan, self.sim_map, self.start_nodes, self.ledger, self.settings)
+        """Run the same check (map, start nodes, people, ledger, settings) on another
+        plan, e.g. this one with a depends_on added."""
+        return _check(team_plan, self.sim_map, self.start_nodes, self.people, self.ledger,
+                      self.settings)
 
 
 class Conflict(NamedTuple):
-    """One S-1 conflict of a result, as R-1 resolved it in that round."""
-    reason: str                 # R.CAPACITY_EXCEEDED or R.EDGE_SWAP
-    zone: str | None            # None for a head-on swap: it spans two zones
+    """One S-1 or S-2 conflict of a result, as R-1 resolved it in that round."""
+    reason: str                 # R.CAPACITY_EXCEEDED, R.EDGE_SWAP or R.HUMAN_CROWDING
+    where: str | None           # the zone (S-1) or the person (S-2); None for a head-on
+                                # swap, which spans two zones
     robots: tuple[str, ...]     # every robot in the conflict, sorted
     yielders: tuple[str, ...]   # the robots R-1 told to yield
 
@@ -86,24 +92,23 @@ class Conflict(NamedTuple):
 
     @property
     def key(self) -> str:
-        """Names the conflict across replan rounds, e.g. 'capacity_exceeded@passage:robot_a+robot_b'."""
-        return f"{self.reason}@{self.zone or '-'}:{'+'.join(self.robots)}"
+        """Names the conflict across replan rounds, e.g. 'capacity_exceeded@passage:robot_a+robot_b'
+        or 'human_crowding@person_1:robot_a+robot_b'."""
+        return f"{self.reason}@{self.where or '-'}:{'+'.join(self.robots)}"
 
 
-_CONFLICT_REASONS = (R.CAPACITY_EXCEEDED, R.EDGE_SWAP)
+_CONFLICT_REASONS = (R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.HUMAN_CROWDING)
 
 
 def conflicts(result: TeamCheckResult) -> tuple[Conflict, ...]:
-    """The S-1 conflicts of a result, one entry each. A head-on swap is reported as
-    one finding per zone (EDGE_SWAP); both halves are the same conflict."""
+    """The S-1 and S-2 conflicts of a result, one entry each. A head-on swap is reported
+    as one finding per zone (EDGE_SWAP); both halves are the same conflict."""
     found: dict[str, Conflict] = {}
     for f in result.findings:
         if f.reason not in _CONFLICT_REASONS:
             continue
-        ref = f.violation.refs[0]
-        zone = (None if f.reason == R.EDGE_SWAP
-                else result.compiled.plans[ref.robot_id].steps[ref.step_index].region)
-        c = Conflict(f.reason, zone, tuple(sorted({r.robot_id for r in f.violation.refs})), f.must_fix)
+        where = None if f.reason == R.EDGE_SWAP else f.violation.resource_id
+        c = Conflict(f.reason, where, tuple(sorted({r.robot_id for r in f.violation.refs})), f.must_fix)
         found.setdefault(c.key, c)
     return tuple(found.values())
 
@@ -129,23 +134,30 @@ def check_team_plan(
     task_types: Mapping[str, TaskType] | None = None,
     plan_id: str = "teamplan",
     revision: int = 0,
+    people: Sequence[HumanObservation] = (),
+    crowding: CrowdingLimit | None = None,
 ) -> TeamCheckResult:
     """Compile a TeamPlan and run the policy and cross-plan checks on it.
 
     speed, t0, task_types, plan_id and revision go to compile_team_plan;
-    margin to the S-1 check; access_policy and max_duration to P-2 and P-3.
+    margin to S-1 and S-2; access_policy and max_duration to P-2 and P-3;
+    people (where they stand now) and crowding (R and N) to S-2, which runs
+    only when there are people.
     """
+    if people and crowding is None:
+        raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
     settings = CheckSettings(speed=speed, t0=t0, margin=margin, max_duration=max_duration,
                              access_policy=access_policy, task_types=task_types,
-                             plan_id=plan_id, revision=revision)
-    return _check(team_plan, sim_map, start_nodes, ledger, settings)
+                             plan_id=plan_id, revision=revision, crowding=crowding)
+    return _check(team_plan, sim_map, start_nodes, tuple(people), ledger, settings)
 
 
 def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
-           ledger: FairnessLedger | None, s: CheckSettings) -> TeamCheckResult:
+           people: tuple[HumanObservation, ...], ledger: FairnessLedger | None,
+           s: CheckSettings) -> TeamCheckResult:
     compiled = compile_team_plan(team_plan, sim_map, start_nodes, speed=s.speed, t0=s.t0,
                                  task_types=s.task_types, plan_id=s.plan_id, revision=s.revision)
-    inputs = dict(team_plan=team_plan, sim_map=sim_map, start_nodes=start_nodes,
+    inputs = dict(team_plan=team_plan, sim_map=sim_map, start_nodes=start_nodes, people=people,
                   ledger=ledger, settings=s)
     if compiled.violations:
         findings = tuple(_finding(v, compiled, ()) for v in compiled.violations)
@@ -157,7 +169,8 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
             found.append((v, (robot,)))
 
     conflicts, yielders = check_cross_plan_conflicts(
-        list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin)
+        list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin,
+        people=people, crowding=s.crowding)
     for v in conflicts:
         found.append((v, tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))))
 

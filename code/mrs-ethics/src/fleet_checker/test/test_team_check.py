@@ -9,7 +9,8 @@ from mrs_common.plan_schema import TeamPlan
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 from fleet_checker.adapters.team_check import check_team_plan, conflicts, reason_of
 from fleet_checker.cross_plan import FairnessLedger
-from fleet_checker.plan import Violation
+from fleet_checker.crowding import CrowdingLimit
+from fleet_checker.plan import HumanObservation, Violation
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
 NARROW_AISLE = Path(__file__).resolve().parents[2] / "mrs_sim/worlds/narrow_aisle.yaml"  # parents[2] = src/
@@ -147,7 +148,7 @@ def test_narrow_aisle_swap_passes_when_one_robot_waits(aisle_map):
 
 def test_a_conflict_names_its_zone_robots_and_yielder(samples_map):
     [c] = conflicts(check(samples_map, drop_dependencies(sample("valid_two_robots.json"))))
-    assert (c.reason, c.zone, c.robots, c.yielders, c.keepers) == (
+    assert (c.reason, c.where, c.robots, c.yielders, c.keepers) == (
         R.CAPACITY_EXCEEDED, "passage", ("robot_a", "robot_b"), ("robot_b",), ("robot_a",))
     assert c.key == "capacity_exceeded@passage:robot_a+robot_b"
 
@@ -160,13 +161,70 @@ def test_a_head_on_swap_is_one_conflict(two_narrow_zones):
     result = check_team_plan(plan, two_narrow_zones, {"robot_a": "wr", "robot_b": "er"}, speed=1.0)
     assert codes(result) == ["EDGE_SWAP", "EDGE_SWAP"]           # one finding per zone
     [c] = conflicts(result)
-    assert (c.reason, c.zone, c.robots, c.yielders) == (R.EDGE_SWAP, None, ("robot_a", "robot_b"), ("robot_a",))
+    assert (c.reason, c.where, c.robots, c.yielders) == (R.EDGE_SWAP, None, ("robot_a", "robot_b"), ("robot_a",))
     assert c.key == "edge_swap@-:robot_a+robot_b"
 
 
 def test_policy_findings_and_approved_plans_have_no_conflicts(samples_map):
     assert conflicts(check(samples_map, sample("keep_clear_stop.json"))) == ()
     assert conflicts(check(samples_map, sample("valid_two_robots.json"))) == ()
+
+
+# ---------------- S-2: people near the routes ----------------
+
+LIMIT = CrowdingLimit(radius=1.5, max_robots=1)   # placeholder values, as in the gate's config
+BY_ROOM_E = HumanObservation(human_id="person_1", position=(12.5, 0.5))   # 0.86 m from room_e_n
+
+
+def test_a_person_next_to_the_waiting_robot_makes_the_swap_crowd_them(aisle_map):
+    """The swap that passes S-1 has robot_b wait at its spawn, room_e_n, for robot_a to come
+    through. With a person standing in room_e, robot_b waits 0.86 m from them while robot_a
+    drives past them to room_e_s."""
+    assert check(aisle_map, swap_rooms(robot_b_waits=True)).approved
+    result = check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E], crowding=LIMIT)
+    assert codes(result) == ["HUMAN_CROWDING"]
+    [f] = result.findings
+    assert (f.reason, f.violation.resource_id) == (R.HUMAN_CROWDING, "person_1")
+    assert f.task_ids == ("a1", "b1", "b2")
+    assert list(result.must_replan) == ["robot_a"]   # robot_b was next to the person first
+
+
+def test_swapping_the_other_way_round_keeps_them_apart(aisle_map):
+    """robot_b crosses first, leaving the person behind; robot_a waits in room_w."""
+    plan = TeamPlan.model_validate({"assignments": [
+        {"robot_id": "robot_a", "tasks": [
+            {"task_id": "a1", "action": "wait", "target": "room_w_s", "priority": 1, "depends_on": ["b1"]},
+            {"task_id": "a2", "action": "hold_position", "target": "room_e_s", "priority": 1,
+             "depends_on": ["a1"]}]},
+        {"robot_id": "robot_b", "tasks": [
+            {"task_id": "b1", "action": "hold_position", "target": "room_w_n", "priority": 1}]},
+    ]})
+    assert check(aisle_map, plan, people=[BY_ROOM_E], crowding=LIMIT).approved
+
+
+def test_people_far_from_every_route_change_nothing(samples_map):
+    in_the_office = HumanObservation(human_id="person_1", position=(5.0, 4.5))
+    result = check(samples_map, sample("valid_two_robots.json"), people=[in_the_office], crowding=LIMIT)
+    assert result.approved
+
+
+def test_recheck_keeps_the_people_and_the_limit(aisle_map):
+    result = check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E], crowding=LIMIT)
+    again = result.recheck(result.team_plan)
+    assert (again.people, again.settings.crowding) == ((BY_ROOM_E,), LIMIT)
+    assert codes(again) == ["HUMAN_CROWDING"]
+
+
+def test_people_without_a_limit_are_refused(aisle_map):
+    with pytest.raises(ValueError, match="CrowdingLimit"):
+        check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E])
+
+
+def test_a_crowding_conflict_names_the_person(aisle_map):
+    [c] = conflicts(check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E], crowding=LIMIT))
+    assert (c.reason, c.where, c.robots, c.yielders) == (
+        R.HUMAN_CROWDING, "person_1", ("robot_a", "robot_b"), ("robot_a",))
+    assert c.key == "human_crowding@person_1:robot_a+robot_b"
 
 
 # ---------------- plumbing ----------------

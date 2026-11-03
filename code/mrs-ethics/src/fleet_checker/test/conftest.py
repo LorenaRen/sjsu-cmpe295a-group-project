@@ -25,3 +25,20 @@ TWO_NARROW_ZONES = {
 @pytest.fixture(scope="session")
 def two_narrow_zones():
     return sim_map_from_dict(TWO_NARROW_ZONES)
+
+
+# One open hall with a crossing at c: w -> c -> e and n -> c -> s cross there. A room has no
+# capacity limit, so S-1 never stops two robots at c; only S-2 does, when a person stands there.
+CROSSROADS = {
+    "world": "crossroads",
+    "nodes": {"w": {"x": 0.0, "y": 0.0}, "c": {"x": 5.0, "y": 0.0}, "e": {"x": 10.0, "y": 0.0},
+              "n": {"x": 5.0, "y": 4.0}, "s": {"x": 5.0, "y": -4.0}},
+    "edges": [["w", "c"], ["c", "e"], ["n", "c"], ["c", "s"]],
+    "zones": [{"id": "hall", "type": "room", "rect": {"x_min": -1, "x_max": 11, "y_min": -5, "y_max": 5}}],
+    "spawns": [{"node": "w"}, {"node": "n"}],
+}
+
+
+@pytest.fixture(scope="session")
+def crossroads():
+    return sim_map_from_dict(CROSSROADS)
