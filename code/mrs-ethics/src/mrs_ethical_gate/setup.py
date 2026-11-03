@@ -12,6 +12,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
+        ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
     ],
     install_requires=["setuptools", "pydantic>=2", "pyyaml"],
     zip_safe=True,
@@ -21,4 +22,9 @@ setup(
     license="Apache-2.0",
     # Tells `colcon test` to run pytest (tests_require is ignored by setuptools >= 72).
     extras_require={"test": ["pytest"]},
+    entry_points={
+        "console_scripts": [
+            "gate = mrs_ethical_gate.gate_node:main",
+        ],
+    },
 )

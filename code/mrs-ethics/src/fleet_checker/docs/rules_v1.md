@@ -117,6 +117,11 @@ yields).
 - **Data:** replan history per conflict group (new — tracked by the
   checker orchestrator); `Plan.task_type`; `FairnessLedger`
 - **Source:** project-defined (liveness guarantee)
+- **Status:** not implemented.  **May be covered by Module 4's attempt
+  cap** — after its last attempt the planner gives up with
+  `planning_exhausted` and every robot holds (`hold_all_plan`, published
+  as a FALLBACK ValidatedPlan).  To confirm with Module 4 whether the
+  checker still needs its own circuit-breaker.
 
 ---
 
@@ -419,6 +424,67 @@ MODIFY must check the whole modified plan again before approving it.
 
 ---
 
+## Module 5 gate (`mrs_ethical_gate`)
+
+The ROS 2 package around the checker.  `gate_node.py` receives, calls
+`GateSession.decide` and publishes; everything it decides is in
+`session.py`, `settings.py` and `starts.py`, which import no ROS and are
+tested in a plain venv.
+
+| Topic | | QoS (`mrs_common.qos.qos_for`) | Content |
+|---|---|---|---|
+| `/mrs/proposed_plan` | in | reliable, volatile, depth 100 | every ProposedPlan |
+| `/mrs/verdict` | out | reliable, volatile, depth 100 | exactly one EthicalVerdict per message, with the message's transaction_id, episode_id and attempt |
+| `/mrs/validated_plan` | out | reliable, transient local, depth 1 | APPROVE only: the TeamPlan as received, `source_verdict` APPROVE |
+
+- **Messages.**  A message is identified by (transaction_id, attempt):
+  the planner reuses the transaction_id for later attempts.  A message
+  seen before gets the same verdict (and ValidatedPlan) again and leaves
+  the ledger alone.  `plan_json` that is not a TeamPlan gets a REJECT
+  (`llm_malformed`, see the TODO above), never silence: the planner is
+  waiting for an answer.
+- **Episodes.**  A new episode_id starts a new ledger and forgets the
+  messages seen ("Updating the ledger").  The episode_id of the plans is
+  enough; the gate does not depend on `/mrs/episode_event`.
+- **Start nodes.**  `start_source: spawns`: robot i of the fleet
+  (`robots`, the same value as `sim.launch.py`'s) at the map's spawn slot
+  i, the whole fleet even when a plan names only some robots.  Right only
+  until the robots move.  `team_state` (Module 3's `/mrs/team_state`: one
+  snapshot of every robot at the same time, plus `blocked_edges`) is not
+  built yet.
+- **A robot on an edge** (`WorldState.at` = `"a->b"`, direction of travel)
+  is refused for now (`starts.node_from_at`).  Intended handling, to build
+  together with `team_state`: assume the robot finishes the edge it is on
+  (to confirm with Module 6), add a first step that covers the rest of the
+  edge (the zones and lengths of its remaining pieces, from the robot's
+  pose), then compile the plan from b.  Without that step the robot would
+  be in no zone until it reaches b, and a conflict there would be missed.
+  `at` naming a node is approximate too (within 0.5 m of it): up to
+  0.5 m ÷ speed of timing error, which the margin has to cover.
+- **Times.**  Plans are compiled from t0 = 0, i.e. relative to the
+  check.  plan_id is `<transaction_id>/<robot>` and revision is the
+  attempt, so a finding's refs point at one message.
+- **latency_ms.**  Wall-clock time of `decide()` (`time.perf_counter`):
+  reading, compiling and checking the plan and building the verdict,
+  including the rechecks that verify an `order_before`.  Not the node
+  clock, which is simulation time under `use_sim_time` and can pause or
+  change rate; receiving and publishing are not included.
+- **Parameters.**  ROS parameters, read once at start-up and read-only
+  (changing speed or margin mid-episode would make verdicts
+  incomparable): `world` / `map_file`, `robots`, `start_source`, `speed`
+  (no default; `config/gate.yaml` holds a placeholder until Module 6's
+  speed is measured), `margin`, `max_duration`, `starvation_threshold`,
+  `policy_file`.  The access policy and task types are a YAML file
+  (`config/policy.yaml`) because ROS parameters cannot hold nested
+  tables.  The node logs the effective settings as one JSON line at
+  start-up, and one JSON line per decision.
+- **FALLBACK** (assumption, to confirm with Module 4): the all-hold plan
+  (`hold_all_plan`, `source_verdict` FALLBACK) does not pass through the
+  gate; Module 4 publishes it on `/mrs/validated_plan` itself.  The gate
+  subscribes only to `/mrs/proposed_plan`, so it never sees one.
+
+---
+
 ## Data structures
 
 | Item | Used by | Status |
@@ -439,7 +505,7 @@ MODIFY must check the whole modified plan again before approving it.
 | P-1 | Final stop in passthrough zone | policy | single | implemented |
 | P-2 | Region access restriction | policy | single | implemented |
 | P-3 | Maximum plan duration | policy | single | implemented |
-| P-4 | Replan divergence circuit-breaker | policy | cross | not yet (Sprint 3) |
+| P-4 | Replan divergence circuit-breaker | policy | cross | not yet; may be covered by Module 4's attempt cap (to confirm) |
 | R-1 | Yield assignment | resolution | cross | implemented |
 | F-1 | Yield imbalance metric | fairness | cross | ledger data only; metric not computed |
 | F-2 | Starvation override | fairness | cross | implemented |

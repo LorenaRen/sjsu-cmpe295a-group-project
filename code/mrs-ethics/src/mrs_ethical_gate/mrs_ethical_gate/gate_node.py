@@ -1,0 +1,106 @@
+"""Module 5 gate node: one EthicalVerdict for every ProposedPlan, and the ValidatedPlan on APPROVE.
+
+  ros2 launch mrs_ethical_gate gate.launch.py
+  ros2 launch mrs_ethical_gate gate.launch.py map_file:=/path/to/map.yaml use_sim_time:=false
+
+The callback receives, calls GateSession.decide and publishes; what it decides is in
+session.py and tested without ROS. A message seen before gets the same verdict (and
+ValidatedPlan) again.
+
+latency_ms is the wall-clock time of decide(): reading, compiling and checking the plan and
+building the verdict. It is measured with time.perf_counter, not the node clock, because with
+use_sim_time the node clock is simulation time, which can pause or run at another rate. It
+does not include receiving or publishing.
+
+FALLBACK plans (hold_all_plan, source_verdict FALLBACK) do not pass through the gate: Module 4
+publishes them on /mrs/validated_plan itself (an assumption to confirm, rules_v1.md).
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import rclpy
+from ament_index_python.packages import get_package_share_directory
+from mrs_msgs.msg import EthicalVerdict, ProposedPlan, ValidatedPlan
+from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.exceptions import ParameterUninitializedException
+from rclpy.logging import get_logger
+from rclpy.node import Node
+from rclpy.parameter import Parameter
+
+from mrs_common import names as N
+from mrs_common.convert import make_validated_plan, make_verdict
+from mrs_common.qos import qos_for
+
+from .session import GateSession
+from .settings import PARAMETERS, REQUIRED, SettingsError, load_settings
+
+_ROS_TYPES = {str: Parameter.Type.STRING, int: Parameter.Type.INTEGER, float: Parameter.Type.DOUBLE}
+
+
+class GateNode(Node):
+    def __init__(self, **kwargs):
+        super().__init__("mrs_ethical_gate", **kwargs)
+        settings = load_settings(self._declare_parameters(), default_policy_file=_default_policy_file())
+        self.session = GateSession.from_settings(settings)
+        self.get_logger().info("settings " + json.dumps(settings.describe()))
+        self.verdict_pub = self.create_publisher(EthicalVerdict, N.VERDICT, qos_for(N.VERDICT))
+        self.validated_pub = self.create_publisher(ValidatedPlan, N.VALIDATED_PLAN, qos_for(N.VALIDATED_PLAN))
+        self.create_subscription(ProposedPlan, N.PROPOSED_PLAN, self.on_plan, qos_for(N.PROPOSED_PLAN))
+
+    def _declare_parameters(self) -> dict:
+        """Declare every parameter of settings.PARAMETERS, read-only; None for one never set."""
+        values = {}
+        for name, (kind, default, description) in PARAMETERS.items():
+            descriptor = ParameterDescriptor(description=description, read_only=True)
+            self.declare_parameter(name, _ROS_TYPES[kind] if default is REQUIRED else default, descriptor)
+            try:
+                values[name] = self.get_parameter(name).value
+            except ParameterUninitializedException:
+                values[name] = None
+        return values
+
+    def on_plan(self, msg: ProposedPlan) -> None:
+        start = time.perf_counter()
+        d = self.session.decide(msg.plan_json, transaction_id=msg.transaction_id,
+                                episode_id=msg.episode_id, attempt=msg.attempt, now=self._now_s())
+        latency_ms = (time.perf_counter() - start) * 1e3
+        ids = {"transaction_id": msg.transaction_id, "episode_id": msg.episode_id, "attempt": msg.attempt}
+        self.verdict_pub.publish(make_verdict(**ids, latency_ms=latency_ms, node=self,
+                                              **d.verdict.make_verdict_kwargs()))
+        if d.validated is not None:
+            self.validated_pub.publish(make_validated_plan(d.validated, **ids, source_verdict="APPROVE",
+                                                           node=self))
+        self.get_logger().info("decision " + json.dumps({**ids, "latency_ms": round(latency_ms, 3),
+                                                         **d.summary()}))
+
+    def _now_s(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+
+def _default_policy_file() -> Path:
+    return Path(get_package_share_directory("mrs_ethical_gate")) / "config" / "policy.yaml"
+
+
+def main(args=None) -> None:
+    rclpy.init(args=args)
+    try:
+        node = GateNode()
+    except SettingsError as e:
+        get_logger("mrs_ethical_gate").fatal(f"not starting: {e}")
+        rclpy.shutdown()
+        raise SystemExit(1)
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

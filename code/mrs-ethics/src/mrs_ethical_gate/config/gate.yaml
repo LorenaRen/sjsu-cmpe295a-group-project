@@ -1,0 +1,15 @@
+# Check settings of the Module 5 gate (mrs_ethical_gate). world, map_file, robots and use_sim_time
+# come from gate.launch.py's arguments; the access policy is in policy.yaml.
+mrs_ethical_gate:
+  ros__parameters:
+    # Nominal driving speed [m/s], used to estimate when each robot enters and leaves a zone.
+    # PLACEHOLDER: 0.5 is mrs_sim's cmd_vel limit, not a measured cruise speed. Set it to Module 6's
+    # speed once that exists, and check it against simulation (times in and out of each zone).
+    speed: 0.5
+    # Each occupancy interval is widened by this much at both ends [s] (rules_v1.md, S-1).
+    # Initial value, to be tuned by experiment.
+    margin: 0.5
+    max_duration: 3600.0      # P-3: longest plan allowed [s]
+    starvation_threshold: 3   # F-2: REJECTs in a row before a robot gets priority
+    start_source: spawns      # team_state needs Module 3 (not built)
+    policy_file: ""           # empty: this package's config/policy.yaml
