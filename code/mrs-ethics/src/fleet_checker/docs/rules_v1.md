@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.10, 2026-11-04
+Status: draft v0.11, 2026-11-04
 
 ---
 
@@ -78,8 +78,15 @@ actors from the scenario YAML.  Tests place people in code.  The gate
 reads them from a people file (`people_file`; by default
 `config/people.yaml`, which lists nobody, so S-2 finds nothing) and refuses
 two people with one id, or a person outside every zone of the map (most
-likely mistyped coordinates).  Later the positions are to come from
-`/mrs/team_state` (see the limitations).
+likely mistyped coordinates).  With `start_source: team_state` it also
+takes the people the robots see: each robot's `WorldState.obstacles` of
+type person.  The two lists are merged by id, and a person in both is
+where the robots see them, which is newer than the file.  A person several
+robots see is where the newest report says (equally new: the first robot
+by id), and only the fleet's robots count.  Obstacle boxes are not people;
+what they block is in `blocked_edges`.  People the robots see are not
+checked against the zones: Module 3 reports them, so a typo is not the
+likely cause.  Everyone is taken to stand still for the whole plan.
 
 **What S-2 does not do.**  A single robot too close to a person is the job
 of each robot's own safety layer: the previous team's per-robot gate (speed
@@ -95,12 +102,14 @@ monitor, Module 11), not for S-2.
 
 1. **Straight-line distance, through walls.**  A robot on the other side of
    a wall counts as near the person.  This errs towards reporting.
-2. **Once people come from `/mrs/team_state`, only people a robot sees are
-   checked.**  `TeamState` has no list of everyone in the scenario; people
-   appear in each robot's `WorldState.obstacles`, within its perception
-   range.  S-2 checks the route ahead, so a person on it whom no robot sees
-   yet is missed.  To raise with Modules 3 and 9: publish every person in
-   the scenario.
+2. **From `/mrs/team_state` come only the people a robot sees.**
+   `TeamState` has no list of everyone in the scenario; people appear in
+   each robot's `WorldState.obstacles`, within its perception range.  The
+   people file is kept for that: listing the scenario's people there gives
+   S-2 everyone, at their listed place until a robot sees them.  A person
+   in neither, on the route ahead, is missed; so is one who has walked
+   away from the listed place unseen.  To raise with Modules 3 and 9:
+   publish every person in the scenario.
 3. **R has to agree with Module 6's CBF clearance for people.**  R should be
    at least that clearance; otherwise S-2 counts positions the CBF never
    lets a robot reach.  Module 6 has not set the clearance yet.
@@ -546,7 +555,7 @@ checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 | File | Does |
 |------|------|
 | `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
-| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from, the node it ends at (`PlanStep.end_node`; for a step that stands still, where it stands), and every node it drives through or to, with the time it gets there (`PlanStep.waypoints`), which S-4 needs.  A robot between two nodes (`OnEdge`, from team_state) first drives the rest of its edge, then starts its tasks at the edge's end (below).  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
+| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from, the node it ends at (`PlanStep.end_node`; for a step that stands still, where it stands), and every node it drives through or to, with the time it gets there (`PlanStep.waypoints`), which S-4 needs.  Routes leave out blocked edges (team_state), both ways.  A robot between two nodes (`OnEdge`, from team_state) first drives the rest of its edge, then starts its tasks at the edge's end (below).  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
 | `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1, S-2 (when `people` and a `CrowdingLimit` are given) and S-4 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check, with the same people, on a changed plan.  `conflicts(result)` lists the S-1, S-2 and S-4 conflicts once each (both halves of a head-on swap are one), with where they are (zone, person or node) and their yielders, for the ledger.  Robots on an edge: see below. |
 | `verdict.py` | `to_verdict`: a `check_team_plan` result → the decision fields of an `EthicalVerdict` (see "Verdict for Module 5" below). |
 
@@ -620,7 +629,15 @@ agreed interfaces:
    `navigate`.
 2. **Same route.**  The executor drives the same shortest path on the
    waypoint graph, including how equal-length routes are decided
-   (compare node names along the route).
+   (compare node names along the route), and leaves out the same blocked
+   edges.  **Also to ask Module 6: does a detour around a blocked edge
+   avoid restricted zones?**  The compiler's does not: with samples_world's
+   passage blocked, the only way between the halls is through the
+   restricted office, so P-2 rejects any plan that crosses over.  If the
+   executor does not avoid restricted zones either, that REJECT is right:
+   the robot would really drive through the office.  If it does, the
+   compiler has to leave restricted zones out of its routes too, or the
+   checker would check a route the robot does not drive.
 3. **`depends_on` is enforced by events** (`TaskStatus` "done"), not by the
    compiled times.  The times are estimates: nominal speed, with no
    acceleration, turning on the spot or CBF slow-down.  S-1's `margin`
@@ -798,8 +815,18 @@ tested in a plain venv.
     snapshot of every robot), the latest one when a plan arrives
     (`starts.TeamStateStarts`).  A robot at a node starts there; a robot on
     the edge `"a->b"` first drives the rest of it ("Robots on an edge",
-    above).  `blocked_edges` are logged but not used yet: routes do not
-    avoid them.
+    above).
+  - **Blocked edges** (`TeamState.blocked_edges`, `"a--b"`, read either
+    way round) are left out of every route, both ways (the compiler).
+    An id that names no edge of the map is left out and logged: it cannot
+    be on any route the checker computes, and a map that does not match
+    would show in the robots' `at` too.  A robot **on** a blocked edge is
+    an unknown position (below): whether the executor finishes such an
+    edge, turns back or stops is not known (to align with Module 6).
+  - **People** the robots see are added to the people file's (S-2, "Where
+    people come from").  A gate session with team_state needs S-2's R and
+    N even with an empty people file, since the robots may report people
+    at any time.
 - **Unknown positions: fail closed.**  When the gate does not know where
   every robot of the fleet is, it checks nothing and rejects the plan
   (`unknown_robot`, level 1, a `custom` constraint per problem; the ledger
@@ -856,14 +883,21 @@ tested in a plain venv.
   effective settings as one JSON line at start-up, and one JSON line per
   decision, which includes where the robots were ("positions": the source,
   and for team_state the snapshot's age and each robot's `at` and age, or
-  why they are unknown).  `gate.launch.py` takes `start_source` and
-  `margin` too, which replace the params file's when given.
+  why they are unknown; the blocked edges, and those not on the map), and
+  the people S-2 checked around ("people": each with its position and
+  where that came from, "file" or the robot whose report counted).
+  `gate.launch.py` takes `start_source` and `margin` too, which replace the
+  params file's when given.
 - **fake_team_state** (`mrs_ethical_gate/dev_nodes`, a development node,
   not Module 3) publishes one snapshot file (`snapshots/`) as a TeamState
-  at 2 Hz, every stamp the node clock now; `stop_after` stops it, so that a
-  test can see the gate take the last snapshot for too old.  It judges
-  nothing: whether an `at` is a node or an edge of the map is the gate's
-  to say.
+  at 2 Hz, every stamp the node clock now, with the file's blocked edges
+  and people (each an obstacle of type person in the WorldState of the
+  robots that see it: `seen_by`, every robot by default); `stop_after`
+  stops it, so that a test can see the gate take the last snapshot for too
+  old.  It judges nothing: whether an `at` is a node or an edge of the map
+  is the gate's to say.  The fake planner reads no TeamState: it does not
+  know the blocked edges, moves targets by distance on the whole graph,
+  and can change no route.
 - **FALLBACK** (assumption, to confirm with Module 4): the all-hold plan
   (`hold_all_plan`, `source_verdict` FALLBACK) does not pass through the
   gate; Module 4 publishes it on `/mrs/validated_plan` itself.  The gate
@@ -894,7 +928,10 @@ tested in a plain venv.
     cycle**: a robot rejected 3 times in a row is put first only at the 4th
     check.  The count carries over to the episode's next planning cycle,
     since only an APPROVE resets it and the gate never sees the fallback.
-  - *To align with Module 6:* `/mrs/validated_plan` then has two
+  - *To align with Module 6:* whether its routes leave out the same
+    blocked edges, and whether a detour avoids restricted zones
+    (assumption 2 above); what it does when the edge a robot is on gets
+    blocked.  Also: `/mrs/validated_plan` then has two
     publishers, the gate (APPROVE) and Module 4 (FALLBACK).  It is transient
     local with depth 1, kept per publisher, so an executor that joins late
     gets the last message of each, in no set order.  It has to take the
@@ -922,7 +959,7 @@ tested in a plain venv.
 | Code | Name | Cat. | Scope | Impl. status |
 |------|------|------|-------|:---:|
 | S-1 | Interval capacity / edge-swap | safety | cross | implemented |
-| S-2 | Human crowding | safety | cross | implemented (checker and gate); people from a static file until `/mrs/team_state` |
+| S-2 | Human crowding | safety | cross | implemented (checker and gate); people from a file and, with `team_state`, the people the robots see |
 | S-3 | Unsafe action near humans | safety | single | deferred |
 | S-4 | Node occupancy | safety | cross | implemented (checker and gate): standing and driving through |
 | P-1 | Final stop in passthrough zone | policy | single | implemented |

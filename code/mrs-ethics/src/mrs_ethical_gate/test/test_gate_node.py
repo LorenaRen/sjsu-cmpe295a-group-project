@@ -11,7 +11,7 @@ import pytest
 
 try:
     import rclpy
-    from mrs_msgs.msg import EthicalVerdict, ProposedPlan, TeamState, ValidatedPlan, WorldState
+    from mrs_msgs.msg import EthicalVerdict, PerceivedEntity, ProposedPlan, TeamState, ValidatedPlan, WorldState
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.parameter import Parameter
 
@@ -118,10 +118,14 @@ def live(ros):
     _stop(executor, probe, gate)
 
 
-def publish_team_state(executor, probe, gate, robots: dict):
-    """Stand in for Module 3: one TeamState, stamped now, with robots as {robot: (at, x, y)}."""
-    msg = TeamState(episode_id="gate-test", stamp=probe.node.get_clock().now().to_msg())
-    msg.robots = [WorldState(robot_id=r, episode_id="gate-test", at=at, x=x, y=y, stamp=msg.stamp)
+def publish_team_state(executor, probe, gate, robots: dict, blocked_edges=(), sees: dict | None = None):
+    """Stand in for Module 3: one TeamState, stamped now, with robots as {robot: (at, x, y)}, the
+    blocked edges, and the people each robot sees as {robot: [(id, x, y), ...]}."""
+    msg = TeamState(episode_id="gate-test", stamp=probe.node.get_clock().now().to_msg(),
+                    blocked_edges=list(blocked_edges))
+    msg.robots = [WorldState(robot_id=r, episode_id="gate-test", at=at, x=x, y=y, stamp=msg.stamp,
+                             obstacles=[PerceivedEntity(id=i, type=PerceivedEntity.TYPE_PERSON, x=px, y=py)
+                                        for i, px, py in (sees or {}).get(r, [])])
                   for r, (at, x, y) in robots.items()]
     probe.team_state_pub.publish(msg)
     assert spin_until(executor, lambda: gate.session.starts.latest == team_snapshot(msg))
@@ -199,6 +203,25 @@ def test_with_team_state_a_plan_is_checked_where_the_robots_are(live):
     publish_team_state(executor, probe, gate, {"robot_a": ("west_s", 0.0, -1.2), "robot_b": ("pass_w", 2.6, 0.0)})
     _, v = send(executor, probe, load_sample("valid_two_robots.json"))
     assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.CAPACITY_EXCEEDED])
+
+
+AT_SPAWNS = {"robot_a": ("west_s", 0.0, -1.2), "robot_b": ("east_n", 12.0, 1.2)}
+
+
+def test_with_team_state_routes_go_around_blocked_edges(live):
+    executor, probe, gate = live
+    # The passage is blocked: both robots of the valid sample would drive through the restricted office.
+    publish_team_state(executor, probe, gate, AT_SPAWNS, blocked_edges=["pass_e--pass_w"])
+    _, v = send(executor, probe, load_sample("valid_two_robots.json"))
+    assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.REGION_ACCESS_DENIED])
+
+
+def test_with_team_state_the_people_robots_see_are_checked_for_crowding(live):
+    executor, probe, gate = live
+    # robot_b sees person_1 1.1 m from corridor_2, as in fixtures/samples_world_people.yaml.
+    publish_team_state(executor, probe, gate, AT_SPAWNS, sees={"robot_b": [("person_1", 10.0, -1.0)]})
+    _, v = send(executor, probe, load_sample("valid_two_robots.json"))
+    assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.HUMAN_CROWDING])
 
 
 def test_the_gate_does_not_start_without_a_speed(ros):

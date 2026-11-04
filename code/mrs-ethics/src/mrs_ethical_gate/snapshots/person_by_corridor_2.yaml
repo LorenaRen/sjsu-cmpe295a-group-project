@@ -1,0 +1,10 @@
+# fake_team_state snapshot (mrs_ethical_gate/dev_nodes/snapshots.py).
+description: >-
+  Both robots stand at samples_world's spawn slots, and robot_b sees person_1 1.1 m from
+  corridor_2, the person of test/fixtures/samples_world_people.yaml.
+map: samples_world
+robots:
+  - {robot_id: robot_a, at: west_s, x: 0.0, y: -1.2}
+  - {robot_id: robot_b, at: east_n, x: 12.0, y: 1.2, yaw: 3.14159}
+people:
+  - {id: person_1, x: 10.0, y: -1.0, seen_by: [robot_b]}

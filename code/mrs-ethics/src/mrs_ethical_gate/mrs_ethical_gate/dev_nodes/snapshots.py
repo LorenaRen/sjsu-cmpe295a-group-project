@@ -6,8 +6,11 @@
     - {robot_id: robot_a, at: west_s, x: 0.0, y: -1.2}
     - {robot_id: robot_b, at: corridor_1->pass_e, x: 8.6, y: 0.0}
   blocked_edges: []             # TeamState.blocked_edges, as edge ids ("corridor_1--room_3")
+  people:                       # obstacles of type person; seen_by defaults to every robot
+    - {id: person_1, x: 10.0, y: -1.0, seen_by: [robot_b]}
 
-Unknown keys are an error, and so are two robots of one id. Whether each `at` is a node or
+Unknown keys are an error, and so are two robots, or two people, of one id, and a person seen
+by a robot the snapshot does not have. Whether each `at` is a node or
 an edge of the map is not checked here: fake_team_state stands in for Module 3 and publishes
 what the file says, and judging it is the gate's job (starts.py), which these tools do not
 share code with. Only the map name is checked, as for scenarios.
@@ -49,6 +52,15 @@ class _Robot(BaseModel):
     yaw: FiniteFloat = 0.0            # [rad]
 
 
+class _Person(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    x: FiniteFloat                    # map frame [m]
+    y: FiniteFloat
+    seen_by: list[str] | None = None  # robots whose WorldState lists them; None: every robot
+
+
 class _SnapshotFile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,13 +68,19 @@ class _SnapshotFile(BaseModel):
     map: str = Field(min_length=1)
     robots: list[_Robot] = Field(min_length=1)
     blocked_edges: list[str] = []
+    people: list[_Person] = []
 
     @model_validator(mode="after")
-    def _one_robot_per_id(self) -> "_SnapshotFile":
-        ids = [r.robot_id for r in self.robots]
-        twice = sorted({i for i in ids if ids.count(i) > 1})
-        if twice:
-            raise ValueError(f"two robots have the id {twice[0]!r}")
+    def _ids(self) -> "_SnapshotFile":
+        for what, ids in (("robots", [r.robot_id for r in self.robots]), ("people", [p.id for p in self.people])):
+            twice = sorted({i for i in ids if ids.count(i) > 1})
+            if twice:
+                raise ValueError(f"two {what} have the id {twice[0]!r}")
+        robots = {r.robot_id for r in self.robots}
+        for p in self.people:
+            for robot in p.seen_by or ():
+                if robot not in robots:
+                    raise ValueError(f"{p.id} is seen by {robot}, which is not a robot of this snapshot")
         return self
 
 
@@ -76,6 +94,14 @@ class SnapshotRobot:
 
 
 @dataclass(frozen=True)
+class SnapshotPerson:
+    person_id: str
+    x: float
+    y: float
+    seen_by: tuple[str, ...]   # robot ids, in the snapshot's order
+
+
+@dataclass(frozen=True)
 class Snapshot:
     name: str            # the file name without .yaml
     path: Path
@@ -83,6 +109,7 @@ class Snapshot:
     map: str
     robots: tuple[SnapshotRobot, ...]
     blocked_edges: tuple[str, ...]
+    people: tuple[SnapshotPerson, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,7 +125,10 @@ class FeedSettings:
         return {"snapshot": self.snapshot.name, "snapshot_file": str(self.snapshot.path),
                 "map": str(self.map_path), "rate": self.rate, "stop_after": self.stop_after,
                 "episode_id": self.episode_id,
-                "robots": {r.robot_id: {"at": r.at, "x": r.x, "y": r.y} for r in self.snapshot.robots}}
+                "robots": {r.robot_id: {"at": r.at, "x": r.x, "y": r.y} for r in self.snapshot.robots},
+                "people": {p.person_id: {"x": p.x, "y": p.y, "seen_by": list(p.seen_by)}
+                           for p in self.snapshot.people},
+                "blocked_edges": list(self.snapshot.blocked_edges)}
 
 
 def load_snapshot(snapshot: str, snapshots_dir: Path) -> Snapshot:
@@ -112,9 +142,13 @@ def load_snapshot(snapshot: str, snapshots_dir: Path) -> Snapshot:
         f = _SnapshotFile.model_validate(data if data is not None else {})
     except ValidationError as e:
         raise ScenarioError(f"snapshot {path}: {_first_error(e)}") from e
+    every_robot = tuple(r.robot_id for r in f.robots)
     return Snapshot(name=path.stem, path=path, description=f.description.strip(), map=f.map,
                     robots=tuple(SnapshotRobot(r.robot_id, r.at, r.x, r.y, r.yaw) for r in f.robots),
-                    blocked_edges=tuple(f.blocked_edges))
+                    blocked_edges=tuple(f.blocked_edges),
+                    people=tuple(SnapshotPerson(p.id, p.x, p.y,
+                                                tuple(r for r in every_robot if p.seen_by is None or r in p.seen_by))
+                                 for p in f.people))
 
 
 def load_feed(values: Mapping[str, Any], *, snapshots_dir: Path) -> FeedSettings:

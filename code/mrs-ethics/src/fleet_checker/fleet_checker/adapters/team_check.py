@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Mapping, NamedTuple, Sequence
+from typing import Collection, Mapping, NamedTuple, Sequence
 
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan
@@ -78,6 +78,7 @@ class TeamCheckResult:
     sim_map: SimMap
     start_nodes: Mapping[str, str]
     on_edges: Mapping[str, OnEdge]         # robots between two nodes; {} if none
+    blocked_edges: tuple[tuple[str, str], ...]   # edges no route may use, each pair sorted
     people: tuple[HumanObservation, ...]   # where people are, for S-2
     ledger: FairnessLedger | None
     settings: CheckSettings
@@ -89,8 +90,8 @@ class TeamCheckResult:
     def recheck(self, team_plan: TeamPlan) -> TeamCheckResult:
         """Run the same check (map, where the robots are, people, ledger, settings) on
         another plan, e.g. this one with a depends_on added."""
-        return _check(team_plan, self.sim_map, self.start_nodes, self.on_edges, self.people,
-                      self.ledger, self.settings)
+        return _check(team_plan, self.sim_map, self.start_nodes, self.on_edges, self.blocked_edges,
+                      self.people, self.ledger, self.settings)
 
 
 class Conflict(NamedTuple):
@@ -153,11 +154,13 @@ def check_team_plan(
     people: Sequence[HumanObservation] = (),
     crowding: CrowdingLimit | None = None,
     on_edges: Mapping[str, OnEdge] | None = None,
+    blocked_edges: Collection[tuple[str, str]] = (),
 ) -> TeamCheckResult:
     """Compile a TeamPlan and run the policy and cross-plan checks on it.
 
-    speed, t0, task_types, plan_id, revision and on_edges (robots between two
-    nodes, which first drive to their start node) go to compile_team_plan;
+    speed, t0, task_types, plan_id, revision, on_edges (robots between two
+    nodes, which first drive to their start node) and blocked_edges (edges no
+    route may use) go to compile_team_plan;
     margin to S-1, S-2 and S-4; access_policy and max_duration to P-2 and P-3;
     people (where they stand now) and crowding (R and N) to S-2, which runs
     only when there are people. robot_length [m] has no default, like speed: S-4
@@ -172,18 +175,20 @@ def check_team_plan(
                              access_policy=access_policy, task_types=task_types,
                              plan_id=plan_id, revision=revision, crowding=crowding,
                              robot_length=robot_length)
-    return _check(team_plan, sim_map, start_nodes, dict(on_edges or {}), tuple(people), ledger,
+    blocked = tuple(sorted({tuple(sorted(e)) for e in blocked_edges}))
+    return _check(team_plan, sim_map, start_nodes, dict(on_edges or {}), blocked, tuple(people), ledger,
                   settings)
 
 
 def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
-           on_edges: Mapping[str, OnEdge], people: tuple[HumanObservation, ...],
-           ledger: FairnessLedger | None, s: CheckSettings) -> TeamCheckResult:
+           on_edges: Mapping[str, OnEdge], blocked_edges: tuple[tuple[str, str], ...],
+           people: tuple[HumanObservation, ...], ledger: FairnessLedger | None,
+           s: CheckSettings) -> TeamCheckResult:
     compiled = compile_team_plan(team_plan, sim_map, start_nodes, speed=s.speed, t0=s.t0,
                                  task_types=s.task_types, plan_id=s.plan_id, revision=s.revision,
-                                 on_edges=on_edges)
+                                 on_edges=on_edges, blocked_edges=blocked_edges)
     inputs = dict(team_plan=team_plan, sim_map=sim_map, start_nodes=start_nodes, on_edges=on_edges,
-                  people=people, ledger=ledger, settings=s)
+                  blocked_edges=blocked_edges, people=people, ledger=ledger, settings=s)
     if compiled.violations:
         findings = tuple(_finding(v, compiled, ()) for v in compiled.violations)
         return TeamCheckResult(compiled=compiled, findings=findings, must_replan={}, **inputs)

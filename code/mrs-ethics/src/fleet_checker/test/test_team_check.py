@@ -370,6 +370,15 @@ def test_a_yielder_reaching_a_node_on_the_edge_it_is_on_has_the_keeper_change(sa
     assert (f.r1_yielders, f.must_fix) == (("robot_b",), ("robot_a",))
 
 
+def test_recheck_keeps_the_blocked_edges(samples_map):
+    plan = sample("valid_two_robots.json")
+    result = check(samples_map, plan, blocked_edges=[("pass_w", "pass_e")])
+    # Both robots now drive through the restricted office (P-2), and so they do again on recheck.
+    assert {f.reason for f in result.findings} == {R.REGION_ACCESS_DENIED}
+    assert result.blocked_edges == (("pass_e", "pass_w"),)
+    assert {f.reason for f in result.recheck(plan).findings} == {R.REGION_ACCESS_DENIED}
+
+
 def test_recheck_runs_the_same_check_on_another_plan(samples_map):
     result = check(samples_map, drop_dependencies(sample("valid_two_robots.json")), max_duration=30.0)
     assert codes(result) == ["MAX_DURATION_EXCEEDED", "CAPACITY_EXCEEDED"]

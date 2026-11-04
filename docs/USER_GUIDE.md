@@ -17,7 +17,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
-| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 195 gate + 336 checker tests (Nov 4); APPROVE / REJECT; robots start at the spawn slots, or where `/mrs/team_state` says (tested with a stand-in for Module 3); people (S-2) from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
+| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 211 gate + 342 checker tests (Nov 4); APPROVE / REJECT; robots start at the spawn slots, or where `/mrs/team_state` says, with its blocked edges and the people the robots see (tested with a stand-in for Module 3); people (S-2) also from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
@@ -543,15 +543,15 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
 **Not done yet:**
 - `start_source: spawns` (the default) is right only until robots move. `team_state` reads
   `/mrs/team_state`, but Module 3 does not publish it yet: so far it has been tested only with
-  `fake_team_state`. It does not use `blocked_edges` (routes do not avoid them).
-- People come from a static file and are taken to stand still. S-2 measures straight-line distance,
-  through walls.
+  `fake_team_state`.
+- People come from a file and, with `team_state`, from what the robots see; everyone is taken to stand
+  still. S-2 measures straight-line distance, through walls.
 - No MODIFY: the gate never repairs a plan itself.
 - Assumed, to confirm with Module 4: FALLBACK plans (`hold_all_plan`) go to `/mrs/validated_plan`
   directly, not through the gate. The fake planner (below) does it that way.
 
 Tests: `cd src/fleet_checker && pytest -q` and `cd src/mrs_ethical_gate && pytest -q`. Both run without
-ROS, for example in a plain venv; the 20 tests in `test_gate_node.py`, `test_fake_planner_node.py` and
+ROS, for example in a plain venv; the 23 tests in `test_gate_node.py`, `test_fake_planner_node.py` and
 `test_fake_team_state_node.py` also need the built and sourced workspace and skip otherwise.
 
 #### Where the robots are: `start_source: team_state`
@@ -565,8 +565,14 @@ It rejects the plan unchecked (`unknown_robot`, one `custom` constraint per prob
 where every robot is: no TeamState yet, one of another episode (an empty `episode_id` goes for any), a robot
 missing from it, an `at` the map does not have, a robot on an edge posed outside every zone, no stamp, a
 position older than `team_state_max_age`, or stamped more than that ahead of the gate's clock (check
-`use_sim_time` on both sides). `team_state_max_age` has no default in the code; the file's 1.0 s, two
-periods of WorldState's 2 Hz, is a placeholder.
+`use_sim_time` on both sides), or a robot on a blocked edge (whether it finishes the edge, turns back or
+stops is not known). `team_state_max_age` has no default in the code; the file's 1.0 s, two periods of
+WorldState's 2 Hz, is a placeholder.
+
+The TeamState's `blocked_edges` are left out of every route, both ways; one that is not an edge of the map
+is left out and logged. S-2 checks around the people the robots see (`WorldState.obstacles` of type
+person) as well as the people file's; a person in both is where the robots see them. The decision log
+lists the blocked edges and every person checked, with where the position came from.
 
 **Use a margin of at least 2 s with `team_state`** until it is measured: a robot counts as at a node up to
 0.5 m from it (1 s of driving at 0.5 m/s) and its position can be up to 1 s old, so the start times can be
@@ -574,7 +580,8 @@ about 2 s off (`config/gate.yaml`). The decision log gives each check's snapshot
 for measuring that later.
 
 `fake_team_state` is a **development node** standing in for Module 3: it publishes one snapshot file as a
-TeamState, every stamp the node clock now. Parameters: `snapshot` (a name below or a path), `world` /
+TeamState, every stamp the node clock now, with the file's blocked edges and people (each person in the
+WorldState obstacles of the robots that see them, `seen_by`, by default every robot). Parameters: `snapshot` (a name below or a path), `world` /
 `map_file` (as for the gate; the snapshot's map must match), `rate` (2.0 Hz), `stop_after` (seconds, 0 =
 never; then it exits, so that the gate's last snapshot grows too old), `episode_id` (empty: none).
 
@@ -583,6 +590,9 @@ never; then it exits, so that the gate's last snapshot grows too old), `episode_
 | `at_spawns` | at the spawn slots: plans get the verdicts of `start_source: spawns` |
 | `b_in_passage` | robot_b stands at pass_w, inside the one-robot passage `valid_two_robots` has robot_a drive through |
 | `b_on_edge` | robot_b is on `corridor_1->pass_e`, 1.2 m before pass_e: its plan first drives into the passage |
+| `b_on_blocked_edge` | as `b_on_edge`, but that edge is blocked: the gate checks no plan (`unknown_robot`) |
+| `passage_blocked` | at the spawn slots, the passage blocked: the only way between the halls is through the restricted office, so `valid_two_robots` gets P-2 |
+| `person_by_corridor_2` | at the spawn slots; robot_b sees the person of `test/fixtures/samples_world_people.yaml`: the same S-2 verdict as that people file gives |
 
 ```bash
 # the replan loop with positions from fake_team_state: the gate gets start_source team_state and margin 2.0
@@ -592,7 +602,10 @@ ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s1_passage_no_order
 
 With `team_state:=...`, `replan_loop.launch.py` starts `fake_team_state` with that snapshot, and the fake
 planner 2 s later, so that the gate has a TeamState by then (the topic is volatile). `margin:=...` sets
-another margin. The fake planner's FALLBACK still holds the robots at their spawn nodes.
+another margin. The fake planner reads no TeamState: its FALLBACK still holds the robots at their spawn
+nodes, and it does not know the blocked edges, so it moves targets by distance on the whole graph and can
+change no route. With `team_state:=passage_blocked`, `s1_passage_no_order` is stuck in round 1: P-2's
+`avoid_node` constraints are about routes through the office, which a TeamPlan cannot choose.
 
 #### Testing the replan loop: the fake planner
 

@@ -18,7 +18,16 @@ snapshot of another episode, a robot missing from it, an `at` the map does not h
 on an edge whose pose is outside every zone of the map, no time stamp, or a position older
 than max_age, or stamped more than max_age ahead of the gate's clock, which means the two use
 different clocks. A robot's age comes from its WorldState.stamp, or the TeamState's when that
-is not set. Robots of the snapshot outside the fleet are left out, and logged.
+is not set. Robots of the snapshot outside the fleet are left out, and logged. So is a robot
+on a blocked edge: whether the executor finishes such an edge, turns back or stops is not
+known (to be confirmed with Module 6).
+
+The snapshot also says which edges are blocked, and where the people are that the robots
+see. Blocked edges are given as "a--b", read either way round (an edge is blocked both ways);
+one the map does not have cannot be on any route the checker computes, so it is left out and
+logged. A person is a WorldState obstacle of type person; one seen by several robots is where
+the newest of their reports says (equally new: the first robot by id). Only the fleet's
+robots count, as for positions. The session adds these people to the people file's.
 
 No position is moved forward: a robot is where the snapshot says, however old that is. The
 error this leaves is for the margin to cover (config/gate.yaml, rules_v1.md).
@@ -33,9 +42,11 @@ from mrs_common import names as N
 
 from fleet_checker.adapters.compiler import OnEdge
 from fleet_checker.adapters.sim_map import SimMap, spawn_starts
+from fleet_checker.plan import HumanObservation
 
 SPAWNS = "spawns"
 TEAM_STATE = "team_state"
+PERSON = "person"   # PerceivedEntity.TYPE_PERSON (mrs_msgs needs a ROS build to import)
 
 
 def spawn_start_nodes(sim_map: SimMap, robots: Sequence[str]) -> dict[str, str]:
@@ -56,7 +67,9 @@ class Starts:
     snapshot_age: float | None = None       # [s] the gate's clock minus TeamState.stamp
     ages: dict[str, float] = field(default_factory=dict)       # robot -> age of its position [s]
     left_out: tuple[str, ...] = ()          # robots of the snapshot outside the fleet
-    blocked_edges: tuple[str, ...] = ()     # TeamState.blocked_edges: routes do not avoid them yet
+    blocked_edges: tuple[tuple[str, str], ...] = ()   # edges no route may use, each pair sorted
+    blocked_not_on_map: tuple[str, ...] = ()          # blocked edge ids the map does not have
+    people_seen: tuple[tuple[str, HumanObservation], ...] = ()   # (robot whose report counts, person)
 
     def summary(self) -> dict[str, Any]:
         """Plain JSON values, for the decision log."""
@@ -68,7 +81,9 @@ class Starts:
             robots[robot] = {"at": f"{e.from_node}{N.TRAVEL_SEP}{e.to_node}" if e else self.start_nodes[robot],
                              "age_s": round(self.ages[robot], 3)}
         return {"source": self.source, "snapshot_age_s": _rounded(self.snapshot_age), "robots": robots,
-                "left_out": list(self.left_out), "blocked_edges_not_used": list(self.blocked_edges)}
+                "left_out": list(self.left_out),
+                "blocked_edges": [N.edge_id(a, b) for a, b in self.blocked_edges],
+                "blocked_edges_not_on_map": list(self.blocked_not_on_map)}
 
 
 @dataclass(frozen=True)
@@ -105,6 +120,13 @@ class FixedStarts:
 # team_state
 # --------------------------------------------------------------------------
 
+class PersonSeen(NamedTuple):
+    """A WorldState obstacle of type person."""
+    person_id: str
+    x: float                # map frame [m]
+    y: float
+
+
 class RobotState(NamedTuple):
     """The fields of one WorldState the gate reads."""
     robot_id: str
@@ -112,6 +134,7 @@ class RobotState(NamedTuple):
     x: float                # map frame [m]
     y: float
     stamp: float | None     # [s]; None when not set
+    people: tuple[PersonSeen, ...] = ()
 
 
 class TeamSnapshot(NamedTuple):
@@ -126,7 +149,9 @@ def team_snapshot(msg: Any) -> TeamSnapshot:
     """A TeamSnapshot from an mrs_msgs TeamState, or anything with its fields."""
     return TeamSnapshot(
         episode_id=msg.episode_id,
-        robots=tuple(RobotState(r.robot_id, r.at, float(r.x), float(r.y), _seconds(r.stamp))
+        robots=tuple(RobotState(r.robot_id, r.at, float(r.x), float(r.y), _seconds(r.stamp),
+                                people=tuple(PersonSeen(e.id, float(e.x), float(e.y))
+                                             for e in r.obstacles if e.type == PERSON))
                      for r in msg.robots),
         stamp=_seconds(msg.stamp),
         blocked_edges=tuple(msg.blocked_edges))
@@ -188,6 +213,7 @@ class TeamStateStarts:
                 ((None, f"the latest {N.TEAM_STATE} is of episode {s.episode_id!r}, not {episode_id!r}"),),
                 snapshot_age)
         states = {r.robot_id: r for r in s.robots}
+        blocked, not_on_map = self._blocked(s.blocked_edges)
         problems: list[tuple[str | None, str]] = []
         start_nodes: dict[str, str] = {}
         on_edges: dict[str, OnEdge] = {}
@@ -200,15 +226,31 @@ class TeamStateStarts:
                 except ValueError as e:
                     why = str(e)
                 else:
-                    ages[robot] = age
-                    if on_edge is not None:
-                        on_edges[robot] = on_edge
+                    if on_edge is not None and tuple(sorted((on_edge.from_node, on_edge.to_node))) in blocked:
+                        why = (f"it is on {states[robot].at}, which is blocked: whether it finishes the edge, "
+                               f"turns back or stops is not known")
+                    else:
+                        ages[robot] = age
+                        if on_edge is not None:
+                            on_edges[robot] = on_edge
             if why is not None:
                 problems.append((robot, why))
         if problems:
             return UnknownStarts(tuple(problems), snapshot_age)
         return Starts(start_nodes, on_edges, TEAM_STATE, snapshot_age, ages,
-                      left_out=tuple(sorted(set(states) - set(self.fleet))), blocked_edges=s.blocked_edges)
+                      left_out=tuple(sorted(set(states) - set(self.fleet))), blocked_edges=blocked,
+                      blocked_not_on_map=not_on_map, people_seen=_people_seen(states, ages))
+
+    def _blocked(self, ids: Sequence[str]) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+        """The blocked edges as sorted node pairs, and the ids that name no edge of the map."""
+        pairs, not_on_map = set(), set()
+        for edge in ids:
+            nodes = edge.split(N.EDGE_SEP)
+            if len(nodes) == 2 and tuple(nodes) in self.sim_map.pieces:
+                pairs.add(tuple(sorted(nodes)))
+            else:
+                not_on_map.add(edge)
+        return tuple(sorted(pairs)), tuple(sorted(not_on_map))
 
     def _problem(self, state: RobotState | None, s: TeamSnapshot, now: float) -> tuple[str | None, float]:
         """Why a robot's position cannot be used (None if it can), and how old it is."""
@@ -224,3 +266,17 @@ class TeamStateStarts:
             return (f"its position is stamped {-age:.1f} s ahead of the gate's clock; do the gate and "
                     f"Module 3 use the same clock (use_sim_time)?"), age
         return None, age
+
+
+def _people_seen(states: Mapping[str, RobotState], ages: Mapping[str, float]
+                 ) -> tuple[tuple[str, HumanObservation], ...]:
+    """Each person the fleet sees, from the newest report (the youngest robot position;
+    equally young: the first robot by id), by person id."""
+    best: dict[str, tuple[float, str, PersonSeen]] = {}
+    for robot in sorted(ages):
+        for person in states[robot].people:
+            report = (ages[robot], robot, person)
+            if person.person_id not in best or report[:2] < best[person.person_id][:2]:
+                best[person.person_id] = report
+    return tuple((robot, HumanObservation(human_id=pid, position=(p.x, p.y)))
+                 for pid, (_, robot, p) in sorted(best.items()))

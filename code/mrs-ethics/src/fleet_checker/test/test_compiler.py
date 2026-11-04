@@ -327,6 +327,51 @@ class TestRouting:
         assert c.origins["robot_a"][0].nodes == ("x", "t")
 
 
+# ---------------- blocked edges (team_state's blocked_edges) ----------------
+
+PASSAGE = ("pass_w", "pass_e")
+
+
+class TestBlockedEdges:
+
+    def test_a_route_goes_around_a_blocked_edge(self, samples_map):
+        plan = team(("robot_a", [task("a1", "navigate", "corridor_1")]))
+        assert regions(compile_on(samples_map, plan, robots=("robot_a",)).plans["robot_a"]) == [
+            "west_hall", "passage", "east_hall"]
+        # With the passage blocked, the only way east is the bypass through the office:
+        # west_s -> room_2 -> office_w -> office_1 -> office_e -> door_A -> corridor_1, 18.2 m.
+        c = compile_on(samples_map, plan, robots=("robot_a",), blocked_edges=[PASSAGE])
+        assert spans(c.plans["robot_a"]) == [
+            ("navigate", "west_hall", 0.0, 6.4), ("navigate", "door_b", 6.4, 8.4),
+            ("navigate", "office", 8.4, 30.4), ("navigate", "door_a", 30.4, 32.4),
+            ("navigate", "east_hall", 32.4, 36.4)]
+
+    def test_an_edge_is_blocked_both_ways(self, samples_map):
+        plan = team(("robot_b", [task("b1", "navigate", "room_2")]))
+        c = compile_on(samples_map, plan, blocked_edges=[PASSAGE])         # given west to east, driven east to west
+        assert "passage" not in regions(c.plans["robot_b"])
+        assert regions(c.plans["robot_b"]) == regions(
+            compile_on(samples_map, plan, blocked_edges=[("pass_e", "pass_w")]).plans["robot_b"])
+
+    def test_no_route_says_which_edges_are_blocked(self, samples_map):
+        # room_3 is east_n's only way out.
+        c = compile_on(samples_map, team(("robot_b", [task("b1", "navigate", "corridor_2")])),
+                       blocked_edges=[("room_3", "corridor_1"), PASSAGE])
+        assert [(v.code, v.message) for v in c.violations] == [
+            ("NO_ROUTE", "task 'b1' (robot_b): no path from 'east_n' to 'corridor_2' without the blocked "
+                         "edges corridor_1--room_3, pass_e--pass_w")]
+
+    def test_blocked_edges_must_be_edges_of_the_map(self, samples_map):
+        plan = team(("robot_a", [task("a1", "navigate", "room_2")]))
+        with pytest.raises(ValueError, match="room_2--room_3 is not an edge of map 'samples_world'"):
+            compile_on(samples_map, plan, blocked_edges=[("room_3", "room_2")])
+
+    def test_a_robot_cannot_start_on_a_blocked_edge(self, samples_map):
+        plan = team(("robot_a", [task("a1", "navigate", "room_2")]))
+        with pytest.raises(ValueError, match="robot_b is on corridor_1->pass_e, which is blocked"):
+            compile_with_edge(samples_map, plan, blocked_edges=[("pass_e", "corridor_1")])
+
+
 # ---------------- compile errors ----------------
 
 class TestCompileErrors:
