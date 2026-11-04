@@ -272,6 +272,18 @@ def test_an_s4_conflict_only_the_keeper_can_resolve_is_the_keepers_to_fix(sample
     assert (c.yielders, c.keepers) == (("robot_b",), ("robot_a",))   # what the ledger records
 
 
+def test_a_keeper_parked_where_the_other_robot_drives_through_must_fix_it(samples_map):
+    # robot_b parks at corridor_1 for good; robot_a, which R-1 picks, has to drive through it.
+    plan = TeamPlan.model_validate({"assignments": [
+        {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "navigate", "target": "room_3",
+                                           "priority": 1}]},
+        {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "hold_position", "target": "corridor_1",
+                                           "priority": 1}]}]})
+    [f] = check(samples_map, plan).findings
+    assert (f.reason, f.violation.resource_id, f.r1_yielders, f.must_fix) == (
+        R.NODE_OCCUPIED, "corridor_1", ("robot_a",), ("robot_b",))
+
+
 def test_robot_length_has_no_default(samples_map):
     # Like speed: the value is the caller's, a placeholder until it is measured (config/gate.yaml).
     with pytest.raises(TypeError, match="robot_length"):

@@ -336,29 +336,40 @@ def claims(plan: Plan, margin: float = 0.0, hold_final: bool = True) -> Iterator
             yield Claim(r, plan.robot_id, i, start, step_end)
 
 
-def stop_claims(plan: Plan, margin: float = 0.0, hold_final: bool = True,
+def node_claims(plan: Plan, margin: float = 0.0, hold_final: bool = True,
                 pass_time: float = 0.0) -> Iterator[Claim]:
-    """Where and when the robot stands still at a waypoint (S-4): one Claim(node, robot,
-    step, start, end) for each step that stands at its end_node, and, with hold_final,
-    one for the node the plan ends at, from the end of the plan to +inf.
+    """When the robot is at each waypoint (S-4): while any part of it is over the node.
 
-    Every step but a navigate step stands still. Driving through a node is not a stop,
-    and a plan without end_node (not from the compiler) has no stops. pass_time is how
-    long the robot's body takes to drive over a point (its length / speed): the times are
-    the robot's middle, so its front gets to the node pass_time / 2 earlier and its back
-    leaves pass_time / 2 later. margin widens each claim on both sides, as in claims().
+    One Claim(node, robot, step, start, end) for
+      - each step that stands still at its end_node, from its start to its end;
+      - each waypoint a driving step reaches without stopping there: the start node it drives
+        off from, a node on the way, or the node where one task ends and the next drives on;
+      - the node the plan ends at: from the arrival, to +inf with hold_final.
+    The times are the robot's middle. pass_time is how long its body takes to drive over a
+    point (its length / speed): its front gets to a node pass_time / 2 earlier and its back
+    leaves pass_time / 2 later, so driving through takes pass_time even without margin. A
+    claim of no length (pass_time and margin both 0) is left out. margin widens each claim
+    on both sides, as in claims(). A driving step without waypoints (not from the compiler)
+    reaches only its end_node, if it has one.
     """
     if margin < 0:
         raise ValueError("margin must be >= 0")
     if pass_time < 0:
         raise ValueError("pass_time must be >= 0")
     widen = pass_time / 2 + margin
-    last = len(plan.steps) - 1
-    for i, step in enumerate(plan.steps):
-        if step.end_node is None:
-            continue
+    steps, last = plan.steps, len(plan.steps) - 1
+    for i, step in enumerate(steps):
         if step.action != Action.NAVIGATE:
-            end = math.inf if (hold_final and i == last) else step.t_end + widen
-            yield Claim(step.end_node, plan.robot_id, i, step.t_start - widen, end)
-        elif hold_final and i == last:
-            yield Claim(step.end_node, plan.robot_id, i, step.t_end - widen, math.inf)
+            if step.end_node is not None:
+                end = math.inf if (hold_final and i == last) else step.t_end + widen
+                yield Claim(step.end_node, plan.robot_id, i, step.t_start - widen, end)
+            continue
+        reached = step.waypoints or (
+            (Waypoint(node=step.end_node, t=step.t_end),) if step.end_node is not None else ())
+        for w in reached:
+            at_end = w.node == step.end_node and abs(w.t - step.t_end) <= TIME_EPS
+            if at_end and i < last and steps[i + 1].action != Action.NAVIGATE:
+                continue                                  # it stops there: that step's claim
+            end = math.inf if (at_end and i == last and hold_final) else w.t + widen
+            if end > w.t - widen:
+                yield Claim(w.node, plan.robot_id, i, w.t - widen, end)

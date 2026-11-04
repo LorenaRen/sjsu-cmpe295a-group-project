@@ -296,16 +296,18 @@ def test_the_s1_conflict_is_fixed_in_round_2(run_with_gate):
     assert (s["passed_in_round"], s["targets_changed"]) == (2, {})
 
 
-def test_keep_clear_stop_takes_three_rounds_and_moves_the_target(run_with_gate):
+def test_keep_clear_stop_takes_four_rounds_and_parks_robot_b_out_of_the_way(run_with_gate):
     f, done = run_with_gate(KEEP_CLEAR_STOP)
     assert done == Finished("approved")
-    assert rule_ids(f) == [[R.FINAL_STOP_IN_PASSTHROUGH], [R.REGION_ACCESS_DENIED], []]
+    assert rule_ids(f) == [[R.FINAL_STOP_IN_PASSTHROUGH], [R.REGION_ACCESS_DENIED], [R.NODE_OCCUPIED], []]
     # door_A's nearest node is office_e, in the restricted office: the fake planner reads no zone
-    # type, so it takes the gate's second REJECT to learn that.
-    assert f.summary()["targets_changed"] == {"b1": ["door_A", "office_e", "corridor_1"]}
-    # The approved plan parks robot_b at corridor_1, which robot_a drives through on its way to
-    # room_3. S-4 does not check a robot passing a node where another one stands (rules_v1.md,
-    # S-4, known limitation 1); when it does, this plan is no longer approved.
+    # type, so it takes the gate's second REJECT to learn that. corridor_1 is next, but robot_a has
+    # to drive through it on its way to room_3: robot_b waiting until robot_a has gone by would
+    # make them meet at room_3 instead (the gate checks that on the whole plan), so robot_b is told
+    # not to end there, and parks at corridor_2, a dead end nobody drives through.
+    assert results(f, 3) == [("forbid_node", CHANGED)]
+    assert f.rounds[2]["constraints"][0]["robot_id"] == "robot_b"
+    assert f.summary()["targets_changed"] == {"b1": ["door_A", "office_e", "corridor_1", "corridor_2"]}
 
 
 def test_restricted_target_takes_three_rounds(run_with_gate):

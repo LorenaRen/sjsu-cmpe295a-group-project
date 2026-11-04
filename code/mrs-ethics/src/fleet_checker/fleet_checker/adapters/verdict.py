@@ -9,9 +9,13 @@
   S-4 node_occupied                  order_before (the keeper's task that takes it away from
                                      the node, the yielder's task that brings it there),
                                      verified first; if it does not help, forbid_node, or
-                                     custom when the node is where the yielder's task ends.
-                                     If the keeper never leaves, only it can free the node:
-                                     the constraint is the keeper's (team_check's must_fix)
+                                     custom when the node is where the yielder's task ends or
+                                     the yielder drives through it. If the keeper stays to the
+                                     end of its plan and the yielder has to be there, only the
+                                     keeper can free the node (team_check's must_fix): it waits
+                                     until a yielder driving through has gone by, verified on
+                                     the whole plan, or else ends somewhere else (forbid_node);
+                                     for a yielder whose task ends there, custom
   P-1 final_stop_in_passthrough      forbid_node for every node of the zone
   P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
   P-3 and compile errors             custom
@@ -51,7 +55,7 @@ from mrs_common.plan_schema import Constraint, TeamPlan
 from pydantic import ValidationError
 
 from ..plan import RegionKind
-from .node_presence import only_the_keeper_can_resolve, presence
+from .node_presence import Presence, only_the_keeper_can_resolve, presence
 from .team_check import Finding, TeamCheckResult
 
 # The strings of EthicalVerdict.VERDICT_* (mrs_msgs needs a ROS build to import).
@@ -113,9 +117,11 @@ def to_verdict(result: TeamCheckResult) -> VerdictContent:
     if result.approved:
         return VerdictContent(APPROVE, (), (), 0.0, "Plan approved: no rule violations found.", ())
     constraints: list[Constraint] = []
+    asked: set[tuple] = set()
     for finding in result.findings:
         for c in _constraints_for(finding, result):
-            if c not in constraints:
+            if _demand(c) not in asked:
+                asked.add(_demand(c))
                 constraints.append(c)
     return VerdictContent(
         verdict=REJECT,
@@ -125,6 +131,15 @@ def to_verdict(result: TeamCheckResult) -> VerdictContent:
         rationale=_rationale(result),
         constraints=tuple(constraints),
     )
+
+
+def _demand(c: Constraint) -> tuple:
+    """What a constraint asks for. Two rules can ask for the same change (at a crossing next to
+    a person, S-2 and S-4 the same ordering): it is sent once, the first rule's. A custom
+    constraint asks for what its text says."""
+    if c.kind == "custom":
+        return (c.kind, c.robot_id, c.text)
+    return (c.kind, c.robot_id, c.task_id, c.node, c.value)
 
 
 def unreadable_plan_verdict(error: ValueError) -> VerdictContent:
@@ -287,7 +302,7 @@ def _reordered(result: TeamCheckResult, *, before: str, after: str) -> TeamCheck
 
 
 def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[Constraint]:
-    """S-4: one constraint for each (yielder, keeper) pair standing at the node."""
+    """S-4: one constraint for each (yielder, keeper) pair at the node, as R-1 chose them."""
     steps: dict[str, list[int]] = {}
     for ref in f.violation.refs:
         steps.setdefault(ref.robot_id, []).append(ref.step_index)
@@ -297,10 +312,13 @@ def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[Constraint]:
 
 def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step: int,
                      yielder: str, y_step: int) -> Constraint:
-    """In order of preference: make the yielder come only after the keeper has left
-    (verified, as for S-1); else, if the node is where the yielder's task ends, tell it to
-    wait nearby first (or that the task cannot be done, if the keeper never leaves), since
-    forbidding the node would make it give the task up; else forbid it to wait there."""
+    """In order of preference: make the yielder come only after the keeper has left (verified,
+    as for S-1). If the keeper stays to the end of its plan and the yielder has to be there,
+    only the keeper can free the node: it waits for a yielder that drives through, if that
+    works, else ends somewhere else; a yielder whose task ends there gets told, through the
+    keeper, that the task cannot be done as it is. Otherwise the yielder: one that drives
+    through is told why waiting does not help; one whose task ends there waits nearby first,
+    since forbidding the node would make it give the task up; else it may not wait there."""
     node = f.violation.resource_id
     y = presence(result.compiled, result.team_plan, yielder, y_step, node)
     k = presence(result.compiled, result.team_plan, keeper, k_step, node)
@@ -308,32 +326,108 @@ def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step
     def make(kind: str, text: str, **fields: Any) -> Constraint:
         return Constraint(kind=kind, rule_id=f.reason, robot_id=yielder, text=text, **fields)
 
-    if y.from_start:   # stands there from the start of its plan: it cannot come later
-        return make("custom", f"{yielder} stands at {node} from the start of its plan, and {keeper} "
-                              f"would stop there while it does. Have {yielder} leave {node} before "
-                              f"{keeper} gets there.", node=node)
+    if y.from_start:   # there from the start of its plan: it cannot come later
+        is_there = "stands at" if not y.passes else "drives off from"
+        return make("custom", f"{yielder} {is_there} {node} from the start of its plan, and {keeper} "
+                              f"would {'drive through it' if k.passes else 'stop there'} while it does. "
+                              f"Have {yielder} leave {node} before {keeper} gets there.", node=node)
+    why_not = None
     if not k.stays:
         again = _reordered(result, before=k.leave_task, after=y.arrive_task)
         if again is not None and not _in_conflict(again, f, keeper, yielder):
             return make("order_before", f"{yielder}: start task {y.arrive_task} only after {keeper} has "
-                                        f"finished task {k.leave_task}; both would stop at {node}, where "
-                                        f"only one robot can stand.",
+                                        f"finished task {k.leave_task}; {_meeting(y, k)}.",
                         task_id=k.leave_task, value=y.arrive_task)
-    if only_the_keeper_can_resolve(y, k) and y.ends_task:   # the keeper must change (team_check)
+        why_not = ("the tasks would wait for each other in a cycle" if again is None
+                   else f"{yielder} would still be at {node} while {keeper} is there")
+    if only_the_keeper_can_resolve(y, k):   # the keeper must change (team_check)
+        if y.passes:
+            return _keeper_waits_or_ends_elsewhere(f, result, y, k)
         return Constraint(kind="custom", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
                           text=f"{keeper}: you stay at {node} until the end of your plan, but {node} is where "
                                f"task {y.task} of {yielder} ends, so that task cannot be done with the plan "
                                f"as it is. End somewhere else, so that {node} is free when {yielder} gets "
                                f"there.")
-    if y.ends_task:
-        return make("custom", f"{yielder}: {node} is where task {y.task} ends, but {keeper} is stopped there "
-                              f"until it leaves with task {k.leave_task}. Wait at another node near {node} "
-                              f"first, and go to {node} only after {keeper} has left it.",
+    if y.passes:
+        k_there = (f"is stopped there until it leaves with task {k.leave_task}" if not k.passes
+                   else "drives through it")
+        return make("custom", f"{yielder} would drive through {node} while {keeper} {k_there}, and making "
+                              f"{yielder} wait for {keeper} does not fix it: {why_not}. Change the plan so "
+                              f"that {yielder} drives through {node} when {keeper} is not there.",
                     task_id=y.task, node=node)
-    until = ("stays there until the end of its plan" if k.stays
-             else f"is stopped there until it leaves with task {k.leave_task}")
-    return make("forbid_node", f"{yielder}: do not wait at {node}; {keeper} {until}.",
+    k_is = ("stays there until the end of its plan" if k.stays
+            else "drives through it then" if k.passes
+            else f"is stopped there until it leaves with task {k.leave_task}")
+    if y.ends_task:
+        return make("custom", f"{yielder}: {node} is where task {y.task} ends, but {keeper} {k_is}. "
+                              f"Wait at another node near {node} first, and go to {node} only after "
+                              f"{keeper} has left it.",
+                    task_id=y.task, node=node)
+    return make("forbid_node", f"{yielder}: do not wait at {node}; {keeper} {k_is}.",
                 task_id=y.task, node=node)
+
+
+def _keeper_waits_or_ends_elsewhere(f: Finding, result: TeamCheckResult, y: Presence,
+                                    k: Presence) -> Constraint:
+    """The keeper stays at the node to the end of its plan and the yielder has to drive through
+    it. The keeper waits until the yielder has gone by, if that works, else it ends somewhere
+    else: forbid_node, which changes its final stop, so the text says why."""
+    node, yielder, keeper = f.violation.resource_id, y.robot, k.robot
+    why = _why_waiting_for_the_yielder_fails(f, result, y, k)
+    if why is None:
+        return Constraint(kind="order_before", rule_id=f.reason, robot_id=keeper, task_id=y.leave_task,
+                          value=k.arrive_task,
+                          text=f"{keeper}: start task {k.arrive_task} only after {yielder} has finished task "
+                               f"{y.leave_task}; {yielder} has to drive through {node}, where you would stay "
+                               f"until the end of your plan.")
+    return Constraint(kind="forbid_node", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
+                      text=f"{keeper}: do not end your plan at {node}. This changes your final stop, because "
+                           f"{yielder} has to drive through {node} (task {y.task}) and you would stay there "
+                           f"until the end of your plan; waiting until {yielder} has gone by does not help: "
+                           f"{why}.")
+
+
+def _why_waiting_for_the_yielder_fails(f: Finding, result: TeamCheckResult, y: Presence,
+                                       k: Presence) -> str | None:
+    """None if the keeper's task that brings it to the node can wait for the yielder's task that
+    takes it through, otherwise why not. Checked on the whole plan, unlike every other ordering:
+    the yielder's orderings only delay its getting to one place, but this one moves all that is
+    left of the keeper's plan later, which can make the two robots meet anywhere else. So the
+    conflict here must be gone, and the two may meet nowhere they did not meet before."""
+    node, yielder, keeper = f.violation.resource_id, y.robot, k.robot
+    if k.arrive_task is None:
+        return f"you are at {node} from the start of your plan"
+    again = _reordered(result, before=y.leave_task, after=k.arrive_task)
+    if again is None:
+        return "the tasks would wait for each other in a cycle"
+    if _in_conflict(again, f, keeper, yielder):
+        return f"{yielder} would still drive through {node} while you are there"
+    before = _meetings(result, keeper, yielder)
+    new = [where for key, where in _meetings(again, keeper, yielder).items() if key not in before]
+    return f"you and {yielder} would then meet {new[0]}" if new else None
+
+
+def _meetings(result: TeamCheckResult, a: str, b: str) -> dict[tuple[str, str | None], str]:
+    """The conflicts between robots a and b: (rule, place) -> where, in words."""
+    out: dict[tuple[str, str | None], str] = {}
+    for g in result.findings:
+        code, place = g.violation.code, g.violation.resource_id
+        if code in _CONFLICT_CODES and {a, b} <= {ref.robot_id for ref in g.violation.refs}:
+            rule = "S-1" if code in _S1_CODES else code
+            out.setdefault((rule, place), {"NODE_OCCUPIED": f"at {place}",
+                                           "HUMAN_CROWDING": f"near {place}"}.get(code, f"in {place}"))
+    return out
+
+
+def _meeting(y: Presence, k: Presence) -> str:
+    """How the yielder and the keeper would be at the node at once, for an ordering's text."""
+    node = y.node
+    if not y.passes and not k.passes:
+        return f"both would stop at {node}, where only one robot can stand"
+    if y.passes and k.passes:
+        return f"both would drive through {node} at the same time"
+    driver, stander = (y.robot, k.robot) if y.passes else (k.robot, y.robot)
+    return f"{driver} would drive through {node} while {stander} stands there"
 
 
 def _with_dependency(plan: TeamPlan, *, before: str, after: str) -> TeamPlan | None:
@@ -390,8 +484,21 @@ def _problem(f: Finding, result: TeamCheckResult) -> str:
         where = _where(f, result)
         return f"{_join(robots)} would be {where.first} at the same time, {where.but}"
     if code == "NODE_OCCUPIED":
-        robots = sorted({ref.robot_id for ref in refs})
-        return f"{_join(robots)} would stop at {f.violation.resource_id} at the same time"
+        node = f.violation.resource_id
+        first: dict[str, int] = {}
+        for ref in refs:
+            first.setdefault(ref.robot_id, ref.step_index)
+        drives = {r: presence(result.compiled, result.team_plan, r, step, node).passes
+                  for r, step in first.items()}
+        robots = sorted(drives)
+        drivers, standers = [r for r in robots if drives[r]], [r for r in robots if not drives[r]]
+        if not drivers:
+            return f"{_join(robots)} would stop at {node} at the same time"
+        if not standers:
+            return f"{_join(robots)} would drive through {node} at the same time"
+        if len(robots) == 2:
+            return f"{drivers[0]} would drive through {node} while {standers[0]} stands there"
+        return f"{_join(robots)} would be at {node} at the same time"
     if code == "EDGE_SWAP":
         # Reported once per zone of the swap; the wording leaves the zone out so both halves read the same.
         a, b = sorted({ref.robot_id for ref in refs})
