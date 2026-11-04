@@ -10,7 +10,7 @@ import pytest
 from mrs_common import hold_all_plan, load_sample, plan_from_json
 from mrs_common.plan_schema import TeamPlan
 
-from fleet_checker.adapters.compiler import PARKED_S, StepOrigin, compile_team_plan
+from fleet_checker.adapters.compiler import PARKED_S, OnEdge, StepOrigin, compile_team_plan
 from fleet_checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
 from fleet_checker.plan import validate_plan
 
@@ -214,6 +214,71 @@ class TestWaypoints:
                     assert nodes[0] == spawn_starts(samples_map, ["robot_a", "robot_b"])[robot]
                     nodes = nodes[1:]
                 assert nodes == list(origin.nodes), (robot, i)
+
+
+# ---------------- a robot between two nodes (team_state's at "a->b") ----------------
+
+# robot_b drives corridor_1 -> pass_e and is at (8.6, 0): a quarter of the 1.6 m edge is behind
+# it. The rest is 0.6 m in east_hall (to the passage at x = 8) and 0.6 m in the passage.
+ON_EDGE = OnEdge("corridor_1", "pass_e", (8.6, 0.0))
+FLEET = {"robot_a": "west_s", "robot_b": "pass_e"}   # robot_b's plan starts where its edge ends
+
+
+def compile_with_edge(sim_map, plan, on_edge=ON_EDGE, **kwargs):
+    return compile_team_plan(plan, sim_map, FLEET, speed=SPEED, on_edges={"robot_b": on_edge}, **kwargs)
+
+
+class TestOnEdge:
+
+    def test_a_robot_on_an_edge_first_drives_the_rest_of_it(self, samples_map):
+        c = compile_with_edge(samples_map, team(("robot_b", [task("b1", "navigate", "room_2")])))
+        robot_b = c.plans["robot_b"]
+        assert spans(robot_b) == [("navigate", "east_hall", 0.0, 1.2), ("navigate", "passage", 1.2, 2.4),
+                                  ("navigate", "passage", 2.4, 13.2), ("navigate", "west_hall", 13.2, 17.2)]
+        assert paths(robot_b)[:2] == [((8.6, 0.0), (8.0, 0.0)), ((8.0, 0.0), (7.4, 0.0))]
+        # It is not at a node when the plan starts, so no start waypoint; it reaches pass_e at 2.4 s.
+        assert waypoints(robot_b)[:3] == [[], [("pass_e", 2.4)], [("pass_w", 12.0)]]
+        # The rest of the edge is part of no task; the compiler says how many steps it takes.
+        assert [o.task_id for o in c.origins["robot_b"]] == [None, None, "b1", "b1"]
+        assert c.lead_ins == {"robot_b": 2}
+        assert c.snapshot.robot_regions["robot_b"] == "east_hall"
+
+    def test_what_waits_for_its_first_task_waits_for_the_rest_of_the_edge_too(self, samples_map):
+        plan = team(("robot_a", [task("a1", "navigate", "room_2", depends_on=["b1"])]),
+                    ("robot_b", [task("b1", "navigate", "corridor_1")]))
+        c = compile_with_edge(samples_map, plan)
+        assert tuple(round(x, 6) for x in c.timings["b1"]) == (2.4, 5.6, 5.6)   # pass_e -> corridor_1
+        assert round(c.timings["a1"].depart, 6) == 5.6
+
+    def test_a_robot_on_an_edge_without_a_task_stops_where_the_edge_ends(self, samples_map):
+        c = compile_with_edge(samples_map, team(("robot_a", [task("a1", "navigate", "room_2")])))
+        assert spans(c.plans["robot_b"]) == [("navigate", "east_hall", 0.0, 1.2), ("navigate", "passage", 1.2, 2.4)]
+        assert end_nodes(c.plans["robot_b"]) == [None, "pass_e"]   # where its plan ends: it stays there
+
+    def test_the_position_counts_where_it_projects_onto_the_edge(self, samples_map):
+        plan = team(("robot_a", [task("a1", "navigate", "room_2")]))
+        beside = compile_with_edge(samples_map, plan, OnEdge("corridor_1", "pass_e", (8.6, 0.3)))
+        assert spans(beside.plans["robot_b"]) == [("navigate", "east_hall", 0.0, 1.2),
+                                                   ("navigate", "passage", 1.2, 2.4)]
+        # Before the start of the edge: all of it is left.
+        before = compile_with_edge(samples_map, plan, OnEdge("corridor_1", "pass_e", (9.5, 0.0)))
+        assert spans(before.plans["robot_b"]) == [("navigate", "east_hall", 0.0, 2.0),
+                                                   ("navigate", "passage", 2.0, 3.2)]
+
+    def test_a_robot_at_the_end_of_its_edge_starts_there(self, samples_map):
+        c = compile_with_edge(samples_map, team(("robot_a", [task("a1", "navigate", "room_2")])),
+                              OnEdge("corridor_1", "pass_e", (7.0, 0.0)))   # past pass_e: nothing left
+        assert spans(c.plans["robot_b"]) == [("wait", "passage", 0.0, PARKED_S)]
+        assert c.lead_ins == {}
+
+    def test_on_edges_must_agree_with_the_start_nodes_and_the_map(self, samples_map):
+        plan = team(("robot_a", [task("a1", "navigate", "room_2")]))
+        with pytest.raises(ValueError, match="robot_b is on corridor_1->pass_e but its plan would start at east_n"):
+            compile_team_plan(plan, samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=SPEED,
+                              on_edges={"robot_b": ON_EDGE})
+        with pytest.raises(ValueError, match="corridor_1->room_2 is not an edge of map 'samples_world'"):
+            compile_team_plan(plan, samples_map, {"robot_a": "west_s", "robot_b": "room_2"}, speed=SPEED,
+                              on_edges={"robot_b": OnEdge("corridor_1", "room_2", (8.0, 0.0))})
 
 
 # ---------------- robots that do not move ----------------

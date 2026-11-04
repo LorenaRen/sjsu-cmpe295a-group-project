@@ -303,6 +303,16 @@ def test_the_robot_length_is_kept_for_rechecks(samples_map):
     assert result.recheck(result.team_plan).settings.robot_length == ROBOT_LENGTH
 
 
+def test_recheck_keeps_the_robots_that_are_on_an_edge(samples_map):
+    from fleet_checker.adapters.compiler import OnEdge
+    on_edges = {"robot_b": OnEdge("corridor_1", "pass_e", (8.6, 0.0))}
+    plan = sample("valid_two_robots.json")
+    result = check_team_plan(plan, samples_map, {"robot_a": "west_s", "robot_b": "pass_e"}, speed=SPEED,
+                             robot_length=ROBOT_LENGTH, on_edges=on_edges)
+    assert result.on_edges == on_edges and result.compiled.lead_ins == {"robot_b": 2}
+    assert result.recheck(plan).compiled.lead_ins == {"robot_b": 2}
+
+
 def test_recheck_runs_the_same_check_on_another_plan(samples_map):
     result = check(samples_map, drop_dependencies(sample("valid_two_robots.json")), max_duration=30.0)
     assert codes(result) == ["MAX_DURATION_EXCEEDED", "CAPACITY_EXCEEDED"]
