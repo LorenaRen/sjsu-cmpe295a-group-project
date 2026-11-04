@@ -125,6 +125,12 @@ class WorldSnapshot(_Frozen):
 # Plan (what the proposer controls)
 # --------------------------------------------------------------------------
 
+class Waypoint(_Frozen):
+    """A graph node a step drives through or to, and when the robot reaches it."""
+    node: str = Field(min_length=1)
+    t: FiniteFloat
+
+
 class PlanStep(_Frozen):
     action: Action
     region: str = Field(min_length=1)    # the one region the robot is in
@@ -138,12 +144,39 @@ class PlanStep(_Frozen):
     # The waypoint the step ends at, if it ends at one (not at a zone boundary); for a
     # step that stands still, where it stands. Filled in by the compiler; S-4 needs it.
     end_node: str | None = Field(default=None, min_length=1)
+    # Every waypoint a driving step reaches, in order, with the time it gets there; the
+    # first step of a plan starts with the start node it leaves. A step can drive through
+    # a node without ending there (consecutive edges in one zone are one step). A step
+    # that stands still has none: end_node says where it stands. Filled in by the
+    # compiler; S-4 needs it.
+    waypoints: tuple[Waypoint, ...] = ()
 
     @model_validator(mode="after")
     def _positive_duration(self) -> "PlanStep":
         if not self.t_end > self.t_start:
             raise ValueError(
                 f"t_end ({self.t_end}) must be greater than t_start ({self.t_start})")
+        return self
+
+    @model_validator(mode="after")
+    def _waypoints_in_the_step(self) -> "PlanStep":
+        if not self.waypoints:
+            return self
+        if self.action != Action.NAVIGATE:
+            raise ValueError(f"only a navigate step has waypoints, not a {self.action.value} step")
+        for w in self.waypoints:
+            if not self.t_start - TIME_EPS <= w.t <= self.t_end + TIME_EPS:
+                raise ValueError(f"waypoint {w.node} at t={w.t:g} is outside the step "
+                                 f"[{self.t_start:g}, {self.t_end:g})")
+        if any(b.t < a.t - TIME_EPS for a, b in pairwise(self.waypoints)):
+            raise ValueError("waypoints out of time order")
+        last = self.waypoints[-1]
+        if self.end_node is not None:
+            if last.node != self.end_node:
+                raise ValueError(f"the step ends at {self.end_node} but its last waypoint is {last.node}")
+            if abs(last.t - self.t_end) > TIME_EPS:
+                raise ValueError(f"the step ends at {self.end_node} at t={self.t_end:g} "
+                                 f"but reaches it at t={last.t:g}")
         return self
 
 
@@ -303,23 +336,40 @@ def claims(plan: Plan, margin: float = 0.0, hold_final: bool = True) -> Iterator
             yield Claim(r, plan.robot_id, i, start, step_end)
 
 
-def stop_claims(plan: Plan, margin: float = 0.0, hold_final: bool = True) -> Iterator[Claim]:
-    """Where and when the robot stands still at a waypoint (S-4): one Claim(node, robot,
-    step, start, end) for each step that stands at its end_node, and, with hold_final,
-    one for the node the plan ends at, from the end of the plan to +inf.
+def node_claims(plan: Plan, margin: float = 0.0, hold_final: bool = True,
+                pass_time: float = 0.0) -> Iterator[Claim]:
+    """When the robot is at each waypoint (S-4): while any part of it is over the node.
 
-    Every step but a navigate step stands still. Driving through a node is not a stop,
-    and a plan without end_node (not from the compiler) has no stops. margin widens each
-    claim on both sides, as in claims().
+    One Claim(node, robot, step, start, end) for
+      - each step that stands still at its end_node, from its start to its end;
+      - each waypoint a driving step reaches without stopping there: the start node it drives
+        off from, a node on the way, or the node where one task ends and the next drives on;
+      - the node the plan ends at: from the arrival, to +inf with hold_final.
+    The times are the robot's middle. pass_time is how long its body takes to drive over a
+    point (its length / speed): its front gets to a node pass_time / 2 earlier and its back
+    leaves pass_time / 2 later, so driving through takes pass_time even without margin. A
+    claim of no length (pass_time and margin both 0) is left out. margin widens each claim
+    on both sides, as in claims(). A driving step without waypoints (not from the compiler)
+    reaches only its end_node, if it has one.
     """
     if margin < 0:
         raise ValueError("margin must be >= 0")
-    last = len(plan.steps) - 1
-    for i, step in enumerate(plan.steps):
-        if step.end_node is None:
-            continue
+    if pass_time < 0:
+        raise ValueError("pass_time must be >= 0")
+    widen = pass_time / 2 + margin
+    steps, last = plan.steps, len(plan.steps) - 1
+    for i, step in enumerate(steps):
         if step.action != Action.NAVIGATE:
-            end = math.inf if (hold_final and i == last) else step.t_end + margin
-            yield Claim(step.end_node, plan.robot_id, i, step.t_start - margin, end)
-        elif hold_final and i == last:
-            yield Claim(step.end_node, plan.robot_id, i, step.t_end - margin, math.inf)
+            if step.end_node is not None:
+                end = math.inf if (hold_final and i == last) else step.t_end + widen
+                yield Claim(step.end_node, plan.robot_id, i, step.t_start - widen, end)
+            continue
+        reached = step.waypoints or (
+            (Waypoint(node=step.end_node, t=step.t_end),) if step.end_node is not None else ())
+        for w in reached:
+            at_end = w.node == step.end_node and abs(w.t - step.t_end) <= TIME_EPS
+            if at_end and i < last and steps[i + 1].action != Action.NAVIGATE:
+                continue                                  # it stops there: that step's claim
+            end = math.inf if (at_end and i == last and hold_final) else w.t + widen
+            if end > w.t - widen:
+                yield Claim(w.node, plan.robot_id, i, w.t - widen, end)

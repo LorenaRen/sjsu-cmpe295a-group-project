@@ -170,6 +170,46 @@ def test_end_node_may_not_be_empty():
         PlanStep(action="wait", region="room_a", t_start=0, t_end=1, end_node="")
 
 
+# ---------------- waypoints: the nodes a driving step reaches, and when ----------------
+
+def drive(t_start, t_end, *waypoints, end_node=None, action="navigate"):
+    return {"action": action, "region": "room_a", "t_start": t_start, "t_end": t_end, "end_node": end_node,
+            "waypoints": [{"node": n, "t": t} for n, t in waypoints]}
+
+
+def test_waypoints_are_optional_and_survive_a_json_round_trip():
+    assert make_plan("r1", [("navigate", "room_a")]).steps[0].waypoints == ()
+    plan = Plan.model_validate({"plan_id": "p", "robot_id": "r1", "task_type": "delivery",
+                                "steps": [drive(0, 5, ("n0", 0), ("n1", 2), ("n2", 5), end_node="n2")]})
+    again, errors = parse_plan(plan.model_dump_json())
+    assert errors == [] and again == plan
+    assert [(w.node, w.t) for w in again.steps[0].waypoints] == [("n0", 0), ("n1", 2), ("n2", 5)]
+
+
+@pytest.mark.parametrize("t", [-0.1, 5.1])
+def test_a_waypoint_outside_its_step_is_rejected(t):
+    with pytest.raises(ValidationError, match=r"waypoint n1 at t=.* is outside the step"):
+        PlanStep.model_validate(drive(0, 5, ("n1", t)))
+
+
+def test_waypoints_out_of_time_order_are_rejected():
+    with pytest.raises(ValidationError, match="waypoints out of time order"):
+        PlanStep.model_validate(drive(0, 5, ("n1", 3), ("n2", 2)))
+
+
+def test_a_step_that_stands_still_has_no_waypoints():
+    # It stands at its end_node; waypoints are what a robot drives through.
+    with pytest.raises(ValidationError, match="only a navigate step has waypoints"):
+        PlanStep.model_validate(drive(0, 5, ("n1", 0), end_node="n1", action="wait"))
+
+
+def test_a_step_that_ends_at_a_node_reaches_it_last_at_its_end():
+    with pytest.raises(ValidationError, match="ends at n2 but its last waypoint is n1"):
+        PlanStep.model_validate(drive(0, 5, ("n1", 2), end_node="n2"))
+    with pytest.raises(ValidationError, match=r"ends at n2 at t=5 but reaches it at t=4"):
+        PlanStep.model_validate(drive(0, 5, ("n2", 4), end_node="n2"))
+
+
 def test_world_map_rejects_one_way_adjacency():
     with pytest.raises(ValidationError, match="not symmetric"):
         WorldMap(regions={

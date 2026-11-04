@@ -6,6 +6,11 @@ mrs_ethical_gate:
     # PLACEHOLDER: 0.5 is mrs_sim's cmd_vel limit, not a measured cruise speed. Set it to Module 6's
     # speed once that exists, and check it against simulation (times in and out of each zone).
     speed: 0.5
+    # S-4 (rules_v1.md): the robot's length along its direction of travel [m]. A robot is at a
+    # node while any part of it is over the node: driving over it takes robot_length / speed.
+    # PLACEHOLDER: 0.45 is the chassis box of mrs_sim's mrs_bot.sdf (0.45 x 0.30 m), not a
+    # measured robot. Turning on a node sweeps more than its length; the margin covers that.
+    robot_length: 0.45
     # Each occupancy interval is widened by this much at both ends [s] (rules_v1.md, S-1 and S-2).
     # Initial value, to be tuned by experiment.
     margin: 0.5

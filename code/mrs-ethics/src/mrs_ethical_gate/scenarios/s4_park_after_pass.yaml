@@ -1,0 +1,17 @@
+# Fake planner scenario (mrs_ethical_gate/dev_nodes/scenarios.py).
+description: >-
+  robot_b parks at corridor_1 for good, and robot_a has to drive through it on its way to
+  corridor_2 (S-4). robot_b can wait at east_n until robot_a has gone by, so that both keep
+  their targets. In p1_keep_clear_stop, waiting does not work.
+map: samples_world
+plan:
+  assignments:
+    - robot_id: robot_a
+      tasks:
+        - {task_id: a1, action: hold_position, target: corridor_2, priority: 1,
+           justification: "Goal for robot_a."}
+    - robot_id: robot_b
+      tasks:
+        - {task_id: b1, action: hold_position, target: corridor_1, priority: 1,
+           justification: "Goal for robot_b."}
+  rationale: "robot_b parks at corridor_1, which robot_a drives through to corridor_2."

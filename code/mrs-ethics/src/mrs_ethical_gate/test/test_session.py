@@ -44,7 +44,7 @@ def samples_map():
 @pytest.fixture
 def session(samples_map):
     # robot_a and robot_b at samples_world's two spawn slots.
-    return GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5)
+    return GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5, robot_length=0.45)
 
 
 def decide(session, plan_json, attempt=0, *, transaction_id="t1", episode_id="ep1", now=0.0):
@@ -149,7 +149,7 @@ def test_a_new_episode_starts_from_scratch(session):
 
 
 def test_the_starvation_threshold_is_the_sessions(samples_map):
-    session = GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5,
+    session = GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5, robot_length=0.45,
                           starvation_threshold=1)
     rounds = [list(decide(session, CONFLICT, attempt=i).result.must_replan) for i in range(2)]
     assert rounds == [["robot_b"], ["robot_a"]]
@@ -168,7 +168,7 @@ def test_people_near_a_route_are_checked_for_crowding(samples_map):
     """In valid_two_robots robot_b waits at corridor_2 for robot_a; with a person 1.1 m from
     corridor_2, robot_b waits next to them while robot_a drives past."""
     person = HumanObservation(human_id="person_1", position=(10.0, -1.0))
-    session = GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5,
+    session = GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5, robot_length=0.45,
                           people=[person], crowding=CrowdingLimit(radius=1.5, max_robots=1))
     d = decide(session, VALID)
     assert (d.verdict.verdict, d.verdict.rule_ids) == (REJECT, (R.HUMAN_CROWDING,))
@@ -184,12 +184,19 @@ BOTH_AT_ROOM_3 = TeamPlan.model_validate({"assignments": [
 ]}).model_dump_json()
 
 
-def test_two_robots_ending_at_one_node_are_rejected_like_any_conflict(session):
-    """robot_b reaches room_3 first and stays; robot_a gives way, which counts toward F-2."""
+def test_an_s4_conflict_only_the_keeper_can_resolve_counts_for_the_keeper(session):
+    """robot_b reaches room_3 first and stays there; robot_a's task ends there. R-1 picks robot_a
+    to give way, but only robot_b can free room_3, so robot_b must change its plan: the REJECT
+    counts toward F-2 for robot_b, and the approval records the yield for robot_b."""
     d = decide(session, BOTH_AT_ROOM_3)
     assert (d.verdict.verdict, d.verdict.rule_ids) == (REJECT, (R.NODE_OCCUPIED,))
-    assert list(d.result.must_replan) == ["robot_a"]
-    assert d.ledger == ledger(0, 1, 0, 0)
+    assert list(d.result.must_replan) == ["robot_b"]
+    assert d.ledger == ledger(0, 0, 0, 1)
+    b_elsewhere = edited(BOTH_AT_ROOM_3,
+                         lambda t: t.update(target="corridor_2") if t["task_id"] == "b1" else None)
+    d = decide(session, b_elsewhere, attempt=1)
+    assert d.verdict.verdict == APPROVE
+    assert d.ledger == ledger(0, 0, 1, 0)
 
 
 # ---------------- from the node's settings ----------------
@@ -197,7 +204,8 @@ def test_two_robots_ending_at_one_node_are_rejected_like_any_conflict(session):
 def settings(**changes):
     """The node's settings on samples_world, the required parameters set as in config/gate.yaml."""
     values = {name: (None if default is REQUIRED else default) for name, (_, default, _) in PARAMETERS.items()}
-    values.update(speed=0.5, crowding_radius=1.5, crowding_max_robots=1, map_file=str(SAMPLES_WORLD))
+    values.update(speed=0.5, robot_length=0.45, crowding_radius=1.5, crowding_max_robots=1,
+                  map_file=str(SAMPLES_WORLD))
     values.update(changes)
     return load_settings(values, default_policy_file=POLICY, default_people_file=NOBODY)
 
@@ -213,6 +221,12 @@ def test_a_person_outside_every_zone_is_refused(tmp_path):
     path.write_text("people:\n  - {id: person_1, x: 100.0, y: -1.0}\n")   # 100 m, not 10 m
     with pytest.raises(SettingsError, match=r"person_1 at \(100, -1\) is outside every zone"):
         GateSession.from_settings(settings(people_file=str(path)))
+
+
+def test_from_settings_checks_with_the_robot_length():
+    session = GateSession.from_settings(settings(robot_length=0.6))
+    d = session.decide(VALID, transaction_id="t1", episode_id="ep1", attempt=0, now=0.0)
+    assert d.result.settings.robot_length == 0.6
 
 
 def test_from_settings_places_the_whole_fleet_at_the_spawn_slots():

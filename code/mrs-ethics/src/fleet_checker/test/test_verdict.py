@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
-from mrs_common.plan_schema import TeamPlan, constraints_from_json, constraints_to_json
+from mrs_common.plan_schema import Constraint, TeamPlan, constraints_from_json, constraints_to_json
 
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 from fleet_checker.adapters.team_check import check_team_plan
@@ -19,6 +19,7 @@ SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
 NARROW_AISLE = SRC / "mrs_sim/worlds/narrow_aisle.yaml"
 VERDICT_MSG = SRC / "mrs_msgs/msg/EthicalVerdict.msg"
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
+ROBOT_LENGTH = 0.45   # m; mrs_bot.sdf's chassis, the gate's placeholder (config/gate.yaml)
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +60,7 @@ def drop_dependencies(plan: TeamPlan) -> TeamPlan:
 
 def verdict_for(sim_map, plan, starts=None, speed=SPEED, **kwargs):
     starts = starts or spawn_starts(sim_map, ["robot_a", "robot_b"])
-    return to_verdict(check_team_plan(plan, sim_map, starts, speed=speed, **kwargs))
+    return to_verdict(check_team_plan(plan, sim_map, starts, speed=speed, robot_length=ROBOT_LENGTH, **kwargs))
 
 
 def fields(verdict, *names):
@@ -184,11 +185,14 @@ CROSSING = team(("robot_a", [task("a1", "navigate", "e")]), ("robot_b", [task("b
 
 def test_crowding_at_a_crossing_gives_a_verified_order_before(crossroads):
     v = verdict_for(crossroads, CROSSING, speed=1.0, people=[BY_C], crowding=LIMIT)
-    assert (v.verdict, v.rule_ids, v.risk_score) == (REJECT, (R.HUMAN_CROWDING,), 1.0)
+    # The two robots also drive through c 1 s apart (S-4): two problems, one demand.
+    assert (v.verdict, v.rule_ids, v.risk_score) == (REJECT, (R.HUMAN_CROWDING, R.NODE_OCCUPIED), 1.0)
     assert v.rationale == ("Plan rejected: robot_a and robot_b would be within 1.5 m of person_1 "
-                           "(nearest node c) at the same time, but at most 1 robot may be. "
+                           "(nearest node c) at the same time, but at most 1 robot may be; robot_a and "
+                           "robot_b would drive through c at the same time. "
                            "Propose a new plan that follows the constraints.")
-    # robot_b is next to the person first, so robot_a waits (at w, 5 m away) for b1.
+    # robot_b is next to the person first, so robot_a waits (at w, 5 m away) for b1. S-4 asks for
+    # the same ordering, which is sent once.
     [c] = v.constraints
     assert (c.kind, c.rule_id, c.robot_id, c.task_id, c.value) == (
         "order_before", R.HUMAN_CROWDING, "robot_a", "b1", "a1")
@@ -287,13 +291,14 @@ def test_a_target_held_for_a_while_means_wait_nearby_then_go(parking):
 
 
 def test_a_target_held_to_the_end_cannot_be_reached_as_planned(parking):
-    """Both robots end at c; robot_b gets there first and stays."""
+    """Both robots end at c; robot_b gets there first and stays. R-1 picks robot_a to give way,
+    but only robot_b can free c: the custom constraint is robot_b's (it must fix the plan)."""
     plan = team(("robot_a", [task("a1", "hold_position", "c")]), ("robot_b", [task("b1", "hold_position", "c")]))
     v = verdict_for(parking, plan, speed=1.0)
-    assert s4(v) == [("custom", "robot_a", "a1", "c", None,
-                      "robot_a: task a1 cannot be done with the plan as it is: its target c is where "
-                      "robot_b stays until the end of its plan. Change where robot_b ends, so that c "
-                      "is free when robot_a gets there.")]
+    assert s4(v) == [("custom", "robot_b", "b1", "c", None,
+                      "robot_b: you stay at c until the end of your plan, but c is where task a1 of "
+                      "robot_a ends, so that task cannot be done with the plan as it is. End somewhere "
+                      "else, so that c is free when robot_a gets there.")]
 
 
 def test_a_yielder_standing_at_the_node_from_its_start_gets_custom(parking):
@@ -306,6 +311,161 @@ def test_a_yielder_standing_at_the_node_from_its_start_gets_custom(parking):
     assert s4(v) == [("custom", "robot_b", None, "n", None,
                       "robot_b stands at n from the start of its plan, and robot_a would stop there "
                       "while it does. Have robot_b leave n before robot_a gets there.")]
+
+
+# ---------------- S-4 with a robot driving through the node ----------------
+
+def test_two_robots_driving_through_one_node_at_once_take_turns(crossroads):
+    v = verdict_for(crossroads, CROSSING, speed=1.0)
+    assert (v.rule_ids, v.rationale) == ((R.NODE_OCCUPIED,), (
+        "Plan rejected: robot_a and robot_b would drive through c at the same time. "
+        "Propose a new plan that follows the constraints."))
+    assert s4(v) == [("order_before", "robot_a", "b1", None, "a1",
+                      "robot_a: start task a1 only after robot_b has finished task b1; both would drive "
+                      "through c at the same time.")]
+    fixed = edited(CROSSING, lambda t: t["depends_on"].append("b1") if t["task_id"] == "a1" else None)
+    assert verdict_for(crossroads, fixed, speed=1.0).verdict == APPROVE
+
+
+def test_driving_through_where_a_robot_stops_for_a_while_waits_until_it_has_left(parking):
+    """robot_b waits at c until robot_c is done (8 s); robot_a would drive through c at 5 s."""
+    plan = team(("robot_a", [task("a1", "navigate", "e")]),
+                ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["c2"])]),
+                SLOW_C)
+    v = verdict_for(parking, plan, starts=PARKING_THREE, speed=1.0)
+    assert s4(v) == [("order_before", "robot_a", "b2", None, "a1",
+                      "robot_a: start task a1 only after robot_b has finished task b2; robot_a would drive "
+                      "through c while robot_b stands there.")]
+
+
+def test_driving_through_where_waiting_would_close_a_cycle_gets_custom(parking):
+    """robot_b stands at c until robot_a's second task is done, so robot_a cannot wait for it
+    before driving through c with its first."""
+    plan = team(("robot_a", [task("a1", "navigate", "e"), task("a2", "navigate", "f")]),
+                ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["a2"])]))
+    v = verdict_for(parking, plan, speed=1.0)
+    assert s4(v) == [("custom", "robot_a", "a1", "c", None,
+                      "robot_a would drive through c while robot_b is stopped there until it leaves with "
+                      "task b2, and making robot_a wait for robot_b does not fix it: the tasks would wait "
+                      "for each other in a cycle. Change the plan so that robot_a drives through c when "
+                      "robot_b is not there.")]
+
+
+# robot_b parks at corridor_1 for good; robot_a has to drive through it.
+KEEP_CLEAR_ROUND_3 = team(("robot_a", [task("a1", "navigate", "room_3")]),
+                          ("robot_b", [task("b1", "hold_position", "corridor_1")]))
+PARK_AFTER_PASS = team(("robot_a", [task("a1", "hold_position", "corridor_2")]),
+                       ("robot_b", [task("b1", "hold_position", "corridor_1")]))
+
+
+def test_a_keeper_parked_where_the_other_robot_drives_through_waits_for_it_if_that_works(samples_map):
+    """robot_b gets to corridor_1 first and would stay; robot_a has to drive through it to
+    corridor_2. robot_b can wait at east_n until robot_a has gone by: both keep their targets."""
+    v = verdict_for(samples_map, PARK_AFTER_PASS)
+    assert (v.rule_ids, v.rationale) == ((R.NODE_OCCUPIED,), (
+        "Plan rejected: robot_a would drive through corridor_1 while robot_b stands there. "
+        "Propose a new plan that follows the constraints."))
+    assert s4(v) == [("order_before", "robot_b", "a1", None, "b1",
+                      "robot_b: start task b1 only after robot_a has finished task a1; robot_a has to drive "
+                      "through corridor_1, where you would stay until the end of your plan.")]
+    fixed = edited(PARK_AFTER_PASS, lambda t: t["depends_on"].append("a1") if t["task_id"] == "b1" else None)
+    assert verdict_for(samples_map, fixed).verdict == APPROVE
+    assert [t.target for a in fixed.assignments for t in a.tasks] == ["corridor_2", "corridor_1"]
+
+
+def test_a_keeper_whose_waiting_would_meet_the_other_robot_elsewhere_ends_somewhere_else(samples_map):
+    """p1_keep_clear_stop's round 3: robot_b parks at corridor_1. Waiting until robot_a has gone
+    by removes the conflict at corridor_1, but robot_a then ends at room_3, which robot_b has to
+    drive through from east_n: the whole plan is checked again, and that new meeting is found."""
+    v = verdict_for(samples_map, KEEP_CLEAR_ROUND_3)
+    assert s4(v) == [("forbid_node", "robot_b", "b1", "corridor_1", None,
+                      "robot_b: do not end your plan at corridor_1. This changes your final stop, because "
+                      "robot_a has to drive through corridor_1 (task a1) and you would stay there until the "
+                      "end of your plan; waiting until robot_a has gone by does not help: you and robot_a "
+                      "would then meet at room_3.")]
+
+
+def test_a_keeper_that_cannot_wait_without_a_cycle_ends_somewhere_else(samples_map):
+    plan = edited(PARK_AFTER_PASS, lambda t: t["depends_on"].append("b1") if t["task_id"] == "a1" else None)
+    v = verdict_for(samples_map, plan)
+    [c] = v.constraints
+    assert (c.kind, c.robot_id, c.task_id, c.node) == ("forbid_node", "robot_b", "b1", "corridor_1")
+    assert c.text.endswith("waiting until robot_a has gone by does not help: the tasks would wait for each "
+                           "other in a cycle.")
+
+
+# ---------------- the orderings of a verdict, together ----------------
+# robot_b passes c at 4 s (b1 ends there, b2 drives on) and parks at e from 9 s; robot_a drives
+# w -> c -> e -> f, at c at 5 s and through e at 10 s. robot_a gets to both later, so it yields
+# in both. At c robot_b leaves: robot_a's task waits for b2. At e robot_b stays to the end:
+# robot_b waits for robot_a's task that drives through e. Each ordering works on its own (each
+# is verified), but together the tasks would wait for each other.
+
+PASSES_C_PARKS_AT_E = ("robot_b", [task("b1", "navigate", "c"), task("b2", "hold_position", "e")])
+
+
+def test_a_keepers_wait_that_closes_a_cycle_with_another_ordering_falls_back_to_forbid_node(parking):
+    # One task of robot_a, a1, drives through both nodes: a1 after b2 and b2 after a1.
+    plan = team(("robot_a", [task("a1", "navigate", "f")]), PASSES_C_PARKS_AT_E)
+    v = verdict_for(parking, plan, speed=1.0)
+    assert s4(v) == [
+        ("order_before", "robot_a", "b2", None, "a1",
+         "robot_a: start task a1 only after robot_b has finished task b2; both would drive through c at "
+         "the same time."),
+        ("forbid_node", "robot_b", "b2", "e", None,
+         "robot_b: do not end your plan at e. This changes your final stop, because robot_a has to drive "
+         "through e (task a1) and you would stay there until the end of your plan; waiting until robot_a "
+         "has gone by does not help: together with the other orderings of this plan, the tasks would wait "
+         "for each other in a cycle.")]
+
+
+def test_a_cycle_through_a_robots_own_task_order_is_found_too(parking):
+    # robot_a reaches c with a1 and drives through e with a2: a1 after b2 and b2 after a2. The
+    # depends_on alone have no cycle (TeamPlan accepts them), but a2 comes after a1.
+    plan = team(("robot_a", [task("a1", "navigate", "c"), task("a2", "navigate", "f")]),
+                PASSES_C_PARKS_AT_E)
+    v = verdict_for(parking, plan, speed=1.0)
+    assert [(c.kind, c.robot_id, c.task_id, c.node, c.value) for c in v.constraints] == [
+        ("order_before", "robot_a", "b2", None, "a1"), ("forbid_node", "robot_b", "b2", "e", None)]
+
+
+def test_a_cycle_left_without_the_keepers_waits_turns_the_last_orderings_into_custom():
+    """Orderings that make a robot R-1 ranked lower wait cannot form a cycle by themselves, nor
+    with each robot's task order; the plan's own depends_on can close one. robot_a yields to
+    robot_b, robot_b to robot_c, and c1 already waits for a2. No compact map reaches this with
+    each ordering verified on its own, so the last step of to_verdict is tested directly."""
+    from fleet_checker.adapters.verdict import _Proposal, _without_cycles
+    plan = team(("robot_a", [task("a1", "navigate", "x"), task("a2", "navigate", "y")]),
+                ("robot_b", [task("b1", "navigate", "x"), task("b2", "navigate", "y")]),
+                ("robot_c", [task("c1", "navigate", "z", depends_on=["a2"])]))
+    b_waits = Constraint(kind="order_before", rule_id=R.NODE_OCCUPIED, robot_id="robot_b", task_id="c1",
+                         value="b1", text="robot_b: start task b1 only after robot_c has finished task c1.")
+    a_waits = Constraint(kind="order_before", rule_id=R.CAPACITY_EXCEEDED, robot_id="robot_a", task_id="b2",
+                         value="a1", text="robot_a: start task a1 only after robot_b has finished task b2.")
+    kept, cut = _without_cycles(plan, [_Proposal(b_waits), _Proposal(a_waits)])
+    assert kept == b_waits
+    assert (cut.kind, cut.rule_id, cut.robot_id, cut.task_id) == ("custom", R.CAPACITY_EXCEEDED,
+                                                                  "robot_a", "a1")
+    assert cut.text == ("robot_a: start task a1 only after robot_b has finished task b2. This cannot be done "
+                        "together with the plan's own depends_on and this verdict's other orderings: the tasks "
+                        "would wait for each other in a cycle. Change the plan so that robot_a does not have to "
+                        "wait for task b2.")
+
+
+def test_orderings_that_work_together_are_left_alone(parking):
+    # Without a cycle the orderings stay as they are: robot_a waits for robot_b at c.
+    v = verdict_for(parking, team(("robot_a", [task("a1", "navigate", "e")]),
+                                  ("robot_b", [task("b1", "navigate", "s")])), speed=1.0)
+    assert [(c.kind, c.task_id, c.value) for c in v.constraints] == [("order_before", "b1", "a1")]
+
+
+# ---------------- one constraint per demand ----------------
+
+def test_two_rules_asking_for_the_same_change_send_one_constraint(crossroads):
+    # S-2 and S-4 both want a1 to wait for b1 at the crossing (see the crowding test above).
+    v = verdict_for(crossroads, CROSSING, speed=1.0, people=[BY_C], crowding=LIMIT)
+    assert [(c.kind, c.rule_id, c.task_id, c.value) for c in v.constraints] == [
+        ("order_before", R.HUMAN_CROWDING, "b1", "a1")]
 
 
 # ---------------- P-3 and compile errors -> custom ----------------

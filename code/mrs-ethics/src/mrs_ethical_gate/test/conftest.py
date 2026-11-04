@@ -24,7 +24,8 @@ def run_with_gate(samples_world):
     go through constraints_json, as on /mrs/verdict."""
     def run(plan: TeamPlan, max_attempts: int = 5):
         starts = spawn_start_nodes(samples_world, ["robot_a", "robot_b"])
-        gate = GateSession(samples_world, starts, speed=0.5, margin=0.5)   # config/gate.yaml; nobody around
+        gate = GateSession(samples_world, starts, speed=0.5, margin=0.5,   # config/gate.yaml; nobody around
+                           robot_length=0.45)
         f = FakePlanner(plan, graph=samples_world.neighbors, start_nodes=starts, max_attempts=max_attempts,
                         transaction_id="txn-1", episode_id="ep-1")
         step = f.first()

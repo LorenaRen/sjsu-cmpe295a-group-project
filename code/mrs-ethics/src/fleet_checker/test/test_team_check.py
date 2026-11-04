@@ -1,4 +1,5 @@
 """check_team_plan on the Module 1 sample plans and on Shervan's narrow_aisle map."""
+import math
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation, Violation
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
+ROBOT_LENGTH = 0.45   # m; mrs_bot.sdf's chassis, the gate's placeholder (config/gate.yaml)
 NARROW_AISLE = Path(__file__).resolve().parents[2] / "mrs_sim/worlds/narrow_aisle.yaml"  # parents[2] = src/
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
 
@@ -42,7 +44,7 @@ def edited(plan: TeamPlan, edit) -> TeamPlan:
 
 def check(sim_map, plan, **kwargs):
     starts = spawn_starts(sim_map, ["robot_a", "robot_b"])
-    return check_team_plan(plan, sim_map, starts, speed=SPEED, **kwargs)
+    return check_team_plan(plan, sim_map, starts, speed=SPEED, **({"robot_length": ROBOT_LENGTH} | kwargs))
 
 
 def codes(result):
@@ -158,7 +160,8 @@ def test_a_head_on_swap_is_one_conflict(two_narrow_zones):
         {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "navigate", "target": "er", "priority": 1}]},
         {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "navigate", "target": "wr", "priority": 1}]},
     ]})
-    result = check_team_plan(plan, two_narrow_zones, {"robot_a": "wr", "robot_b": "er"}, speed=1.0)
+    result = check_team_plan(plan, two_narrow_zones, {"robot_a": "wr", "robot_b": "er"}, speed=1.0,
+                             robot_length=ROBOT_LENGTH)
     assert codes(result) == ["EDGE_SWAP", "EDGE_SWAP"]           # one finding per zone
     [c] = conflicts(result)
     assert (c.reason, c.where, c.robots, c.yielders) == (R.EDGE_SWAP, None, ("robot_a", "robot_b"), ("robot_a",))
@@ -225,9 +228,11 @@ def test_a_node_conflict_names_the_node(parking):
         {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "hold_position", "target": "c", "priority": 1}]},
         {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "hold_position", "target": "c", "priority": 1}]},
     ]})
-    result = check_team_plan(plan, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0)
+    result = check_team_plan(plan, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0,
+                             robot_length=ROBOT_LENGTH)
     [c] = conflicts(result)
-    assert (c.reason, c.where, c.robots, c.yielders) == (R.NODE_OCCUPIED, "c", ("robot_a", "robot_b"), ("robot_a",))
+    # robot_b gets to c first and stays: only it can free c, so it is the one that gives way.
+    assert (c.reason, c.where, c.robots, c.yielders) == (R.NODE_OCCUPIED, "c", ("robot_a", "robot_b"), ("robot_b",))
     assert c.key == "node_occupied@c:robot_a+robot_b"
 
 
@@ -249,6 +254,53 @@ def test_each_finding_says_which_robots_must_fix_it(samples_map):
                   lambda t: t.update(target="room_9") if t["task_id"] == "a2" else None)
     [compile_error] = check(samples_map, plan).findings
     assert compile_error.must_fix == ()                 # the whole plan goes back
+    assert (p1.r1_yielders, s1.r1_yielders, compile_error.r1_yielders) == ((), ("robot_b",), ())
+
+
+def test_an_s4_conflict_only_the_keeper_can_resolve_is_the_keepers_to_fix(samples_map):
+    # robot_b reaches room_3 first and stays; robot_a's task ends there. R-1 picks robot_a to give
+    # way, but waiting cannot help: only robot_b ending somewhere else can.
+    hold = {"action": "hold_position", "target": "room_3", "priority": 1}
+    both = TeamPlan.model_validate({"assignments": [
+        {"robot_id": "robot_a", "tasks": [{"task_id": "a1", **hold}]},
+        {"robot_id": "robot_b", "tasks": [{"task_id": "b1", **hold}]}]})
+    result = check(samples_map, both)
+    [f] = result.findings
+    assert (f.reason, f.r1_yielders, f.must_fix) == (R.NODE_OCCUPIED, ("robot_a",), ("robot_b",))
+    assert list(result.must_replan) == ["robot_b"]
+    [c] = conflicts(result)
+    assert (c.yielders, c.keepers) == (("robot_b",), ("robot_a",))   # what the ledger records
+
+
+def test_a_keeper_parked_where_the_other_robot_drives_through_must_fix_it(samples_map):
+    # robot_b parks at corridor_1 for good; robot_a, which R-1 picks, has to drive through it.
+    plan = TeamPlan.model_validate({"assignments": [
+        {"robot_id": "robot_a", "tasks": [{"task_id": "a1", "action": "navigate", "target": "room_3",
+                                           "priority": 1}]},
+        {"robot_id": "robot_b", "tasks": [{"task_id": "b1", "action": "hold_position", "target": "corridor_1",
+                                           "priority": 1}]}]})
+    [f] = check(samples_map, plan).findings
+    assert (f.reason, f.violation.resource_id, f.r1_yielders, f.must_fix) == (
+        R.NODE_OCCUPIED, "corridor_1", ("robot_a",), ("robot_b",))
+
+
+def test_robot_length_has_no_default(samples_map):
+    # Like speed: the value is the caller's, a placeholder until it is measured (config/gate.yaml).
+    with pytest.raises(TypeError, match="robot_length"):
+        check_team_plan(sample("valid_two_robots.json"), samples_map,
+                        spawn_starts(samples_map, ["robot_a", "robot_b"]), speed=SPEED)
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.45, math.nan, math.inf])
+def test_robot_length_must_be_a_length(samples_map, bad):
+    with pytest.raises(ValueError, match="robot_length"):
+        check(samples_map, sample("valid_two_robots.json"), robot_length=bad)
+
+
+def test_the_robot_length_is_kept_for_rechecks(samples_map):
+    result = check(samples_map, sample("valid_two_robots.json"))
+    assert result.settings.robot_length == ROBOT_LENGTH
+    assert result.recheck(result.team_plan).settings.robot_length == ROBOT_LENGTH
 
 
 def test_recheck_runs_the_same_check_on_another_plan(samples_map):

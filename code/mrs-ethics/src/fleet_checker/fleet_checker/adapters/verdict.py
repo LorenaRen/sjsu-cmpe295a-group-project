@@ -9,7 +9,13 @@
   S-4 node_occupied                  order_before (the keeper's task that takes it away from
                                      the node, the yielder's task that brings it there),
                                      verified first; if it does not help, forbid_node, or
-                                     custom when the node is where the yielder's task ends
+                                     custom when the node is where the yielder's task ends or
+                                     the yielder drives through it. If the keeper stays to the
+                                     end of its plan and the yielder has to be there, only the
+                                     keeper can free the node (team_check's must_fix): it waits
+                                     until a yielder driving through has gone by, verified on
+                                     the whole plan, or else ends somewhere else (forbid_node);
+                                     for a yielder whose task ends there, custom
   P-1 final_stop_in_passthrough      forbid_node for every node of the zone
   P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
   P-3 and compile errors             custom
@@ -34,6 +40,14 @@ guarantee that the reordered plan creates no new conflict elsewhere: on the
 REJECT path the next round's check catches those; MODIFY (designed, not built)
 must check the whole modified plan again before approving it.
 
+Each ordering is verified on its own, so at the end every order_before of the
+verdict is added to one copy of the plan, and checked for tasks waiting for each
+other in a cycle (depends_on and each robot's task order, compiler.deadlock). If
+they would, the S-4 keepers' waits, the only orderings that make the robot R-1
+ranked higher wait, fall back to forbid_node, last first, until there is no
+cycle; a cycle still left can only be closed by the plan's own depends_on, and
+then the orderings, last first, become custom constraints (_without_cycles).
+
 rule_ids are mrs_common.reasons codes. risk_score is an ordinal level, not a
 probability (SEVERITY). standard_refs stay empty: the team has not read the
 standards' text yet, and EthicalVerdict only allows clauses that were read.
@@ -48,7 +62,9 @@ from mrs_common import reasons as R
 from mrs_common.plan_schema import Constraint, TeamPlan
 from pydantic import ValidationError
 
-from ..plan import Action, Plan, RegionKind
+from ..plan import RegionKind
+from .compiler import deadlock
+from .node_presence import Presence, only_the_keeper_can_resolve, presence
 from .team_check import Finding, TeamCheckResult
 
 # The strings of EthicalVerdict.VERDICT_* (mrs_msgs needs a ROS build to import).
@@ -109,11 +125,10 @@ def to_verdict(result: TeamCheckResult) -> VerdictContent:
     """APPROVE when nothing was found, else REJECT with one or more constraints per finding."""
     if result.approved:
         return VerdictContent(APPROVE, (), (), 0.0, "Plan approved: no rule violations found.", ())
-    constraints: list[Constraint] = []
+    proposals: list[_Proposal] = []
     for finding in result.findings:
-        for c in _constraints_for(finding, result):
-            if c not in constraints:
-                constraints.append(c)
+        proposals += _constraints_for(finding, result)
+    constraints = _one_per_demand(_without_cycles(result.team_plan, _one_per_demand(proposals)))
     return VerdictContent(
         verdict=REJECT,
         rule_ids=tuple(sorted({f.reason for f in result.findings})),
@@ -122,6 +137,75 @@ def to_verdict(result: TeamCheckResult) -> VerdictContent:
         rationale=_rationale(result),
         constraints=tuple(constraints),
     )
+
+
+class _Proposal(NamedTuple):
+    """A constraint for the verdict, and what it becomes if the verdict's orderings, taken
+    together, would make tasks wait for each other in a cycle (S-4's keeper's wait)."""
+    constraint: Constraint
+    fallback: Constraint | None = None
+
+
+def _one_per_demand(items: list) -> list:
+    """Proposals or constraints, the first of each demand kept, in order."""
+    out, asked = [], set()
+    for item in items:
+        demand = _demand(item.constraint if isinstance(item, _Proposal) else item)
+        if demand not in asked:
+            asked.add(demand)
+            out.append(item)
+    return out
+
+
+def _without_cycles(team_plan: TeamPlan, proposals: list[_Proposal]) -> list[Constraint]:
+    """The proposals' constraints, with no set of order_before that would make tasks wait for
+    each other in a cycle once added together. First the keepers' waits (with a fallback)
+    give way, last first: they are the only orderings that make the robot R-1 ranked higher
+    wait. The others each have a lower-ranked robot wait for a higher-ranked one, so with
+    the robots' own task order they form no cycle; only the plan's own depends_on can close
+    one, and then they give way too, last first, as custom constraints."""
+    chosen = [p.constraint for p in proposals]
+    for i in reversed(range(len(proposals))):
+        if not _deadlocked(team_plan, chosen):
+            return chosen
+        if proposals[i].fallback is not None:
+            chosen[i] = proposals[i].fallback
+    for i in reversed(range(len(chosen))):
+        if not _deadlocked(team_plan, chosen):
+            return chosen
+        if chosen[i].kind == "order_before":
+            c = chosen[i]
+            chosen[i] = Constraint(
+                kind="custom", rule_id=c.rule_id, robot_id=c.robot_id, task_id=c.value,
+                text=f"{c.text} This cannot be done together with the plan's own depends_on and this "
+                     f"verdict's other orderings: the tasks would wait for each other in a cycle. Change "
+                     f"the plan so that {c.robot_id} does not have to wait for task {c.task_id}.")
+    return chosen
+
+
+def _deadlocked(team_plan: TeamPlan, constraints: list[Constraint]) -> bool:
+    """Whether the order_before of `constraints`, added together to team_plan, make tasks wait
+    for each other in a cycle: through depends_on (TeamPlan's own check), or through a robot's
+    task order, which TeamPlan does not see (compiler.deadlock)."""
+    data = team_plan.model_dump(mode="json")
+    tasks = {t["task_id"]: t for a in data["assignments"] for t in a["tasks"]}
+    for c in constraints:
+        if c.kind == "order_before" and c.task_id not in tasks[c.value]["depends_on"]:
+            tasks[c.value]["depends_on"].append(c.task_id)
+    try:
+        together = TeamPlan.model_validate(data)
+    except ValidationError:
+        return True
+    return deadlock(together) is not None
+
+
+def _demand(c: Constraint) -> tuple:
+    """What a constraint asks for. Two rules can ask for the same change (at a crossing next to
+    a person, S-2 and S-4 the same ordering): it is sent once, the first rule's. A custom
+    constraint asks for what its text says."""
+    if c.kind == "custom":
+        return (c.kind, c.robot_id, c.text)
+    return (c.kind, c.robot_id, c.task_id, c.node, c.value)
 
 
 def unreadable_plan_verdict(error: ValueError) -> VerdictContent:
@@ -161,22 +245,23 @@ def _describe_read_error(error: ValueError) -> str:
 # Constraints
 # --------------------------------------------------------------------------
 
-def _constraints_for(f: Finding, result: TeamCheckResult) -> list[Constraint]:
+def _constraints_for(f: Finding, result: TeamCheckResult) -> list[_Proposal]:
     code = f.violation.code
     if code == "NODE_OCCUPIED":
         return _stop_constraints(f, result)
     if code in _CONFLICT_CODES:
-        return _orderings(f, result)
-    if code == "FINAL_STOP_IN_PASSTHROUGH":
-        return _forbid_stops(f, result)
-    if code == "REGION_ACCESS_DENIED":
-        return _avoid_zone(f, result)
-    if code == "MAX_DURATION_EXCEEDED":
+        constraints = _orderings(f, result)
+    elif code == "FINAL_STOP_IN_PASSTHROUGH":
+        constraints = _forbid_stops(f, result)
+    elif code == "REGION_ACCESS_DENIED":
+        constraints = _avoid_zone(f, result)
+    elif code == "MAX_DURATION_EXCEEDED":
         robot = f.violation.refs[0].robot_id
-        return [Constraint(kind="custom", rule_id=f.reason, robot_id=robot,
-                           text=f"{robot}: {_too_long(robot, result)}; make the plan shorter.")]
-    # Compile errors: the message already says what is wrong, and with which task.
-    return [Constraint(kind="custom", rule_id=f.reason, text=f.violation.message)]
+        constraints = [Constraint(kind="custom", rule_id=f.reason, robot_id=robot,
+                                  text=f"{robot}: {_too_long(robot, result)}; make the plan shorter.")]
+    else:   # compile errors: the message already says what is wrong, and with which task
+        constraints = [Constraint(kind="custom", rule_id=f.reason, text=f.violation.message)]
+    return [_Proposal(c) for c in constraints]
 
 
 def _forbid_stops(f: Finding, result: TeamCheckResult) -> list[Constraint]:
@@ -230,7 +315,7 @@ def _orderings(f: Finding, result: TeamCheckResult) -> list[Constraint]:
     for ref in f.violation.refs:
         steps.setdefault(ref.robot_id, []).append(ref.step_index)
     return [_ordering(f, result, where, keeper=k, k_step=max(steps[k]), yielder=y, y_step=min(steps[y]))
-            for y in f.must_fix for k in sorted(set(steps) - set(f.must_fix))]
+            for y in f.r1_yielders for k in sorted(set(steps) - set(f.r1_yielders))]
 
 
 def _ordering(f: Finding, result: TeamCheckResult, where: _Where, *,
@@ -283,77 +368,140 @@ def _reordered(result: TeamCheckResult, *, before: str, after: str) -> TeamCheck
     return None if again.compiled.violations else again   # an added dependency can only make a deadlock
 
 
-def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[Constraint]:
-    """S-4: one constraint for each (yielder, keeper) pair standing at the node."""
+def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[_Proposal]:
+    """S-4: one constraint for each (yielder, keeper) pair at the node, as R-1 chose them."""
     steps: dict[str, list[int]] = {}
     for ref in f.violation.refs:
         steps.setdefault(ref.robot_id, []).append(ref.step_index)
     return [_stop_constraint(f, result, keeper=k, k_step=max(steps[k]), yielder=y, y_step=min(steps[y]))
-            for y in f.must_fix for k in sorted(set(steps) - set(f.must_fix))]
+            for y in f.r1_yielders for k in sorted(set(steps) - set(f.r1_yielders))]
 
 
 def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step: int,
-                     yielder: str, y_step: int) -> Constraint:
-    """In order of preference: make the yielder come only after the keeper has left
-    (verified, as for S-1); else, if the node is where the yielder's task ends, tell it to
-    wait nearby first (or that the task cannot be done, if the keeper never leaves), since
-    forbidding the node would make it give the task up; else forbid it to wait there."""
+                     yielder: str, y_step: int) -> _Proposal:
+    """In order of preference: make the yielder come only after the keeper has left (verified,
+    as for S-1). If the keeper stays to the end of its plan and the yielder has to be there,
+    only the keeper can free the node: it waits for a yielder that drives through, if that
+    works, else ends somewhere else; a yielder whose task ends there gets told, through the
+    keeper, that the task cannot be done as it is. Otherwise the yielder: one that drives
+    through is told why waiting does not help; one whose task ends there waits nearby first,
+    since forbidding the node would make it give the task up; else it may not wait there."""
     node = f.violation.resource_id
-    plans, origins = result.compiled.plans, result.compiled.origins
-    task = origins[yielder][y_step].task_id                     # what the yielder does while there
-    ends_there = task is not None and result.team_plan.task(task).target == node
-    arrive = _arrival_step(plans[yielder], y_step)
-    leave = _departure_step(plans[keeper], k_step)
-    k_task = origins[keeper][leave].task_id if leave is not None else None   # takes the keeper away
+    y = presence(result.compiled, result.team_plan, yielder, y_step, node)
+    k = presence(result.compiled, result.team_plan, keeper, k_step, node)
 
-    def make(kind: str, text: str, **fields: Any) -> Constraint:
-        return Constraint(kind=kind, rule_id=f.reason, robot_id=yielder, text=text, **fields)
+    def make(kind: str, text: str, **fields: Any) -> _Proposal:
+        return _Proposal(Constraint(kind=kind, rule_id=f.reason, robot_id=yielder, text=text, **fields))
 
-    if arrive is None:   # stands there from the start of its plan: it cannot come later
-        return make("custom", f"{yielder} stands at {node} from the start of its plan, and {keeper} "
-                              f"would stop there while it does. Have {yielder} leave {node} before "
-                              f"{keeper} gets there.", node=node)
-    y_task = origins[yielder][arrive].task_id                   # brings the yielder to the node
-    if k_task is not None:
-        again = _reordered(result, before=k_task, after=y_task)
+    if y.from_start:   # there from the start of its plan: it cannot come later
+        is_there = "stands at" if not y.passes else "drives off from"
+        return make("custom", f"{yielder} {is_there} {node} from the start of its plan, and {keeper} "
+                              f"would {'drive through it' if k.passes else 'stop there'} while it does. "
+                              f"Have {yielder} leave {node} before {keeper} gets there.", node=node)
+    why_not = None
+    if not k.stays:
+        again = _reordered(result, before=k.leave_task, after=y.arrive_task)
         if again is not None and not _in_conflict(again, f, keeper, yielder):
-            return make("order_before", f"{yielder}: start task {y_task} only after {keeper} has finished "
-                                        f"task {k_task}; both would stop at {node}, where only one robot "
-                                        f"can stand.", task_id=k_task, value=y_task)
-    if ends_there and k_task is None:
-        return make("custom", f"{yielder}: task {task} cannot be done with the plan as it is: its target "
-                              f"{node} is where {keeper} stays until the end of its plan. Change where "
-                              f"{keeper} ends, so that {node} is free when {yielder} gets there.",
-                    task_id=task, node=node)
-    if ends_there:
-        return make("custom", f"{yielder}: {node} is where task {task} ends, but {keeper} is stopped there "
-                              f"until it leaves with task {k_task}. Wait at another node near {node} "
-                              f"first, and go to {node} only after {keeper} has left it.",
-                    task_id=task, node=node)
-    until = ("stays there until the end of its plan" if k_task is None
-             else f"is stopped there until it leaves with task {k_task}")
-    return make("forbid_node", f"{yielder}: do not wait at {node}; {keeper} {until}.", task_id=task, node=node)
+            return make("order_before", f"{yielder}: start task {y.arrive_task} only after {keeper} has "
+                                        f"finished task {k.leave_task}; {_meeting(y, k)}.",
+                        task_id=k.leave_task, value=y.arrive_task)
+        why_not = ("the tasks would wait for each other in a cycle" if again is None
+                   else f"{yielder} would still be at {node} while {keeper} is there")
+    if only_the_keeper_can_resolve(y, k):   # the keeper must change (team_check)
+        if y.passes:
+            return _keeper_waits_or_ends_elsewhere(f, result, y, k)
+        return _Proposal(Constraint(
+            kind="custom", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
+            text=f"{keeper}: you stay at {node} until the end of your plan, but {node} is where task {y.task} "
+                 f"of {yielder} ends, so that task cannot be done with the plan as it is. End somewhere "
+                 f"else, so that {node} is free when {yielder} gets there."))
+    if y.passes:
+        k_there = (f"is stopped there until it leaves with task {k.leave_task}" if not k.passes
+                   else "drives through it")
+        return make("custom", f"{yielder} would drive through {node} while {keeper} {k_there}, and making "
+                              f"{yielder} wait for {keeper} does not fix it: {why_not}. Change the plan so "
+                              f"that {yielder} drives through {node} when {keeper} is not there.",
+                    task_id=y.task, node=node)
+    k_is = ("stays there until the end of its plan" if k.stays
+            else "drives through it then" if k.passes
+            else f"is stopped there until it leaves with task {k.leave_task}")
+    if y.ends_task:
+        return make("custom", f"{yielder}: {node} is where task {y.task} ends, but {keeper} {k_is}. "
+                              f"Wait at another node near {node} first, and go to {node} only after "
+                              f"{keeper} has left it.",
+                    task_id=y.task, node=node)
+    return make("forbid_node", f"{yielder}: do not wait at {node}; {keeper} {k_is}.",
+                task_id=y.task, node=node)
 
 
-def _arrival_step(plan: Plan, step: int) -> int | None:
-    """The step that brings the robot to where it stands in `step`: `step` itself for the
-    stop at the end of a drive, else the drive before its standing steps; None if it stands
-    there from the start of its plan."""
-    if plan.steps[step].action == Action.NAVIGATE:
-        return step
-    while step > 0 and plan.steps[step - 1].action != Action.NAVIGATE:
-        step -= 1
-    return step - 1 if step > 0 else None
+def _keeper_waits_or_ends_elsewhere(f: Finding, result: TeamCheckResult, y: Presence,
+                                    k: Presence) -> _Proposal:
+    """The keeper stays at the node to the end of its plan and the yielder has to drive through
+    it. The keeper waits until the yielder has gone by, if that works, else it ends somewhere
+    else: forbid_node, which changes its final stop, so the text says why. The wait's fallback,
+    if the verdict's orderings together would wait in a cycle, is the same forbid_node."""
+    node, yielder, keeper = f.violation.resource_id, y.robot, k.robot
+
+    def end_elsewhere(why: str) -> Constraint:
+        return Constraint(
+            kind="forbid_node", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
+            text=f"{keeper}: do not end your plan at {node}. This changes your final stop, because {yielder} "
+                 f"has to drive through {node} (task {y.task}) and you would stay there until the end of your "
+                 f"plan; waiting until {yielder} has gone by does not help: {why}.")
+
+    why = _why_waiting_for_the_yielder_fails(f, result, y, k)
+    if why is not None:
+        return _Proposal(end_elsewhere(why))
+    wait = Constraint(kind="order_before", rule_id=f.reason, robot_id=keeper, task_id=y.leave_task,
+                      value=k.arrive_task,
+                      text=f"{keeper}: start task {k.arrive_task} only after {yielder} has finished task "
+                           f"{y.leave_task}; {yielder} has to drive through {node}, where you would stay "
+                           f"until the end of your plan.")
+    return _Proposal(wait, fallback=end_elsewhere(
+        "together with the other orderings of this plan, the tasks would wait for each other in a cycle"))
 
 
-def _departure_step(plan: Plan, step: int) -> int | None:
-    """The step that takes the robot away from where it stands in `step`, or None if it
-    stays there to the end of its plan."""
-    if plan.steps[step].action == Action.NAVIGATE:
-        return None   # the stop at the end of the plan
-    while step + 1 < len(plan.steps) and plan.steps[step + 1].action != Action.NAVIGATE:
-        step += 1
-    return step + 1 if step + 1 < len(plan.steps) else None
+def _why_waiting_for_the_yielder_fails(f: Finding, result: TeamCheckResult, y: Presence,
+                                       k: Presence) -> str | None:
+    """None if the keeper's task that brings it to the node can wait for the yielder's task that
+    takes it through, otherwise why not. Checked on the whole plan, unlike every other ordering:
+    the yielder's orderings only delay its getting to one place, but this one moves all that is
+    left of the keeper's plan later, which can make the two robots meet anywhere else. So the
+    conflict here must be gone, and the two may meet nowhere they did not meet before."""
+    node, yielder, keeper = f.violation.resource_id, y.robot, k.robot
+    if k.arrive_task is None:
+        return f"you are at {node} from the start of your plan"
+    again = _reordered(result, before=y.leave_task, after=k.arrive_task)
+    if again is None:
+        return "the tasks would wait for each other in a cycle"
+    if _in_conflict(again, f, keeper, yielder):
+        return f"{yielder} would still drive through {node} while you are there"
+    before = _meetings(result, keeper, yielder)
+    new = [where for key, where in _meetings(again, keeper, yielder).items() if key not in before]
+    return f"you and {yielder} would then meet {new[0]}" if new else None
+
+
+def _meetings(result: TeamCheckResult, a: str, b: str) -> dict[tuple[str, str | None], str]:
+    """The conflicts between robots a and b: (rule, place) -> where, in words."""
+    out: dict[tuple[str, str | None], str] = {}
+    for g in result.findings:
+        code, place = g.violation.code, g.violation.resource_id
+        if code in _CONFLICT_CODES and {a, b} <= {ref.robot_id for ref in g.violation.refs}:
+            rule = "S-1" if code in _S1_CODES else code
+            out.setdefault((rule, place), {"NODE_OCCUPIED": f"at {place}",
+                                           "HUMAN_CROWDING": f"near {place}"}.get(code, f"in {place}"))
+    return out
+
+
+def _meeting(y: Presence, k: Presence) -> str:
+    """How the yielder and the keeper would be at the node at once, for an ordering's text."""
+    node = y.node
+    if not y.passes and not k.passes:
+        return f"both would stop at {node}, where only one robot can stand"
+    if y.passes and k.passes:
+        return f"both would drive through {node} at the same time"
+    driver, stander = (y.robot, k.robot) if y.passes else (k.robot, y.robot)
+    return f"{driver} would drive through {node} while {stander} stands there"
 
 
 def _with_dependency(plan: TeamPlan, *, before: str, after: str) -> TeamPlan | None:
@@ -410,8 +558,21 @@ def _problem(f: Finding, result: TeamCheckResult) -> str:
         where = _where(f, result)
         return f"{_join(robots)} would be {where.first} at the same time, {where.but}"
     if code == "NODE_OCCUPIED":
-        robots = sorted({ref.robot_id for ref in refs})
-        return f"{_join(robots)} would stop at {f.violation.resource_id} at the same time"
+        node = f.violation.resource_id
+        first: dict[str, int] = {}
+        for ref in refs:
+            first.setdefault(ref.robot_id, ref.step_index)
+        drives = {r: presence(result.compiled, result.team_plan, r, step, node).passes
+                  for r, step in first.items()}
+        robots = sorted(drives)
+        drivers, standers = [r for r in robots if drives[r]], [r for r in robots if not drives[r]]
+        if not drivers:
+            return f"{_join(robots)} would stop at {node} at the same time"
+        if not standers:
+            return f"{_join(robots)} would drive through {node} at the same time"
+        if len(robots) == 2:
+            return f"{drivers[0]} would drive through {node} while {standers[0]} stands there"
+        return f"{_join(robots)} would be at {node} at the same time"
     if code == "EDGE_SWAP":
         # Reported once per zone of the swap; the wording leaves the zone out so both halves read the same.
         a, b = sorted({ref.robot_id for ref in refs})

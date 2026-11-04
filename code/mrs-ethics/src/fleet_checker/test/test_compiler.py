@@ -164,6 +164,58 @@ class TestEndNodes:
         assert end_nodes(c.plans["robot_b"]) == ["east_n"]
 
 
+# ---------------- waypoints (every node a step reaches, and when; for S-4) ----------------
+
+def waypoints(plan):
+    return [[(w.node, round(w.t, 6)) for w in s.waypoints] for s in plan.steps]
+
+
+class TestWaypoints:
+
+    def test_the_nodes_a_step_reaches_on_the_way_are_waypoints_too(self, samples_map):
+        # east_n -> room_3 -> corridor_1 is all in east_hall, so it is one step: room_3 is reached
+        # on the way (1.2 m, 2.4 s), not at a step boundary. The first step starts at east_n.
+        c = compile_on(samples_map, team(("robot_b", [task("b1", "hold_position", "corridor_1")])))
+        assert waypoints(c.plans["robot_b"]) == [[("east_n", 0.0), ("room_3", 2.4), ("corridor_1", 8.4)]]
+
+    def test_each_step_lists_its_waypoints_at_the_compile_speed(self, samples_map):
+        c = compile_on(samples_map, team(("robot_a", [task("a1", "navigate", "corridor_1")])),
+                       robots=("robot_a",))
+        # west_hall, passage, east_hall: the first and second steps end at zone boundaries.
+        assert waypoints(c.plans["robot_a"]) == [[("west_s", 0.0), ("room_2", 2.4)],
+                                                 [("pass_w", 7.6), ("pass_e", 17.2)],
+                                                 [("corridor_1", 20.4)]]
+
+    def test_a_robot_that_waits_at_its_start_first_has_no_start_waypoint(self, samples_map):
+        # Its standing step is where it is at its start node; the drive after it starts there.
+        plan = team(("robot_a", [task("a1", "navigate", "corridor_1")]),
+                    ("robot_b", [task("b1", "navigate", "room_3", depends_on=["a1"])]))
+        robot_b = compile_on(samples_map, plan).plans["robot_b"]
+        assert [s.action.value for s in robot_b.steps] == ["wait", "navigate"]
+        assert waypoints(robot_b) == [[], [("room_3", 22.8)]]
+
+    def test_standing_steps_and_parked_robots_have_none(self, samples_map):
+        c = compile_on(samples_map, sample("valid_two_robots.json"))
+        robot_b = c.plans["robot_b"]
+        assert [(s.action.value, len(s.waypoints)) for s in robot_b.steps][:2] == [("navigate", 4),
+                                                                                    ("wait", 0)]
+        parked = compile_on(samples_map, team(("robot_a", [task("a1", "navigate", "room_2")])))
+        assert waypoints(parked.plans["robot_b"]) == [[]]
+
+    @pytest.mark.parametrize("name", ["valid_two_robots.json", "keep_clear_stop.json", "restricted_target.json"])
+    def test_waypoints_follow_the_nodes_each_step_reaches(self, samples_map, name):
+        c = compile_on(samples_map, sample(name))
+        for robot, plan in c.plans.items():
+            for i, (step, origin) in enumerate(zip(plan.steps, c.origins[robot])):
+                if step.action.value != "navigate":
+                    continue
+                nodes = [w.node for w in step.waypoints]
+                if i == 0:   # the start node comes first
+                    assert nodes[0] == spawn_starts(samples_map, ["robot_a", "robot_b"])[robot]
+                    nodes = nodes[1:]
+                assert nodes == list(origin.nodes), (robot, i)
+
+
 # ---------------- robots that do not move ----------------
 
 class TestParkedRobots:

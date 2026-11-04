@@ -14,10 +14,10 @@ S-2: Human crowding
     conflicts go to the same R-1.
 
 S-4: Node occupancy
-    Two robots standing still at the same node at once. Each node is a
-    resource of capacity 1, with claims from plan.stop_claims (standing
-    steps and where each plan ends); the same sweep and the same R-1. Stops
-    in a zone of capacity 1 are left to S-1.
+    Two robots at the same node at once, standing there or driving through.
+    Each node is a resource of capacity 1, with claims from plan.node_claims
+    (a robot is at a node while any part of it is over the node); the same
+    sweep and the same R-1. Nodes in a zone of capacity 1 are left to S-1.
 
 R-1: Yield assignment
     When a conflict is detected, decide which robots yield (n robots in a
@@ -41,7 +41,7 @@ from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from .crowding import CrowdingLimit, crowding_claims
 from .plan import (TIME_EPS, Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims,
-                   stop_claims)
+                   node_claims)
 
 
 # ---------------------------------------------------------------------------
@@ -313,24 +313,28 @@ def check_node_occupancy(
     world: WorldMap,
     margin: float = 0.0,
     hold_final: bool = True,
+    pass_time: float = 0.0,
 ) -> list[CapacityConflict]:
-    """Detect every stretch of time in which two robots stand still at the same node.
+    """Detect every stretch of time in which two robots are at the same node: standing
+    there or driving through it, while any part of them is over it (plan.node_claims).
 
     Each node is swept like one of S-1's regions, with capacity 1; a conflict's
-    resource_id is the node. Stops in a zone of capacity 1 are left out: S-1 already
-    allows only one robot in the whole zone, stopped or not, and one problem should
-    be reported once. Driving through a node where another robot stands is not checked.
+    resource_id is the node. Nodes in a zone of capacity 1 are left out: S-1 already
+    allows only one robot in the whole zone, and one problem should be reported once.
+    That is also why a head-on swap through a one-robot zone, where the two robots
+    drive through the same nodes at once, is S-1's alone. pass_time: how long a
+    robot's body takes to drive over a point (its length / speed).
     """
     by_node: dict[str, list[Claim]] = defaultdict(list)
     for plan in plans:
-        for c in stop_claims(plan, margin=margin, hold_final=hold_final):
+        for c in node_claims(plan, margin=margin, hold_final=hold_final, pass_time=pass_time):
             region = plan.steps[c.step_index].region
             if world.knows(region) and world.capacity(region) == 1:
                 continue
             by_node[c.resource_id].append(c)
     conflicts: list[CapacityConflict] = []
-    for node, node_claims in by_node.items():
-        for s in sweep_over_capacity(node_claims, 1):
+    for node, at_node in by_node.items():
+        for s in sweep_over_capacity(at_node, 1):
             conflicts.append(CapacityConflict(node, s.claims, s.t_start, s.t_end,
                                               is_edge_swap=False, capacity=1))
     return conflicts
@@ -345,7 +349,7 @@ def node_conflicts_to_violations(conflicts: list[CapacityConflict]) -> list[Viol
                                    for c in conflict.claims))
         violations.append(Violation(
             code="NODE_OCCUPIED",
-            message=(f"robots {', '.join(robot_ids)} would stop at {conflict.resource_id} at once, "
+            message=(f"robots {', '.join(robot_ids)} would be at {conflict.resource_id} at once, "
                      f"at t=[{conflict.t_start:.2f}, {conflict.t_end:.2f})"),
             refs=refs,
             resource_id=conflict.resource_id,
@@ -502,10 +506,12 @@ def check_cross_plan_conflicts(
     hold_final: bool = True,
     people: Sequence[HumanObservation] = (),
     crowding: CrowdingLimit | None = None,
+    pass_time: float = 0.0,
 ) -> tuple[list[Violation], dict[str, list[Violation]]]:
     """Check multiple plans for cross-plan conflicts and assign yields.
 
-    S-4 runs on the stops the plans declare (PlanStep.end_node, from the compiler).
+    S-4 runs on the stops and waypoints the plans declare (PlanStep.end_node and
+    PlanStep.waypoints, from the compiler).
     Every conflict of the round, S-1, S-2 and S-4 alike, ranks robots by the same
     entry times (first_entry_times over all of them). One sort key per robot keeps
     the yield relations of a round free of cycles across the rules as well: ranked
@@ -519,6 +525,7 @@ def check_cross_plan_conflicts(
         hold_final: Whether robots hold final position
         people: People to check S-2 around; none, no S-2
         crowding: S-2's R and N; needed when there are people
+        pass_time: How long a robot takes to drive over a point (S-4): its length / speed
 
     Returns:
         Tuple of:
@@ -539,7 +546,7 @@ def check_cross_plan_conflicts(
         crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final)
         conflicts += crowded
         all_violations += crowding_conflicts_to_violations(crowded, crowding)
-    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final)
+    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final, pass_time=pass_time)
     conflicts += stopped
     all_violations += node_conflicts_to_violations(stopped)
 

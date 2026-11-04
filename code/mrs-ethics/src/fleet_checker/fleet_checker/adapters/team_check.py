@@ -7,12 +7,16 @@
                                           when people are given)
 
 A policy violation is for the robot that proposed the step to fix. For a
-conflict (S-1, S-2 or S-4), R-1 and the fairness ledger choose which robots replan;
-TeamPlan priority plays no part. The ledger is only read here: recording yields
-belongs to whatever runs the replan loop.
+conflict (S-1, S-2 or S-4), R-1 and the fairness ledger choose which robots give
+way, and those replan; TeamPlan priority plays no part. One exception, in S-4:
+when the keeper stays at the node to the end of its plan and the yielder has to be
+there after it (node_presence.only_the_keeper_can_resolve), waiting cannot help, and
+the keeper must change its plan instead. The ledger is only read here: recording
+yields belongs to whatever runs the replan loop.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping, NamedTuple, Sequence
 
@@ -24,6 +28,7 @@ from ..crowding import CrowdingLimit
 from ..plan import HumanObservation, RegionKind, TaskType, Violation
 from ..policy import DEFAULT_MAX_DURATION, AccessPolicy, validate_policy
 from .compiler import CompiledTeamPlan, compile_team_plan
+from .node_presence import only_the_keeper_can_resolve, presence
 from .sim_map import SimMap
 
 # The map only labels a zone "restricted"; this is the rule that goes with the
@@ -43,6 +48,7 @@ class CheckSettings:
     plan_id: str
     revision: int
     crowding: CrowdingLimit | None   # S-2's R and N; None when no people are given
+    robot_length: float              # [m] along the direction of travel (S-4)
 
 
 class Finding(NamedTuple):
@@ -50,6 +56,9 @@ class Finding(NamedTuple):
     reason: str                # mrs_common.reasons code, e.g. "capacity_exceeded"
     task_ids: tuple[str, ...]  # TeamPlan tasks that the violation's steps came from
     must_fix: tuple[str, ...]  # robots that have to change their plan; () if it does not compile
+    # For a conflict, the robots R-1 chose to give way (the others keep); () otherwise. The
+    # same as must_fix, except in S-4 where only the keeper can resolve it.
+    r1_yielders: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -84,7 +93,7 @@ class Conflict(NamedTuple):
     where: str | None           # the zone (S-1), the person (S-2) or the node (S-4); None for
                                 # a head-on swap, which spans two zones
     robots: tuple[str, ...]     # every robot in the conflict, sorted
-    yielders: tuple[str, ...]   # the robots R-1 told to yield
+    yielders: tuple[str, ...]   # the robots that give way: must change their plan (Finding.must_fix)
 
     @property
     def keepers(self) -> tuple[str, ...]:
@@ -126,6 +135,7 @@ def check_team_plan(
     start_nodes: Mapping[str, str],
     *,
     speed: float,
+    robot_length: float,
     t0: float = 0.0,
     ledger: FairnessLedger | None = None,
     access_policy: AccessPolicy = NO_ENTRY_TO_RESTRICTED,
@@ -140,15 +150,20 @@ def check_team_plan(
     """Compile a TeamPlan and run the policy and cross-plan checks on it.
 
     speed, t0, task_types, plan_id and revision go to compile_team_plan;
-    margin to S-1 and S-2; access_policy and max_duration to P-2 and P-3;
+    margin to S-1, S-2 and S-4; access_policy and max_duration to P-2 and P-3;
     people (where they stand now) and crowding (R and N) to S-2, which runs
-    only when there are people.
+    only when there are people. robot_length [m] has no default, like speed: S-4
+    counts a robot at a node while any part of it is over the node, for
+    robot_length / speed seconds as it drives over.
     """
     if people and crowding is None:
         raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
+    if not (math.isfinite(robot_length) and robot_length > 0):
+        raise ValueError(f"robot_length must be a length > 0 m, got {robot_length}")
     settings = CheckSettings(speed=speed, t0=t0, margin=margin, max_duration=max_duration,
                              access_policy=access_policy, task_types=task_types,
-                             plan_id=plan_id, revision=revision, crowding=crowding)
+                             plan_id=plan_id, revision=revision, crowding=crowding,
+                             robot_length=robot_length)
     return _check(team_plan, sim_map, start_nodes, tuple(people), ledger, settings)
 
 
@@ -163,33 +178,53 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
         findings = tuple(_finding(v, compiled, ()) for v in compiled.violations)
         return TeamCheckResult(compiled=compiled, findings=findings, must_replan={}, **inputs)
 
-    found: list[tuple[Violation, tuple[str, ...]]] = []   # (violation, robots that must fix it)
+    # (violation, robots that must fix it, the robots R-1 chose to give way)
+    found: list[tuple[Violation, tuple[str, ...], tuple[str, ...]]] = []
     for robot, plan in compiled.plans.items():
         for v in validate_policy(plan, sim_map.world, s.access_policy, s.max_duration):
-            found.append((v, (robot,)))
+            found.append((v, (robot,), ()))
 
     conflicts, yielders = check_cross_plan_conflicts(
         list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin,
-        people=people, crowding=s.crowding)
+        people=people, crowding=s.crowding, pass_time=s.robot_length / s.speed)
     for v in conflicts:
-        found.append((v, tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))))
+        r1 = tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))
+        must_fix = _who_must_change(v, r1, compiled, team_plan) if v.code == "NODE_OCCUPIED" else r1
+        found.append((v, must_fix, r1))
 
     must_replan: dict[str, list[Violation]] = {}
-    for v, robots in found:
+    for v, robots, _ in found:
         for robot in robots:
             must_replan.setdefault(robot, []).append(v)
     return TeamCheckResult(
         compiled=compiled,
-        findings=tuple(_finding(v, compiled, robots) for v, robots in found),
+        findings=tuple(_finding(v, compiled, robots, r1) for v, robots, r1 in found),
         must_replan={robot: tuple(vs) for robot, vs in sorted(must_replan.items())},
         **inputs,
     )
 
 
-def _finding(violation: Violation, compiled: CompiledTeamPlan, must_fix: tuple[str, ...]) -> Finding:
+def _who_must_change(violation: Violation, r1_yielders: tuple[str, ...], compiled: CompiledTeamPlan,
+                     team_plan: TeamPlan) -> tuple[str, ...]:
+    """S-4: for each yielder and keeper, the yielder, or the keeper if only it can resolve it."""
+    steps: dict[str, list[int]] = {}
+    for ref in violation.refs:
+        steps.setdefault(ref.robot_id, []).append(ref.step_index)
+    node = violation.resource_id
+    must: set[str] = set()
+    for y in r1_yielders:
+        yielder = presence(compiled, team_plan, y, min(steps[y]), node)
+        for k in sorted(set(steps) - set(r1_yielders)):
+            keeper = presence(compiled, team_plan, k, max(steps[k]), node)
+            must.add(k if only_the_keeper_can_resolve(yielder, keeper) else y)
+    return tuple(sorted(must))
+
+
+def _finding(violation: Violation, compiled: CompiledTeamPlan, must_fix: tuple[str, ...],
+             r1_yielders: tuple[str, ...] = ()) -> Finding:
     task_ids: list[str] = []
     for ref in violation.refs:
         task_id = compiled.origins[ref.robot_id][ref.step_index].task_id
         if task_id is not None and task_id not in task_ids:
             task_ids.append(task_id)
-    return Finding(violation, reason_of(violation), tuple(task_ids), must_fix)
+    return Finding(violation, reason_of(violation), tuple(task_ids), must_fix, r1_yielders)

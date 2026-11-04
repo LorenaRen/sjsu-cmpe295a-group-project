@@ -60,7 +60,7 @@ class Decision:
 
 class GateSession:
     def __init__(self, sim_map: SimMap, start_nodes: Mapping[str, str], *, speed: float,
-                 margin: float = 0.5, max_duration: float = DEFAULT_MAX_DURATION,
+                 robot_length: float, margin: float = 0.5, max_duration: float = DEFAULT_MAX_DURATION,
                  access_policy: AccessPolicy = NO_ENTRY_TO_RESTRICTED,
                  task_types: Mapping[str, TaskType] | None = None, starvation_threshold: int = 3,
                  people: Sequence[HumanObservation] = (), crowding: CrowdingLimit | None = None):
@@ -68,7 +68,8 @@ class GateSession:
             raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
         self.sim_map = sim_map
         self.start_nodes = dict(start_nodes)    # the whole fleet
-        self._check_args = dict(speed=speed, margin=margin, max_duration=max_duration,
+        self._check_args = dict(speed=speed, robot_length=robot_length, margin=margin,
+                                max_duration=max_duration,
                                 access_policy=access_policy, task_types=task_types,
                                 people=tuple(people), crowding=crowding)
         self.starvation_threshold = starvation_threshold
@@ -85,7 +86,8 @@ class GateSession:
                 raise SettingsError(f"people_file {settings.people_file}: {person.human_id} at "
                                     f"({x:g}, {y:g}) is outside every zone of map {sim_map.name!r}")
         return cls(sim_map, spawn_start_nodes(sim_map, settings.robots), speed=settings.speed,
-                   margin=settings.margin, max_duration=settings.max_duration,
+                   robot_length=settings.robot_length, margin=settings.margin,
+                   max_duration=settings.max_duration,
                    access_policy=settings.access_policy, task_types=settings.task_types,
                    starvation_threshold=settings.starvation_threshold,
                    people=settings.people, crowding=settings.crowding)
