@@ -11,8 +11,13 @@ conflict (S-1, S-2 or S-4), R-1 and the fairness ledger choose which robots give
 way, and those replan; TeamPlan priority plays no part. One exception, in S-4:
 when the keeper stays at the node to the end of its plan and the yielder has to be
 there after it (node_presence.only_the_keeper_can_resolve), waiting cannot help, and
-the keeper must change its plan instead. The ledger is only read here: recording
-yields belongs to whatever runs the replan loop.
+the keeper must change its plan instead. The same goes for a yielder whose part
+of the conflict is on the edge it is on when the plan starts (a lead-in step,
+compiler.OnEdge): no plan changes where a robot drives now. The ledger is only
+read here: recording yields belongs to whatever runs the replan loop.
+
+P-2 leaves out lead-in steps: a robot already driving through a zone it may not
+enter is there whatever the plan says.
 """
 from __future__ import annotations
 
@@ -187,6 +192,9 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
     found: list[tuple[Violation, tuple[str, ...], tuple[str, ...]]] = []
     for robot, plan in compiled.plans.items():
         for v in validate_policy(plan, sim_map.world, s.access_policy, s.max_duration):
+            if v.code == "REGION_ACCESS_DENIED" and all(compiled.is_lead_in(robot, r.step_index)
+                                                        for r in v.refs):
+                continue   # it is in there already, on the edge it is on
             found.append((v, (robot,), ()))
 
     conflicts, yielders = check_cross_plan_conflicts(
@@ -194,8 +202,7 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
         people=people, crowding=s.crowding, pass_time=s.robot_length / s.speed)
     for v in conflicts:
         r1 = tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))
-        must_fix = _who_must_change(v, r1, compiled, team_plan) if v.code == "NODE_OCCUPIED" else r1
-        found.append((v, must_fix, r1))
+        found.append((v, _who_must_change(v, r1, compiled, team_plan), r1))
 
     must_replan: dict[str, list[Violation]] = {}
     for v, robots, _ in found:
@@ -211,18 +218,28 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
 
 def _who_must_change(violation: Violation, r1_yielders: tuple[str, ...], compiled: CompiledTeamPlan,
                      team_plan: TeamPlan) -> tuple[str, ...]:
-    """S-4: for each yielder and keeper, the yielder, or the keeper if only it can resolve it."""
+    """For each yielder and keeper of a conflict: the yielder, or the keeper if the yielder
+    cannot keep clear: its part of the conflict is on the edge it is on (a lead-in step), or,
+    in S-4, only the keeper can resolve it."""
     steps: dict[str, list[int]] = {}
     for ref in violation.refs:
         steps.setdefault(ref.robot_id, []).append(ref.step_index)
-    node = violation.resource_id
     must: set[str] = set()
     for y in r1_yielders:
-        yielder = presence(compiled, team_plan, y, min(steps[y]), node)
         for k in sorted(set(steps) - set(r1_yielders)):
-            keeper = presence(compiled, team_plan, k, max(steps[k]), node)
-            must.add(k if only_the_keeper_can_resolve(yielder, keeper) else y)
+            must.add(k if _keeper_must_change(violation, compiled, team_plan, y, steps[y], k, steps[k]) else y)
     return tuple(sorted(must))
+
+
+def _keeper_must_change(violation: Violation, compiled: CompiledTeamPlan, team_plan: TeamPlan,
+                        y: str, y_steps: list[int], k: str, k_steps: list[int]) -> bool:
+    if any(compiled.is_lead_in(y, step) for step in y_steps):
+        return True
+    if violation.code != "NODE_OCCUPIED":
+        return False
+    node = violation.resource_id
+    return only_the_keeper_can_resolve(presence(compiled, team_plan, y, min(y_steps), node),
+                                       presence(compiled, team_plan, k, max(k_steps), node))
 
 
 def _finding(violation: Violation, compiled: CompiledTeamPlan, must_fix: tuple[str, ...],

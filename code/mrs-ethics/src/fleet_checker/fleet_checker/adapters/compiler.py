@@ -104,6 +104,11 @@ class CompiledTeamPlan:
     # Only robots that have some edge left.
     lead_ins: dict[str, int] = field(default_factory=dict)
 
+    def is_lead_in(self, robot: str, step: int) -> bool:
+        """Whether a step of a robot's plan drives the rest of the edge it is on now: no plan
+        changes that part."""
+        return step < self.lead_ins.get(robot, 0)
+
 
 class _Segment(NamedTuple):
     zone: str

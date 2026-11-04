@@ -6,7 +6,8 @@ A robot is at a node standing there (a standing step, or the end of its plan) or
 through it (a waypoint it does not stop at, including the start node it drives off from).
 S-4's constraints (verdict.py), and which robot has to change its plan (team_check.py),
 depend on:
-  - the step, and the task, that bring it there; none if it is there from the start of its plan;
+  - the step, and the task, that bring it there; none if it is there from the start of its plan,
+    and no task if it gets there on the edge it is on when the plan starts (a lead-in step);
   - the step, and the task, that take it away; none if it stays to the end of its plan;
   - whether it drives through, and whether it stands there at the end of a task that goes there.
 """
@@ -30,6 +31,7 @@ class Presence(NamedTuple):
     leave_task: str | None
     task: str | None          # the task it is on while there
     ends_task: bool           # stands there at the end of `task`, whose target is the node
+    on_lead_in: bool          # gets there on the edge it is on now: it cannot come later
 
     @property
     def from_start(self) -> bool:
@@ -73,6 +75,7 @@ def presence(compiled: CompiledTeamPlan, team_plan: TeamPlan, robot: str, step: 
         leave_task=origins[leave].task_id if leave is not None else None,
         task=task,
         ends_task=not passes and task is not None and team_plan.task(task).target == node,
+        on_lead_in=arrive is not None and compiled.is_lead_in(robot, arrive),
     )
 
 
@@ -81,5 +84,6 @@ def only_the_keeper_can_resolve(yielder: Presence, keeper: Presence) -> bool:
     instead of the yielder R-1 chose: the keeper stays at the node to the end of its plan, and
     the yielder has to be there after it gets there, to drive through or to end a task there.
     A yielder there from the start of its plan can still leave first; one that only waits
-    there between tasks can wait somewhere else."""
+    there between tasks can wait somewhere else. (A yielder that is at the node on the edge it
+    is on cannot change that either; team_check has the keeper change then too.)"""
     return keeper.stays and not yielder.from_start and (yielder.passes or yielder.ends_task)

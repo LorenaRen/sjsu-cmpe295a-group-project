@@ -7,9 +7,11 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
 from mrs_common.plan_schema import Constraint, TeamPlan, constraints_from_json, constraints_to_json
 
+from fleet_checker.adapters.compiler import OnEdge
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 from fleet_checker.adapters.team_check import check_team_plan
 from fleet_checker.adapters.verdict import APPROVE, MODIFY, REJECT, to_verdict, unreadable_plan_verdict
+from fleet_checker.cross_plan import FairnessLedger
 from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation
 from fleet_checker.policy import AccessPolicy
@@ -469,6 +471,53 @@ def test_two_rules_asking_for_the_same_change_send_one_constraint(crossroads):
 
 
 # ---------------- P-3 and compile errors -> custom ----------------
+
+# ---------------- robots on an edge (team_state's at "a->b") ----------------
+
+def test_a_keeper_leaving_on_the_edge_it_is_on_is_waited_for_until_its_first_task_is_done(samples_map):
+    # robot_b is in the passage on pass_e -> corridor_1 and leaves it 0.8 s later, before its task b1
+    # starts; with a 3 s margin robot_a's a1 still meets it there. No task event marks the end of
+    # the edge, so robot_a waits for b1, the first one after it.
+    plan = team(("robot_a", [task("a1", "navigate", "room_3")]), ("robot_b", [task("b1", "navigate", "corridor_2")]))
+    v = verdict_for(samples_map, plan, {"robot_a": "west_s", "robot_b": "corridor_1"}, margin=3.0,
+                    on_edges={"robot_b": OnEdge("pass_e", "corridor_1", (7.6, 0.0))})
+    assert v.rule_ids == (R.CAPACITY_EXCEEDED,)
+    assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_a", "b1", "a1")]
+
+
+def test_a_yielder_in_the_zone_on_the_edge_it_is_on_has_the_keeper_keep_clear(samples_map):
+    # As in test_team_check: R-1 picks robot_b, which drives into the passage on its edge.
+    ledger = FairnessLedger()
+    ledger.record_yield("robot_a", "earlier", 0.0, "robot_b")
+    plan = team(("robot_a", [task("a1", "navigate", "room_3")]), ("robot_b", [task("b1", "navigate", "corridor_2")]))
+    v = verdict_for(samples_map, plan, {"robot_a": "room_2", "robot_b": "pass_e"}, margin=2.0, ledger=ledger,
+                    on_edges={"robot_b": OnEdge("corridor_1", "pass_e", (8.6, 0.0))})
+    assert fields(v, "kind", "robot_id", "task_id") == [("custom", "robot_a", "a1")]
+    assert v.constraints[0].text == (
+        "robot_a: robot_b will be in passage on the edge it is on now, so it cannot wait, and you would be "
+        "there at the same time, but it holds 1 robot. Change the plan so that you are not in passage "
+        "while robot_b is there.")
+
+
+def test_a_yielder_reaching_the_node_on_the_edge_it_is_on_has_the_keeper_keep_clear(samples_map):
+    plan = team(("robot_a", [task("a1", "navigate", "room_3")]), ("robot_b", [task("b1", "navigate", "room_2")]))
+    v = verdict_for(samples_map, plan, {"robot_a": "corridor_2", "robot_b": "corridor_1"},
+                    on_edges={"robot_b": OnEdge("room_3", "corridor_1", (11.0, 0.0))})
+    assert fields(v, "kind", "robot_id", "task_id", "node") == [("custom", "robot_a", "a1", "corridor_1")]
+    assert v.constraints[0].text == (
+        "robot_a: robot_b gets to corridor_1 on the edge it is on now, so it cannot wait, and you would "
+        "drive through it then. Change the plan so that you are not at corridor_1 while robot_b is there.")
+
+
+def test_a_keeper_that_stays_where_its_edge_ends_cannot_wait_and_ends_somewhere_else(samples_map):
+    # robot_b has no task: it stays at corridor_1, where its edge ends, and robot_a drives through later.
+    v = verdict_for(samples_map, team(("robot_a", [task("a1", "navigate", "room_3")])),
+                    {"robot_a": "west_s", "robot_b": "corridor_1"},
+                    on_edges={"robot_b": OnEdge("room_3", "corridor_1", (11.0, 0.0))})
+    assert fields(v, "kind", "robot_id", "node") == [("forbid_node", "robot_b", "corridor_1")]
+    assert v.constraints[0].text.endswith(
+        "waiting until robot_a has gone by does not help: you get to corridor_1 on the edge you are on now.")
+
 
 def test_too_long_plan_is_custom(samples_map):
     v = verdict_for(samples_map, sample("valid_two_robots.json"), max_duration=30.0)

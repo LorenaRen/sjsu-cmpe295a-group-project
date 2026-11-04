@@ -8,7 +8,7 @@ import pytest
 from mrs_common import load_sample, plan_from_json
 from mrs_common.plan_schema import TeamPlan
 
-from fleet_checker.adapters.compiler import compile_team_plan
+from fleet_checker.adapters.compiler import OnEdge, compile_team_plan
 from fleet_checker.adapters.node_presence import only_the_keeper_can_resolve, presence
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 
@@ -56,6 +56,37 @@ def test_driving_through_where_one_task_ends_and_the_next_begins(samples_map):
 def test_driving_off_from_the_start_node(samples_map):
     p = at(samples_map, VALID, "robot_b", 0, "east_n")
     assert (p.passes, p.from_start, p.leave_step, p.leave_task) == (True, True, 0, "b1")
+    assert not p.on_lead_in
+
+
+# robot_b is on the edge room_3 -> corridor_1, 1 m past room_3 (team_state's at "room_3->corridor_1"):
+# its plan starts with one east_hall step that reaches corridor_1 at 4 s.
+ON_EDGE = {"robot_b": OnEdge("room_3", "corridor_1", (11.0, 0.0))}
+STARTS = {"robot_a": "west_s", "robot_b": "corridor_1"}
+
+
+def at_end_of_edge(sim_map, team_plan, step, node="corridor_1"):
+    compiled = compile_team_plan(team_plan, sim_map, STARTS, speed=0.5, on_edges=ON_EDGE)
+    return presence(compiled, team_plan, "robot_b", step, node)
+
+
+def test_reaching_a_node_on_the_edge_it_is_on(samples_map):
+    p = at_end_of_edge(samples_map, team(("robot_b", [task("b1", "navigate", "room_2")])), 0)
+    # Brought there by no task, and not there when its plan starts: it can neither come later nor leave first.
+    assert (p.passes, p.arrive_step, p.arrive_task, p.leave_task, p.on_lead_in) == (True, 0, None, "b1", True)
+    assert not p.from_start
+
+
+def test_waiting_where_the_edge_it_is_on_ends(samples_map):
+    plan = team(("robot_a", [task("a1", "navigate", "pass_w")]),          # done at 7.6 s
+                ("robot_b", [task("b1", "navigate", "room_2", depends_on=["a1"])]))
+    p = at_end_of_edge(samples_map, plan, 1)   # step 1 stands at corridor_1 from 4 s until a1 is done
+    assert (p.passes, p.arrive_step, p.arrive_task, p.task, p.on_lead_in) == (False, 0, None, "b1", True)
+
+
+def test_a_robot_without_tasks_stays_where_its_edge_ends(samples_map):
+    p = at_end_of_edge(samples_map, team(("robot_a", [task("a1", "navigate", "room_2")])), 0)
+    assert (p.passes, p.stays, p.task, p.ends_task, p.on_lead_in) == (False, True, None, False, True)
 
 
 def test_standing_where_a_task_ends_until_the_next_one_leaves(samples_map):
