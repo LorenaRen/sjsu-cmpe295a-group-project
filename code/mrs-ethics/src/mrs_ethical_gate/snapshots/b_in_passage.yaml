@@ -1,0 +1,8 @@
+# fake_team_state snapshot (mrs_ethical_gate/dev_nodes/snapshots.py).
+description: >-
+  robot_b stands at pass_w, inside the one-robot passage that robot_a has to drive through
+  in mrs_common's valid_two_robots sample, which is approved from the spawn slots.
+map: samples_world
+robots:
+  - {robot_id: robot_a, at: west_s, x: 0.0, y: -1.2}
+  - {robot_id: robot_b, at: pass_w, x: 2.6, y: 0.0, yaw: 3.14159}

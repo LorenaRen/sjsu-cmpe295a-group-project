@@ -1,0 +1,8 @@
+# fake_team_state snapshot (mrs_ethical_gate/dev_nodes/snapshots.py).
+description: >-
+  robot_b is between two nodes, 0.4 m past corridor_1 on its way to pass_e: its plan first
+  drives the 1.2 m left of that edge, into the passage, and starts at pass_e.
+map: samples_world
+robots:
+  - {robot_id: robot_a, at: west_s, x: 0.0, y: -1.2}
+  - {robot_id: robot_b, at: corridor_1->pass_e, x: 8.6, y: 0.0, yaw: 3.14159}

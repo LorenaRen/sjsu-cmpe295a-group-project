@@ -14,6 +14,7 @@ setup(
         ("share/" + package_name + "/config", glob("config/*.yaml")),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/scenarios", glob("scenarios/*.yaml")),   # the fake planner's
+        ("share/" + package_name + "/snapshots", glob("snapshots/*.yaml")),   # fake_team_state's
     ],
     install_requires=["setuptools", "pydantic>=2", "pyyaml"],
     zip_safe=True,
@@ -28,6 +29,8 @@ setup(
             "gate = mrs_ethical_gate.gate_node:main",
             # development node for testing the gate (dev_nodes/): a scripted stand-in for the planner
             "fake_planner = mrs_ethical_gate.dev_nodes.fake_planner:main",
+            # and a stand-in for Module 3's /mrs/team_state: one snapshot file, published again and again
+            "fake_team_state = mrs_ethical_gate.dev_nodes.fake_team_state:main",
         ],
     },
 )
