@@ -104,6 +104,7 @@ SHIPPED = {   # name -> (outcome, round it passed in, rule_ids of each round)
     "p1_keep_clear_stop": ("approved", 4, [[R.FINAL_STOP_IN_PASSTHROUGH], [R.REGION_ACCESS_DENIED],
                                            [R.NODE_OCCUPIED], []]),
     "p2_restricted_target": ("approved", 3, [[R.REGION_ACCESS_DENIED], [R.CAPACITY_EXCEEDED], []]),
+    "s4_park_after_pass": ("approved", 2, [[R.NODE_OCCUPIED], []]),
 }
 
 

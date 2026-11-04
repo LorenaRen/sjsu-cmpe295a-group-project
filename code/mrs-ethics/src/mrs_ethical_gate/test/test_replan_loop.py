@@ -273,6 +273,8 @@ KEEP_CLEAR_STOP = plan_from_json(load_sample("keep_clear_stop.json"))
 RESTRICTED_TARGET = plan_from_json(load_sample("restricted_target.json"))
 BOTH_HOLD_ROOM_3 = team(("robot_a", [task("a1", "hold_position", "room_3")]),
                         ("robot_b", [task("b1", "hold_position", "room_3")]))
+PARK_AFTER_PASS = team(("robot_a", [task("a1", "hold_position", "corridor_2")]),
+                       ("robot_b", [task("b1", "hold_position", "corridor_1")]))
 B_PARKS_IN_PASSAGE = team(("robot_a", [task("a1", "navigate", "corridor_1", depends_on=["b1"])]),
                           ("robot_b", [task("b1", "hold_position", "pass_e")]))
 
@@ -310,6 +312,19 @@ def test_keep_clear_stop_takes_four_rounds_and_parks_robot_b_out_of_the_way(run_
     assert f.summary()["targets_changed"] == {"b1": ["door_A", "office_e", "corridor_1", "corridor_2"]}
 
 
+def test_a_robot_that_parks_where_the_other_drives_through_waits_and_both_keep_their_targets(run_with_gate):
+    # robot_b would park at corridor_1 first, and robot_a has to drive through it to corridor_2.
+    # robot_b can wait at east_n until robot_a has gone by: an order_before for robot_b, which
+    # the fake planner applies, and no target changes.
+    f, done = run_with_gate(PARK_AFTER_PASS)
+    assert done == Finished("approved")
+    assert rule_ids(f) == [[R.NODE_OCCUPIED], []]
+    [c] = f.rounds[0]["constraints"]
+    assert (c["kind"], c["robot_id"], c["result"], c["change"]) == ("order_before", "robot_b", CHANGED,
+                                                                    "b1.depends_on += a1")
+    assert f.summary()["targets_changed"] == {}
+
+
 def test_restricted_target_takes_three_rounds(run_with_gate):
     f, done = run_with_gate(RESTRICTED_TARGET)
     assert done == Finished("approved")
@@ -342,7 +357,7 @@ def test_one_attempt_is_not_enough_for_the_s1_conflict(run_with_gate):
 
 
 @pytest.mark.parametrize("plan", [S1_NO_ORDER, KEEP_CLEAR_STOP, RESTRICTED_TARGET, BOTH_HOLD_ROOM_3,
-                                  B_PARKS_IN_PASSAGE])
+                                  B_PARKS_IN_PASSAGE, PARK_AFTER_PASS])
 def test_every_order_before_of_a_round_can_be_applied(run_with_gate, plan):
     # rules_v1.md: the orderings the gate sends in one round cannot form a cycle. The fake
     # planner applies them independently of the checker, so this checks that claim.
