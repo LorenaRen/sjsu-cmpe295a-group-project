@@ -9,7 +9,7 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common.plan_schema import TeamPlan
 
 from fleet_checker.adapters.compiler import compile_team_plan
-from fleet_checker.adapters.node_presence import presence
+from fleet_checker.adapters.node_presence import only_the_keeper_can_resolve, presence
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
@@ -92,3 +92,52 @@ def test_waiting_between_tasks_where_the_next_one_does_not_go(samples_map):
 def test_a_robot_without_tasks_stands_at_its_start_to_the_end(samples_map):
     p = at(samples_map, team(("robot_a", [task("a1", "navigate", "room_2")])), "robot_b", 0, "east_n")
     assert (p.from_start, p.stays, p.task, p.ends_task) == (True, True, None, False)
+
+
+# ---------------- who can resolve an S-4 conflict ----------------
+
+def roles(sim_map, team_plan, yielder, y_step, keeper, k_step, node):
+    return at(sim_map, team_plan, yielder, y_step, node), at(sim_map, team_plan, keeper, k_step, node)
+
+
+def test_only_the_keeper_can_free_a_node_it_never_leaves_where_the_other_robots_task_ends(samples_map):
+    both = team(("robot_a", [task("a1", "hold_position", "room_3")]),
+                ("robot_b", [task("b1", "hold_position", "room_3")]))
+    y, k = roles(samples_map, both, "robot_a", 2, "robot_b", 0, "room_3")
+    assert (y.ends_task, k.stays) == (True, True)
+    assert only_the_keeper_can_resolve(y, k)
+
+
+def test_only_the_keeper_can_free_a_node_it_never_leaves_that_the_other_robot_drives_through(samples_map):
+    plan = team(("robot_a", [task("a1", "hold_position", "room_3")]),
+                ("robot_b", [task("b1", "hold_position", "corridor_1")]))
+    y, k = roles(samples_map, plan, "robot_a", 2, "robot_b", 0, "corridor_1")
+    assert (y.passes, k.stays) == (True, True)
+    assert only_the_keeper_can_resolve(y, k)
+
+
+def test_waiting_somewhere_else_is_up_to_the_yielder(samples_map):
+    # robot_b only waits at corridor_1 between b1 and b2, where robot_a ends: it can wait elsewhere.
+    plan = team(("robot_a", [task("a1", "hold_position", "corridor_1")]),
+                ("robot_b", [task("b1", "navigate", "corridor_1"),
+                             task("b2", "navigate", "room_3", depends_on=["a1"])]))
+    y, k = roles(samples_map, plan, "robot_b", 1, "robot_a", 2, "corridor_1")
+    assert (y.ends_task, y.passes, k.stays) == (False, False, True)
+    assert not only_the_keeper_can_resolve(y, k)
+
+
+def test_a_keeper_that_leaves_can_be_waited_for(samples_map):
+    # robot_b waits at corridor_2 until robot_a has got there, then leaves with b2.
+    plan = team(("robot_a", [task("a1", "hold_position", "corridor_2")]),
+                ("robot_b", [task("b1", "navigate", "corridor_2"),
+                             task("b2", "navigate", "room_3", depends_on=["a1"])]))
+    y, k = roles(samples_map, plan, "robot_a", 2, "robot_b", 1, "corridor_2")
+    assert (y.ends_task, k.stays, k.leave_task) == (True, False, "b2")
+    assert not only_the_keeper_can_resolve(y, k)
+
+
+def test_a_yielder_there_from_its_start_can_leave_first(samples_map):
+    plan = team(("robot_a", [task("a1", "hold_position", "east_n")]))
+    y, k = roles(samples_map, plan, "robot_b", 0, "robot_a", 2, "east_n")
+    assert (y.from_start, k.stays) == (True, True)
+    assert not only_the_keeper_can_resolve(y, k)

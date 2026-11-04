@@ -150,7 +150,7 @@ def test_two_robots_ending_at_one_node_get_a_reject(wired):
     _, v = send(executor, probe, both_at_room_3)
     assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.NODE_OCCUPIED])
     [c] = constraints_from_verdict(v)
-    assert (c.kind, c.robot_id, c.task_id, c.node) == ("custom", "robot_a", "a1", "room_3")
+    assert (c.kind, c.robot_id, c.task_id, c.node) == ("custom", "robot_b", "b1", "room_3")   # robot_b stays
 
 
 def test_the_gate_does_not_start_without_a_speed(ros):

@@ -227,7 +227,8 @@ def test_a_node_conflict_names_the_node(parking):
     ]})
     result = check_team_plan(plan, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0)
     [c] = conflicts(result)
-    assert (c.reason, c.where, c.robots, c.yielders) == (R.NODE_OCCUPIED, "c", ("robot_a", "robot_b"), ("robot_a",))
+    # robot_b gets to c first and stays: only it can free c, so it is the one that gives way.
+    assert (c.reason, c.where, c.robots, c.yielders) == (R.NODE_OCCUPIED, "c", ("robot_a", "robot_b"), ("robot_b",))
     assert c.key == "node_occupied@c:robot_a+robot_b"
 
 
@@ -249,6 +250,22 @@ def test_each_finding_says_which_robots_must_fix_it(samples_map):
                   lambda t: t.update(target="room_9") if t["task_id"] == "a2" else None)
     [compile_error] = check(samples_map, plan).findings
     assert compile_error.must_fix == ()                 # the whole plan goes back
+    assert (p1.r1_yielders, s1.r1_yielders, compile_error.r1_yielders) == ((), ("robot_b",), ())
+
+
+def test_an_s4_conflict_only_the_keeper_can_resolve_is_the_keepers_to_fix(samples_map):
+    # robot_b reaches room_3 first and stays; robot_a's task ends there. R-1 picks robot_a to give
+    # way, but waiting cannot help: only robot_b ending somewhere else can.
+    hold = {"action": "hold_position", "target": "room_3", "priority": 1}
+    both = TeamPlan.model_validate({"assignments": [
+        {"robot_id": "robot_a", "tasks": [{"task_id": "a1", **hold}]},
+        {"robot_id": "robot_b", "tasks": [{"task_id": "b1", **hold}]}]})
+    result = check(samples_map, both)
+    [f] = result.findings
+    assert (f.reason, f.r1_yielders, f.must_fix) == (R.NODE_OCCUPIED, ("robot_a",), ("robot_b",))
+    assert list(result.must_replan) == ["robot_b"]
+    [c] = conflicts(result)
+    assert (c.yielders, c.keepers) == (("robot_b",), ("robot_a",))   # what the ledger records
 
 
 def test_recheck_runs_the_same_check_on_another_plan(samples_map):

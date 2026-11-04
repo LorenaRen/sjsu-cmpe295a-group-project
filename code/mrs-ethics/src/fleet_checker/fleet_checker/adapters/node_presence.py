@@ -74,3 +74,12 @@ def presence(compiled: CompiledTeamPlan, team_plan: TeamPlan, robot: str, step: 
         task=task,
         ends_task=not passes and task is not None and team_plan.task(task).target == node,
     )
+
+
+def only_the_keeper_can_resolve(yielder: Presence, keeper: Presence) -> bool:
+    """Whether waiting cannot resolve the conflict, so that the keeper has to change its plan
+    instead of the yielder R-1 chose: the keeper stays at the node to the end of its plan, and
+    the yielder has to be there after it gets there, to drive through or to end a task there.
+    A yielder there from the start of its plan can still leave first; one that only waits
+    there between tasks can wait somewhere else."""
+    return keeper.stays and not yielder.from_start and (yielder.passes or yielder.ends_task)

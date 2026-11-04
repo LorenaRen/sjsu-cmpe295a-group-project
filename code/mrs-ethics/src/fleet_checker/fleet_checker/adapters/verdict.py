@@ -9,7 +9,9 @@
   S-4 node_occupied                  order_before (the keeper's task that takes it away from
                                      the node, the yielder's task that brings it there),
                                      verified first; if it does not help, forbid_node, or
-                                     custom when the node is where the yielder's task ends
+                                     custom when the node is where the yielder's task ends.
+                                     If the keeper never leaves, only it can free the node:
+                                     the constraint is the keeper's (team_check's must_fix)
   P-1 final_stop_in_passthrough      forbid_node for every node of the zone
   P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
   P-3 and compile errors             custom
@@ -49,7 +51,7 @@ from mrs_common.plan_schema import Constraint, TeamPlan
 from pydantic import ValidationError
 
 from ..plan import RegionKind
-from .node_presence import presence
+from .node_presence import only_the_keeper_can_resolve, presence
 from .team_check import Finding, TeamCheckResult
 
 # The strings of EthicalVerdict.VERDICT_* (mrs_msgs needs a ROS build to import).
@@ -231,7 +233,7 @@ def _orderings(f: Finding, result: TeamCheckResult) -> list[Constraint]:
     for ref in f.violation.refs:
         steps.setdefault(ref.robot_id, []).append(ref.step_index)
     return [_ordering(f, result, where, keeper=k, k_step=max(steps[k]), yielder=y, y_step=min(steps[y]))
-            for y in f.must_fix for k in sorted(set(steps) - set(f.must_fix))]
+            for y in f.r1_yielders for k in sorted(set(steps) - set(f.r1_yielders))]
 
 
 def _ordering(f: Finding, result: TeamCheckResult, where: _Where, *,
@@ -290,7 +292,7 @@ def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[Constraint]:
     for ref in f.violation.refs:
         steps.setdefault(ref.robot_id, []).append(ref.step_index)
     return [_stop_constraint(f, result, keeper=k, k_step=max(steps[k]), yielder=y, y_step=min(steps[y]))
-            for y in f.must_fix for k in sorted(set(steps) - set(f.must_fix))]
+            for y in f.r1_yielders for k in sorted(set(steps) - set(f.r1_yielders))]
 
 
 def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step: int,
@@ -317,11 +319,12 @@ def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step
                                         f"finished task {k.leave_task}; both would stop at {node}, where "
                                         f"only one robot can stand.",
                         task_id=k.leave_task, value=y.arrive_task)
-    if y.ends_task and k.stays:
-        return make("custom", f"{yielder}: task {y.task} cannot be done with the plan as it is: its target "
-                              f"{node} is where {keeper} stays until the end of its plan. Change where "
-                              f"{keeper} ends, so that {node} is free when {yielder} gets there.",
-                    task_id=y.task, node=node)
+    if only_the_keeper_can_resolve(y, k) and y.ends_task:   # the keeper must change (team_check)
+        return Constraint(kind="custom", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
+                          text=f"{keeper}: you stay at {node} until the end of your plan, but {node} is where "
+                               f"task {y.task} of {yielder} ends, so that task cannot be done with the plan "
+                               f"as it is. End somewhere else, so that {node} is free when {yielder} gets "
+                               f"there.")
     if y.ends_task:
         return make("custom", f"{yielder}: {node} is where task {y.task} ends, but {keeper} is stopped there "
                               f"until it leaves with task {k.leave_task}. Wait at another node near {node} "

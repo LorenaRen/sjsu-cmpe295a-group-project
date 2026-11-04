@@ -184,12 +184,19 @@ BOTH_AT_ROOM_3 = TeamPlan.model_validate({"assignments": [
 ]}).model_dump_json()
 
 
-def test_two_robots_ending_at_one_node_are_rejected_like_any_conflict(session):
-    """robot_b reaches room_3 first and stays; robot_a gives way, which counts toward F-2."""
+def test_an_s4_conflict_only_the_keeper_can_resolve_counts_for_the_keeper(session):
+    """robot_b reaches room_3 first and stays there; robot_a's task ends there. R-1 picks robot_a
+    to give way, but only robot_b can free room_3, so robot_b must change its plan: the REJECT
+    counts toward F-2 for robot_b, and the approval records the yield for robot_b."""
     d = decide(session, BOTH_AT_ROOM_3)
     assert (d.verdict.verdict, d.verdict.rule_ids) == (REJECT, (R.NODE_OCCUPIED,))
-    assert list(d.result.must_replan) == ["robot_a"]
-    assert d.ledger == ledger(0, 1, 0, 0)
+    assert list(d.result.must_replan) == ["robot_b"]
+    assert d.ledger == ledger(0, 0, 0, 1)
+    b_elsewhere = edited(BOTH_AT_ROOM_3,
+                         lambda t: t.update(target="corridor_2") if t["task_id"] == "b1" else None)
+    d = decide(session, b_elsewhere, attempt=1)
+    assert d.verdict.verdict == APPROVE
+    assert d.ledger == ledger(0, 0, 1, 0)
 
 
 # ---------------- from the node's settings ----------------

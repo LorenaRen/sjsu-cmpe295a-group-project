@@ -287,13 +287,14 @@ def test_a_target_held_for_a_while_means_wait_nearby_then_go(parking):
 
 
 def test_a_target_held_to_the_end_cannot_be_reached_as_planned(parking):
-    """Both robots end at c; robot_b gets there first and stays."""
+    """Both robots end at c; robot_b gets there first and stays. R-1 picks robot_a to give way,
+    but only robot_b can free c: the custom constraint is robot_b's (it must fix the plan)."""
     plan = team(("robot_a", [task("a1", "hold_position", "c")]), ("robot_b", [task("b1", "hold_position", "c")]))
     v = verdict_for(parking, plan, speed=1.0)
-    assert s4(v) == [("custom", "robot_a", "a1", "c", None,
-                      "robot_a: task a1 cannot be done with the plan as it is: its target c is where "
-                      "robot_b stays until the end of its plan. Change where robot_b ends, so that c "
-                      "is free when robot_a gets there.")]
+    assert s4(v) == [("custom", "robot_b", "b1", "c", None,
+                      "robot_b: you stay at c until the end of your plan, but c is where task a1 of "
+                      "robot_a ends, so that task cannot be done with the plan as it is. End somewhere "
+                      "else, so that c is free when robot_a gets there.")]
 
 
 def test_a_yielder_standing_at_the_node_from_its_start_gets_custom(parking):
