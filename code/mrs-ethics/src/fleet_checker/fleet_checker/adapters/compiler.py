@@ -10,8 +10,10 @@ edge is driven straight at `speed`; the time spent in each zone comes from
 where the edge crosses zone boundaries (SimMap.pieces). Each step also gets
 its polyline (PlanStep.path: the nodes it reaches and the points where the
 route crosses a zone boundary), so S-2 can tell where a robot is at any moment,
-and the node it ends at (PlanStep.end_node; for a step that stands still, where
-it stands), so S-4 can tell where it stops.
+the node it ends at (PlanStep.end_node; for a step that stands still, where it
+stands), and every node it drives through or to, with the time it gets there
+(PlanStep.waypoints; the first step starts with the start node), so S-4 can tell
+when a robot is at a node.
 
 Order: a robot does its tasks in list order, and depends_on may name tasks of
 other robots. Both kinds of "waits for" form one graph, and tasks are
@@ -50,7 +52,7 @@ from typing import Mapping, NamedTuple
 
 from mrs_common.plan_schema import Action as TaskAction, Task, TeamPlan
 
-from ..plan import TIME_EPS, Action, Plan, PlanStep, TaskType, Violation, WorldSnapshot
+from ..plan import TIME_EPS, Action, Plan, PlanStep, TaskType, Violation, Waypoint, WorldSnapshot
 from .sim_map import SimMap
 
 # Length of the only step of a robot that never moves. A plan's last step is
@@ -87,6 +89,7 @@ class _Segment(NamedTuple):
     d_start: float           # metres from the start of the task's route
     d_end: float
     nodes: tuple[str, ...]   # nodes reached inside this segment
+    node_d: tuple[float, ...]   # metres from the start of the task's route to each of them
     points: tuple[tuple[float, float], ...]  # polyline from d_start to d_end, map frame
     end_node: str | None     # the node the segment ends at; None at a zone boundary
 
@@ -217,6 +220,7 @@ def _segments(sim_map: SimMap, path: list[str]) -> list[_Segment]:
             along += piece.length
             last_piece = i == len(pieces) - 1
             reached = (v,) if last_piece else ()
+            reached_d = (end,) if last_piece else ()
             # A piece ends at a zone boundary, or at the node for the last one.
             f = along / edge_length
             point = (vx, vy) if last_piece else (ux + f * (vx - ux), uy + f * (vy - uy))
@@ -224,9 +228,11 @@ def _segments(sim_map: SimMap, path: list[str]) -> list[_Segment]:
             if segments and segments[-1].zone == piece.zone:
                 last = segments[-1]
                 segments[-1] = last._replace(d_end=end, nodes=last.nodes + reached,
+                                             node_d=last.node_d + reached_d,
                                              points=last.points + (point,), end_node=end_node)
             else:
-                segments.append(_Segment(piece.zone, d, end, reached, (here, point), end_node))
+                segments.append(_Segment(piece.zone, d, end, reached, reached_d, (here, point),
+                                         end_node))
             here, d = point, end
     return segments
 
@@ -318,9 +324,10 @@ def _robot_steps(tasks: list[Task], start: str, routes: Mapping[str, list[_Segme
     origins: list[StepOrigin] = []
 
     def add(action: Action, zone: str, t_start: float, t_end: float, task: Task,
-            nodes: tuple[str, ...], path: tuple[tuple[float, float], ...], end_node: str | None) -> None:
+            nodes: tuple[str, ...], path: tuple[tuple[float, float], ...], end_node: str | None,
+            waypoints: tuple[Waypoint, ...] = ()) -> None:
         steps.append(PlanStep(action=action, region=zone, t_start=t_start, t_end=t_end, path=path,
-                              end_node=end_node))
+                              end_node=end_node, waypoints=waypoints))
         origins.append(StepOrigin(task.task_id, nodes, task.priority))
 
     def stand(node: str, t_start: float, t_end: float, task: Task) -> None:
@@ -333,8 +340,11 @@ def _robot_steps(tasks: list[Task], start: str, routes: Mapping[str, list[_Segme
         if tm.depart > clock:    # navigate / hold_position: waits in place for depends_on
             stand(here, clock, tm.depart, task)
         for seg in routes[task.task_id]:
+            reached = tuple(Waypoint(node=n, t=tm.depart + d / speed) for n, d in zip(seg.nodes, seg.node_d))
+            if not steps:   # the plan's first step drives off from the start node
+                reached = (Waypoint(node=start, t=tm.depart + seg.d_start / speed),) + reached
             add(Action.NAVIGATE, seg.zone, tm.depart + seg.d_start / speed,
-                tm.depart + seg.d_end / speed, task, seg.nodes, seg.points, seg.end_node)
+                tm.depart + seg.d_end / speed, task, seg.nodes, seg.points, seg.end_node, reached)
         if tm.done > tm.arrive:  # wait: has arrived, waits there for depends_on
             stand(task.target, tm.arrive, tm.done, task)
         here, clock = task.target, tm.done

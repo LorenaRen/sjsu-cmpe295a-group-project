@@ -125,6 +125,12 @@ class WorldSnapshot(_Frozen):
 # Plan (what the proposer controls)
 # --------------------------------------------------------------------------
 
+class Waypoint(_Frozen):
+    """A graph node a step drives through or to, and when the robot reaches it."""
+    node: str = Field(min_length=1)
+    t: FiniteFloat
+
+
 class PlanStep(_Frozen):
     action: Action
     region: str = Field(min_length=1)    # the one region the robot is in
@@ -138,12 +144,39 @@ class PlanStep(_Frozen):
     # The waypoint the step ends at, if it ends at one (not at a zone boundary); for a
     # step that stands still, where it stands. Filled in by the compiler; S-4 needs it.
     end_node: str | None = Field(default=None, min_length=1)
+    # Every waypoint a driving step reaches, in order, with the time it gets there; the
+    # first step of a plan starts with the start node it leaves. A step can drive through
+    # a node without ending there (consecutive edges in one zone are one step). A step
+    # that stands still has none: end_node says where it stands. Filled in by the
+    # compiler; S-4 needs it.
+    waypoints: tuple[Waypoint, ...] = ()
 
     @model_validator(mode="after")
     def _positive_duration(self) -> "PlanStep":
         if not self.t_end > self.t_start:
             raise ValueError(
                 f"t_end ({self.t_end}) must be greater than t_start ({self.t_start})")
+        return self
+
+    @model_validator(mode="after")
+    def _waypoints_in_the_step(self) -> "PlanStep":
+        if not self.waypoints:
+            return self
+        if self.action != Action.NAVIGATE:
+            raise ValueError(f"only a navigate step has waypoints, not a {self.action.value} step")
+        for w in self.waypoints:
+            if not self.t_start - TIME_EPS <= w.t <= self.t_end + TIME_EPS:
+                raise ValueError(f"waypoint {w.node} at t={w.t:g} is outside the step "
+                                 f"[{self.t_start:g}, {self.t_end:g})")
+        if any(b.t < a.t - TIME_EPS for a, b in pairwise(self.waypoints)):
+            raise ValueError("waypoints out of time order")
+        last = self.waypoints[-1]
+        if self.end_node is not None:
+            if last.node != self.end_node:
+                raise ValueError(f"the step ends at {self.end_node} but its last waypoint is {last.node}")
+            if abs(last.t - self.t_end) > TIME_EPS:
+                raise ValueError(f"the step ends at {self.end_node} at t={self.t_end:g} "
+                                 f"but reaches it at t={last.t:g}")
         return self
 
 
