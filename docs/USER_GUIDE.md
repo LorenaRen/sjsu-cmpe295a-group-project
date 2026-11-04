@@ -17,7 +17,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
-| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 148 gate + 266 checker tests (Nov 3); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
+| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 156 gate + 314 checker tests (Nov 4); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
@@ -508,7 +508,9 @@ map `samples_world.yaml`, not in `narrow_aisle`; on `narrow_aisle` every sample 
 
 `config/gate.yaml` holds `speed` (nominal driving speed in m/s, used to time each robot's plan; no
 default in the code, and the file's value is a placeholder until Module 6's speed is measured),
-`margin`, `max_duration`, `starvation_threshold`, `start_source`, and S-2's `crowding_radius` (R) and
+`robot_length` (for S-4, two robots at one node: a robot is at a node while any part of it is over
+it, so driving over a node takes `robot_length / speed`; no default in the code either, and the file's
+0.45 m, the chassis of mrs_sim's robot model, is a placeholder), `margin`, `max_duration`, `starvation_threshold`, `start_source`, and S-2's `crowding_radius` (R) and
 `crowding_max_robots` (N): at most N robots within R metres of one person at once. Like `speed`, R and N
 have no default in the code, and the file's values (1.5 m, 1) are placeholders, neither measured nor
 taken from a standard. `config/policy.yaml` says which
@@ -520,8 +522,8 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
 **Each verdict:**
 - `rule_ids` are `mrs_common.reasons` codes.
 - `risk_score` is an ordinal level (1.0 a conflict between robots, too many robots near a person, or
-  two robots stopped at one node; 0.67 a zone rule; 0.33 a plan that cannot run or cannot be read), not a
-  probability.
+  two robots at one node, standing or driving through; 0.67 a zone rule; 0.33 a plan that cannot run or
+  cannot be read), not a probability.
 - `latency_ms` is the time the check took inside the gate.
 - A plan whose `plan_json` cannot be read is rejected with `llm_malformed`.
 - A repeated message (same `transaction_id` and `attempt`) gets the same verdict again.
@@ -536,7 +538,7 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
   directly, not through the gate. The fake planner (below) does it that way.
 
 Tests: `cd src/fleet_checker && pytest -q` and `cd src/mrs_ethical_gate && pytest -q`. Both run without
-ROS, for example in a plain venv; the 13 tests in `test_gate_node.py` and `test_fake_planner_node.py`
+ROS, for example in a plain venv; the 14 tests in `test_gate_node.py` and `test_fake_planner_node.py`
 also need the built and sourced workspace and skip otherwise.
 
 #### Testing the replan loop: the fake planner
@@ -575,9 +577,10 @@ Scenarios (`scenarios/`; give a name or a path), all on samples_world:
 | Scenario | What happens |
 |---|---|
 | `s1_passage_no_order` | REJECT `capacity_exceeded` with an `order_before`; approved in round 2 |
-| `s4_both_hold_room_3` | REJECT `node_occupied` with only a `custom` constraint: stuck, FALLBACK |
-| `p1_keep_clear_stop` | approved in round 3, after moving robot_b's target from door_A to office_e (restricted) to corridor_1. The approved plan parks robot_b at corridor_1, on robot_a's route: S-4 does not check a robot driving through a node where another one stands |
+| `s4_both_hold_room_3` | REJECT `node_occupied` with only a `custom` constraint, for robot_b, which got there first and stays: stuck, FALLBACK |
+| `p1_keep_clear_stop` | approved in round 4: robot_b's target moves from door_A to office_e (restricted) to corridor_1, then, since robot_a has to drive through corridor_1 and robot_b waiting for it would make them meet at room_3, to corridor_2 |
 | `p2_restricted_target` | approved in round 3: robot_a's waypoint moved out of the office, then an `order_before` |
+| `s4_park_after_pass` | REJECT `node_occupied`: robot_b would park at corridor_1, which robot_a drives through; robot_b gets an `order_before` to wait until robot_a has gone by, and round 2 is approved with both targets kept |
 
 It logs one JSON line per round and a summary: the outcome; for each kind of constraint and rule, how many
 it changed the plan for, noted (nothing to change, the node is kept out of that robot's tasks from then

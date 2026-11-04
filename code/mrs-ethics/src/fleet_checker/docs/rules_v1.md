@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.8, 2026-11-03
+Status: draft v0.9, 2026-11-04
 
 ---
 
@@ -128,67 +128,153 @@ monitor, Module 11), not for S-2.
 
 ### S-4  Node occupancy
 
-Two robots stand still at the same node at the same time.  A node is a
-point, and two robots cannot be at one point: one of them could not get
-there.
+Two robots are at the same node at the same time, standing there or
+driving through it.  A node is a point, and two robots cannot be at one
+point.  A robot standing at a node blocks everyone who has to drive through
+it, and two robots driving through a junction at once collide there.  This
+is a vertex conflict with a duration, as in CBS; S-1's `EDGE_SWAP` is the
+edge conflict.
 
-**What counts as standing at a node.**  Every stretch in which a robot
-stands still at a node, whatever its TeamPlan action:
+**When a robot is at a node: while any part of it is over the node.**
 
-| In the compiled plan | Stands at the node |
+| In the compiled plan | At the node |
 |---|---|
 | a `wait` task that has arrived and waits for its `depends_on` | from arrival until they are done |
 | a `navigate` or `hold_position` task waiting for its `depends_on` before it leaves | from when it starts waiting until it leaves |
 | the node the plan ends at, whatever the last task's action | from arrival to +inf (until the next plan) |
 | a robot with no task | its start node, to +inf |
+| driving through: a node on the way, the node where one task ends and the next drives on at once, or the start node it drives off from | for the time its body takes to drive over the node |
 
-Counting only `wait` and `hold_position` by name would miss the second
-and third rows.  Driving through a node is not a stop.  `margin` widens
-each stop as in S-1, so a handover at a node that leaves the two robots
-less than 2 × margin apart is too tight.
+Counting only `wait` and `hold_position` by name would miss the second and
+third rows.  The compiled times are the robot's middle.  Its front gets to
+a node half of `robot_length / speed` earlier, and its back leaves half of
+it later.  So driving through takes `robot_length / speed` (0.9 s at the
+gate's placeholder values, 0.45 m and 0.5 m/s), and every stop is that
+much longer too: a handover at a node needs the first robot's back to be
+off the node when the second one's front gets there.  `margin` widens each
+of these on both sides, as in S-1, for the error in the compiled times.
+With `margin = 0` a robot driving through is still there for
+`robot_length / speed`, never for no time.
 
-**How it is checked.**  Each node is a resource of capacity 1.  The claims
-come from `plan.stop_claims`, which reads `PlanStep.end_node` (filled in by
-the compiler); `cross_plan.check_node_occupancy` runs S-1's sweep on each
-node, and R-1 chooses who yields, with the same entry times as S-1 and S-2
-(one ranking per round).  By default the robot that gets there later
-yields.  Stops in a zone of capacity 1 are left out: S-1 already allows
-only one robot in the whole zone, stopped or not, and one problem should
-be reported once.
+`robot_length` is a required parameter (no default, like `speed`).  The
+gate's `config/gate.yaml` holds a **placeholder**, 0.45 m: the chassis box
+of mrs_sim's `mrs_bot.sdf` (0.45 × 0.30 m), not a measured robot.  A robot
+that turns on a node sweeps more than its length; the margin covers that
+for now.
+
+**How it is checked.**  The compiler records, for each step, the node it
+ends at (`PlanStep.end_node`) and every node it drives through or to, with
+the time it gets there (`PlanStep.waypoints`; the first step starts with
+the start node).  The second is needed because consecutive edges in one
+zone are one step: a robot passes room_3 in the middle of its step from
+east_n to corridor_1.  `plan.node_claims` turns both into claims, and
+`cross_plan.check_node_occupancy` runs S-1's sweep on each node as a
+resource of capacity 1.  R-1 chooses who yields, with the same entry
+times as S-1 and S-2 (one ranking per round); by default, the robot that
+gets there later.
+
+**Nodes in a zone of capacity 1 are left to S-1**, which allows only one
+robot in the whole zone anyway.  This also keeps a head-on swap from being
+reported twice.  In both tested swaps the two robots drive through the
+same nodes inside the narrow zone at once: narrow_aisle's swap has both at
+aisle_mid at 14.4 s, and two_narrow_zones has both at w and at e, 1 s
+apart.  S-1 reports them; S-4 does not look there.
+
+Both rules can still report one encounter in one case: a node outside the
+one-robot zone lies within `robot_length / 2 + 2 × margin × speed` of its
+boundary (0.725 m at the gate's values), and the two robots' compiled
+paths cross near it.  None of the maps has such a node; the closest are
+1.0 m from the zone (corridor_1, wr, er).  If it happens there are two
+findings with the same yielder (one ranking per round), and when they ask
+for the same ordering it is sent once (see "One constraint per demand"
+below).
+
+**Who must change the plan.**  Usually R-1's yielder.  There is one case
+where waiting cannot help: the keeper stays at the node to the end of its
+plan, and the yielder has to be there after it, to drive through or
+because one of its tasks ends there
+(`node_presence.only_the_keeper_can_resolve`).  Then only the keeper can
+free the node, so the keeper must fix the plan.  `Finding.must_fix` names
+it, and so do `must_replan`, `conflicts()` and the constraint.
+`Finding.r1_yielders` keeps R-1's own choice, from which the verdict
+reads who yields and who keeps.
+
+The ledger follows `must_fix`: the REJECT counts toward F-2 for the keeper,
+and the approval records the yield for it (see "Updating the ledger").  It
+is the robot that gives way.  Counting the rejection for R-1's yielder
+instead would have a robot that was never asked to change anything build
+up rejections, then jump the queue in other conflicts as "starving".
 
 **Constraints** (`verdict.py`, one per yielder and keeper):
 
-| Situation | Constraint |
-|---|---|
-| The keeper leaves later, and making the yielder's task that brings it to the node wait for the keeper's task that takes it away removes the conflict (checked again, as for S-1) | `order_before` |
-| Ordering does not help, and the node is where the yielder's task ends | `custom`: wait at another node near it first, and go there only after the keeper has left.  `forbid_node` would tell the planner never to stop there, i.e. to give the task up |
-| The keeper stays to the end of its plan, and the node is where the yielder's task ends | `custom`: the task cannot be done with the plan as it is; where the keeper ends has to change |
-| Otherwise: the yielder only waits there between tasks | `forbid_node` for the yielder at that node |
-| The yielder stands at the node from the start of its plan | `custom`: it has to leave before the keeper arrives |
+| Situation | Constraint | For |
+|---|---|---|
+| The keeper leaves later, and making the yielder's task that brings it to the node wait for the keeper's task that takes it away removes the conflict (checked again, as for S-1) | `order_before` | yielder |
+| **The keeper stays to the end of its plan and the yielder drives through the node** | the keeper waits: `order_before`, the keeper's task that brings it to the node after the yielder's task that takes it through, if that works on the **whole plan** (below); else `forbid_node` for the keeper at the node, whose text says that this changes its final stop, because the yielder has to drive through, and why waiting does not help | keeper |
+| The keeper stays to the end of its plan, and the node is where the yielder's task ends | `custom`: the yielder's task cannot be done with the plan as it is; end somewhere else | keeper |
+| Ordering does not help, and the yielder drives through the node | `custom`, saying why waiting does not help | yielder |
+| Ordering does not help, and the node is where the yielder's task ends | `custom`: wait at another node near it first, and go there only after the keeper has left.  `forbid_node` would tell the planner never to stop there, i.e. to give the task up | yielder |
+| Otherwise: the yielder only waits there between tasks | `forbid_node` for the yielder at that node | yielder |
+| The yielder is at the node from the start of its plan | `custom`: it has to leave before the keeper arrives | yielder |
+
+**Why the keeper's wait is checked on the whole plan.**  Every other
+`order_before` delays the yielder's getting to one place, and is verified
+locally: is the conflict at that place, between those two, gone?  A new
+conflict elsewhere is the next round's to catch.  The keeper's wait moves
+all that is left of the keeper's plan later, so the two robots can now
+meet anywhere.  So the reordered plan is checked whole: the conflict at
+the node must be gone, and the keeper and the yielder may meet nowhere
+they did not meet before.
+
+The fake planner's `p1_keep_clear_stop` shows why.  In round 3 robot_b
+parks at corridor_1, robot_a's only way to room_3.  If robot_b waits at
+east_n until robot_a has gone by, the conflict at corridor_1 is gone.  But
+robot_a then stays at room_3, and east_n's only way out is through room_3,
+so the two would meet there.  The whole-plan check finds that, robot_b gets
+`forbid_node`, and the fake planner parks it at corridor_2, a dead end
+nobody drives through; round 4 is approved.  In `s4_park_after_pass`,
+robot_a drives through corridor_1 to corridor_2.  There robot_b can wait,
+and both keep their targets.
 
 **With S-1 and S-2.**  In a round every conflict ranks robots by the same
 key (F-2, yields, task type, first entry over all conflicts, robot id), so
-every `order_before` the checker sends, whatever the rule, has a robot with
-a lower key wait for one with a higher key: they cannot form a cycle among
-themselves.  `forbid_node` is not an ordering.  What the verification does
-not see is a fix for one rule causing a conflict under another (S-1 has
-robot_b wait at a node where robot_a stops): the next round catches it on
-the REJECT path, and MODIFY must check the whole plan again.
+every `order_before` the checker sends has a robot with a lower key wait
+for one with a higher key: they cannot form a cycle among themselves.  The
+exception is the keeper's wait above, which points the other way.  It is
+checked on the plan as proposed, not together with the verdict's other
+orderings, so it could close a cycle with them in a rare case.  None of the
+tested scenarios has one.  The planner then cannot follow both (the fake
+planner refuses the second as circular), and the next round sees what it
+did.  `forbid_node` and `custom` are not orderings.  What a verification
+does not see, a fix for one rule causing a conflict under another, the
+next round catches on the REJECT path; MODIFY must check the whole plan
+again.
 
 **Known limitations.**
 
-1. **Driving through a node where another robot stands is not checked.**
-   In a room, a robot parked at a hub node is in the way of every route
-   through it (the CBF may steer around it).  In a zone of capacity 1, S-1
-   catches it.
-2. **Only the same node.**  Two robots stopped at two different but close
-   nodes are not reported; how far apart nodes are is up to the map.
-3. **Only where the compiler stops a robot.**  Where the executor really
-   stops (for example when the CBF slows it down) is not modelled.
+1. **Only the same node.**  Two robots at two different but close nodes
+   are not reported; how far apart nodes are is up to the map.
+2. **Only where the compiler puts a robot, at the nominal speed.**  Where
+   the executor really is (when the CBF slows it down, say) is not
+   modelled.
+3. **Following and head-on traffic in open rooms.**  Two robots driving
+   the same way through a node less than `robot_length / speed +
+   2 × margin` apart (1.9 s, a 0.95 m gap between their middles, at the
+   gate's values) are reported: conservative, as the margin is.  Two
+   robots meeting head-on in a room are reported only if they meet within
+   `robot_length / 2 + margin × speed` (0.475 m) of a node.  A meeting
+   between two nodes of a room, which has no capacity, is the CBF's.
+4. **A starving keeper still has to move.**  Which robot must fix a
+   conflict only the keeper can resolve follows from who can resolve it,
+   not from the ranking.  So F-2 does not keep a starving keeper at the
+   node; it still protects it in other conflicts.
+5. **The keeper's wait and the round's other orderings** are not checked
+   together (see "With S-1 and S-2").
 
 - **Scope:** cross-plan
-- **Data:** each step's `end_node`, action and times (`Plan`);
-  `WorldMap.capacity()` (zones of capacity 1)
+- **Data:** each step's `end_node`, `waypoints`, action and times
+  (`Plan`); `robot_length` and `speed`; `WorldMap.capacity()` (zones of
+  capacity 1)
 - **Source:** Project-defined.
 
 ---
@@ -273,7 +359,10 @@ yields).
 When S-1, S-2 or S-4 detects a conflict, the checker must decide **which**
 robots replan (yield).  A conflict with *n* distinct robots in a region
 of capacity *c* needs **n − c** of them to yield — e.g. three robots
-entering a capacity-1 aisle send two back to replan.
+entering a capacity-1 aisle send two back to replan.  One exception, in
+S-4: when the keeper stays at the node to the end of its plan and the
+yielder has to be there, only the keeper can free it, and the keeper
+replans instead (see S-4).
 
 Resolution order (robots are ranked; the first n − c yield):
 1. The robot with **fewer** cumulative yields (from `FairnessLedger`)
@@ -346,9 +435,10 @@ Not a violation that rejects a plan.  Instead it is:
 
 ### F-2  Starvation
 
-R-1 has told a robot to yield in M consecutive REJECTs (across any
-conflict group; rejections for the robot's own P-1, P-2 or P-3 violations
-do not count).  When triggered, the starving robot receives **priority override**:
+A robot has had to give way in M consecutive REJECTs: R-1 told it to
+yield, or, in S-4, it was the keeper of a node that only it could free (across
+any conflict group; rejections for the robot's own P-1, P-2 or P-3
+violations do not count).  When triggered, the starving robot receives **priority override**:
 it is kept ahead of every non-starving robot in the conflict, and the
 n − c yielding robots are drawn from the non-starving robots first,
 ranked by R-1 (fewer cumulative yields yields; `task_type` tie-break).
@@ -374,7 +464,7 @@ are written at different times:
 
 | Event | Rejections in a row (F-2) | Yields (R-1, F-1) |
 |---|---|---|
-| REJECT, and the plan compiles | +1 for each robot R-1 told to yield in this round | unchanged; each conflict and its yielders are remembered until the next APPROVE (a later round's version of the same conflict replaces the earlier one) |
+| REJECT, and the plan compiles | +1 for each robot that must give way in this round: R-1's yielders, or the keeper of an S-4 conflict only the keeper can resolve (S-4) | unchanged; each conflict and its yielders are remembered until the next APPROVE (a later round's version of the same conflict replaces the earlier one) |
 | APPROVE | reset to 0 for every robot | one yield for each yielder of each remembered conflict; then nothing is remembered |
 | Compile error, unreadable plan, a message seen before | unchanged | unchanged |
 
@@ -431,7 +521,7 @@ checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 | File | Does |
 |------|------|
 | `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
-| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from, and the node it ends at (`PlanStep.end_node`; for a step that stands still, where it stands), which S-4 needs.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
+| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from, the node it ends at (`PlanStep.end_node`; for a step that stands still, where it stands), and every node it drives through or to, with the time it gets there (`PlanStep.waypoints`), which S-4 needs.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
 | `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1, S-2 (when `people` and a `CrowdingLimit` are given) and S-4 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check, with the same people, on a changed plan.  `conflicts(result)` lists the S-1, S-2 and S-4 conflicts once each (both halves of a head-on swap are one), with where they are (zone, person or node) and their yielders, for the ledger. |
 | `verdict.py` | `to_verdict`: a `check_team_plan` result → the decision fields of an `EthicalVerdict` (see "Verdict for Module 5" below). |
 
@@ -481,7 +571,7 @@ are produced; MODIFY is designed (below) but not built.
 |---------|--------------------------------------------------|
 | S-1 `capacity_exceeded`, `edge_swap` | `order_before`: the keeper's task that takes it out of the zone (`task_id`) must finish before the yielder's task that takes it in (`value`); `robot_id` is the yielder.  One per (yielder, keeper) pair, verified first (below). |
 | S-2 `human_crowding` | The same, with "away from the person" for "out of the zone" and "near them" for "in": `order_before`, verified first, else `custom`.  The texts give R, N and the person's nearest node, because the planner knows nodes, not where people stand. |
-| S-4 `node_occupied` | `order_before`, verified first; if ordering does not help, `custom` when the node is where the yielder's task ends (wait nearby first, or the task cannot be done as planned), else `forbid_node`.  See S-4. |
+| S-4 `node_occupied` | `order_before`, verified first; if ordering does not help, `custom` when the node is where the yielder's task ends or the yielder drives through it, else `forbid_node`.  A keeper staying to the end where the yielder has to be is the one to change: it waits for a yielder that drives through (checked on the whole plan), else `forbid_node`; `custom` when the yielder's task ends there.  See S-4. |
 | P-1 `final_stop_in_passthrough` | `forbid_node` for every node of the zone |
 | P-2 `region_access_denied` | `avoid_node` for every node of the zone; `custom` if the zone has no node |
 | P-3 `max_duration_exceeded` | `custom`, with the plan's duration and the limit |
@@ -493,6 +583,12 @@ otherwise the next plan can stop at, or route through, a neighbouring
 node of the same zone and be rejected again.  A head-on swap is reported
 once per zone; its `order_before` text leaves the zone out, so both halves
 give the same constraint and the planner gets it once.
+
+**One constraint per demand.**  Two rules can ask for the same change: at
+the crossroads next to a person, S-2 and S-4 both have robot_a wait for
+b1.  A constraint is sent once per demand (kind, robot, task, node, value;
+for `custom`, its text), the first rule's; `rule_ids` still lists every
+rule, and the rationale every problem.
 
 ### Verifying an `order_before`
 
@@ -510,10 +606,15 @@ person" for "in the zone".  S-4 falls back to `forbid_node`, or to
 `custom` when the node is where the yielder's task ends (see S-4).
 
 The verification looks only at **that pair of robots in that zone** (or
-near that person).  It
+near that person, or at that node).  It
 does not guarantee that the reordered plan creates no new conflict
 elsewhere.  On the REJECT path the next round's check catches those;
 MODIFY must check the whole modified plan again before approving it.
+
+One ordering is checked on the whole plan instead: S-4's keeper waiting
+for a yielder that drives through the node.  It moves all that is left of
+the keeper's plan later, not just one robot's getting to one place, so the
+two robots must meet nowhere they did not meet before (see S-4).
 
 ### Other fields
 
@@ -631,7 +732,8 @@ tested in a plain venv.
   (changing speed or margin mid-episode would make verdicts
   incomparable): `world` / `map_file`, `robots`, `start_source`, `speed`
   (no default; `config/gate.yaml` holds a placeholder until Module 6's
-  speed is measured), `margin`, `max_duration`, `starvation_threshold`,
+  speed is measured), `robot_length` (for S-4; no default either, and the
+  file's 0.45 m is a placeholder), `margin`, `max_duration`, `starvation_threshold`,
   `policy_file`, and for S-2 `crowding_radius` (R) and
   `crowding_max_robots` (N), which have no default either
   (`config/gate.yaml` holds placeholders) and `people_file`.  The access
@@ -699,7 +801,7 @@ tested in a plain venv.
 | S-1 | Interval capacity / edge-swap | safety | cross | implemented |
 | S-2 | Human crowding | safety | cross | implemented (checker and gate); people from a static file until `/mrs/team_state` |
 | S-3 | Unsafe action near humans | safety | single | deferred |
-| S-4 | Node occupancy | safety | cross | implemented (checker and gate) |
+| S-4 | Node occupancy | safety | cross | implemented (checker and gate): standing and driving through |
 | P-1 | Final stop in passthrough zone | policy | single | implemented |
 | P-2 | Region access restriction | policy | single | implemented |
 | P-3 | Maximum plan duration | policy | single | implemented |
