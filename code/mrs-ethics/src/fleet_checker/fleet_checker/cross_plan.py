@@ -313,6 +313,7 @@ def check_node_occupancy(
     world: WorldMap,
     margin: float = 0.0,
     hold_final: bool = True,
+    pass_time: float = 0.0,
 ) -> list[CapacityConflict]:
     """Detect every stretch of time in which two robots stand still at the same node.
 
@@ -320,10 +321,11 @@ def check_node_occupancy(
     resource_id is the node. Stops in a zone of capacity 1 are left out: S-1 already
     allows only one robot in the whole zone, stopped or not, and one problem should
     be reported once. Driving through a node where another robot stands is not checked.
+    pass_time: how long a robot's body takes to drive over a point (stop_claims).
     """
     by_node: dict[str, list[Claim]] = defaultdict(list)
     for plan in plans:
-        for c in stop_claims(plan, margin=margin, hold_final=hold_final):
+        for c in stop_claims(plan, margin=margin, hold_final=hold_final, pass_time=pass_time):
             region = plan.steps[c.step_index].region
             if world.knows(region) and world.capacity(region) == 1:
                 continue
@@ -502,6 +504,7 @@ def check_cross_plan_conflicts(
     hold_final: bool = True,
     people: Sequence[HumanObservation] = (),
     crowding: CrowdingLimit | None = None,
+    pass_time: float = 0.0,
 ) -> tuple[list[Violation], dict[str, list[Violation]]]:
     """Check multiple plans for cross-plan conflicts and assign yields.
 
@@ -519,6 +522,7 @@ def check_cross_plan_conflicts(
         hold_final: Whether robots hold final position
         people: People to check S-2 around; none, no S-2
         crowding: S-2's R and N; needed when there are people
+        pass_time: How long a robot takes to drive over a point (S-4): its length / speed
 
     Returns:
         Tuple of:
@@ -539,7 +543,7 @@ def check_cross_plan_conflicts(
         crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final)
         conflicts += crowded
         all_violations += crowding_conflicts_to_violations(crowded, crowding)
-    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final)
+    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final, pass_time=pass_time)
     conflicts += stopped
     all_violations += node_conflicts_to_violations(stopped)
 

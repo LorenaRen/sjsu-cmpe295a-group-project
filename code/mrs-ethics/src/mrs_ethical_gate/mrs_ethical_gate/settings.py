@@ -38,6 +38,8 @@ PARAMETERS: dict[str, tuple[type, Any, str]] = {
     "robots": (int, 2, "fleet size: robot_a, robot_b, ... at the map's spawn slots, as in sim.launch.py"),
     "start_source": (str, "spawns", "where robots start: spawns (team_state needs Module 3, not built)"),
     "speed": (float, REQUIRED, "nominal driving speed [m/s] used to time each robot's plan"),
+    "robot_length": (float, REQUIRED, "robot length [m] along its direction of travel; S-4 counts a robot "
+                                      "at a node while any part of it is over the node"),
     "margin": (float, 0.5, "each occupancy interval is widened by this much at both ends [s] (S-1, S-2)"),
     "max_duration": (float, DEFAULT_MAX_DURATION, "longest plan allowed [s] (P-3)"),
     "starvation_threshold": (int, 3, "REJECTs in a row that make a robot starving (F-2's M)"),
@@ -84,6 +86,7 @@ class GateSettings:
     robots: tuple[str, ...]
     start_source: str
     speed: float
+    robot_length: float
     margin: float
     max_duration: float
     starvation_threshold: int
@@ -98,7 +101,8 @@ class GateSettings:
         """Plain JSON values, for the node's start-up log line."""
         return {
             "map": str(self.map_path), "robots": list(self.robots), "start_source": self.start_source,
-            "speed": self.speed, "margin": self.margin, "max_duration": self.max_duration,
+            "speed": self.speed, "robot_length": self.robot_length, "margin": self.margin,
+            "max_duration": self.max_duration,
             "starvation_threshold": self.starvation_threshold,
             "crowding": {"radius": self.crowding.radius, "max_robots": self.crowding.max_robots},
             "policy_file": str(self.policy_file),
@@ -125,10 +129,14 @@ def load_settings(values: Mapping[str, Any], *, default_policy_file: Path,
 
     if v["speed"] is None:
         raise SettingsError("speed is not set: give the nominal driving speed [m/s] (config/gate.yaml)")
+    if v["robot_length"] is None:
+        raise SettingsError("robot_length is not set: give the robot's length [m] (config/gate.yaml)")
     for name, what in (("crowding_radius", "S-2's R [m]"), ("crowding_max_robots", "S-2's N")):
         if v[name] is None:
             raise SettingsError(f"{name} is not set: give {what} (config/gate.yaml)")
     _require(v["speed"] > 0, f"speed must be > 0 m/s, got {v['speed']}")
+    _require(math.isfinite(v["robot_length"]) and v["robot_length"] > 0,
+             f"robot_length must be > 0 m, got {v['robot_length']}")
     _require(math.isfinite(v["crowding_radius"]) and v["crowding_radius"] > 0,
              f"crowding_radius must be > 0 m, got {v['crowding_radius']}")
     _require(v["crowding_max_robots"] >= 1,
@@ -158,6 +166,7 @@ def load_settings(values: Mapping[str, Any], *, default_policy_file: Path,
         robots=robots,
         start_source=v["start_source"],
         speed=float(v["speed"]),
+        robot_length=float(v["robot_length"]),
         margin=float(v["margin"]),
         max_duration=float(v["max_duration"]),
         starvation_threshold=int(v["starvation_threshold"]),

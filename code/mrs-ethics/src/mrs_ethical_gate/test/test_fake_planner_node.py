@@ -85,6 +85,7 @@ def loop_with(ros):
 
     def start(scenario: str, **parameters):
         gate = GateNode(parameter_overrides=[Parameter("speed", value=0.5),
+                                             Parameter("robot_length", value=0.45),
                                              Parameter("crowding_radius", value=1.5),
                                              Parameter("crowding_max_robots", value=1),
                                              Parameter("map_file", value=str(SAMPLES_WORLD)),

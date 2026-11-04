@@ -16,6 +16,7 @@ yields belongs to whatever runs the replan loop.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping, NamedTuple, Sequence
 
@@ -47,6 +48,7 @@ class CheckSettings:
     plan_id: str
     revision: int
     crowding: CrowdingLimit | None   # S-2's R and N; None when no people are given
+    robot_length: float              # [m] along the direction of travel (S-4)
 
 
 class Finding(NamedTuple):
@@ -133,6 +135,7 @@ def check_team_plan(
     start_nodes: Mapping[str, str],
     *,
     speed: float,
+    robot_length: float,
     t0: float = 0.0,
     ledger: FairnessLedger | None = None,
     access_policy: AccessPolicy = NO_ENTRY_TO_RESTRICTED,
@@ -147,15 +150,20 @@ def check_team_plan(
     """Compile a TeamPlan and run the policy and cross-plan checks on it.
 
     speed, t0, task_types, plan_id and revision go to compile_team_plan;
-    margin to S-1 and S-2; access_policy and max_duration to P-2 and P-3;
+    margin to S-1, S-2 and S-4; access_policy and max_duration to P-2 and P-3;
     people (where they stand now) and crowding (R and N) to S-2, which runs
-    only when there are people.
+    only when there are people. robot_length [m] has no default, like speed: S-4
+    counts a robot at a node while any part of it is over the node, for
+    robot_length / speed seconds as it drives over.
     """
     if people and crowding is None:
         raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
+    if not (math.isfinite(robot_length) and robot_length > 0):
+        raise ValueError(f"robot_length must be a length > 0 m, got {robot_length}")
     settings = CheckSettings(speed=speed, t0=t0, margin=margin, max_duration=max_duration,
                              access_policy=access_policy, task_types=task_types,
-                             plan_id=plan_id, revision=revision, crowding=crowding)
+                             plan_id=plan_id, revision=revision, crowding=crowding,
+                             robot_length=robot_length)
     return _check(team_plan, sim_map, start_nodes, tuple(people), ledger, settings)
 
 
@@ -178,7 +186,7 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
 
     conflicts, yielders = check_cross_plan_conflicts(
         list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin,
-        people=people, crowding=s.crowding)
+        people=people, crowding=s.crowding, pass_time=s.robot_length / s.speed)
     for v in conflicts:
         r1 = tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))
         must_fix = _who_must_change(v, r1, compiled, team_plan) if v.code == "NODE_OCCUPIED" else r1

@@ -79,7 +79,7 @@ def wired_with_a_person(ros):
 
 def _wired(*more):
     """The gate on samples_world, required parameters as in config/gate.yaml, and a probe."""
-    gate = GateNode(parameter_overrides=[Parameter("speed", value=0.5),
+    gate = GateNode(parameter_overrides=[Parameter("speed", value=0.5), Parameter("robot_length", value=0.45),
                                          Parameter("crowding_radius", value=1.5),
                                          Parameter("crowding_max_robots", value=1),
                                          Parameter("map_file", value=str(SAMPLES_WORLD)),
@@ -156,3 +156,9 @@ def test_two_robots_ending_at_one_node_get_a_reject(wired):
 def test_the_gate_does_not_start_without_a_speed(ros):
     with pytest.raises(SettingsError, match="speed is not set"):
         GateNode(parameter_overrides=[Parameter("map_file", value=str(SAMPLES_WORLD))])
+
+
+def test_the_gate_does_not_start_without_a_robot_length(ros):
+    with pytest.raises(SettingsError, match="robot_length is not set"):
+        GateNode(parameter_overrides=[Parameter("speed", value=0.5),
+                                      Parameter("map_file", value=str(SAMPLES_WORLD))])

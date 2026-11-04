@@ -19,6 +19,7 @@ SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
 NARROW_AISLE = SRC / "mrs_sim/worlds/narrow_aisle.yaml"
 VERDICT_MSG = SRC / "mrs_msgs/msg/EthicalVerdict.msg"
 SPEED = 0.5  # m/s; a test value, not Module 6's speed
+ROBOT_LENGTH = 0.45   # m; mrs_bot.sdf's chassis, the gate's placeholder (config/gate.yaml)
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +60,7 @@ def drop_dependencies(plan: TeamPlan) -> TeamPlan:
 
 def verdict_for(sim_map, plan, starts=None, speed=SPEED, **kwargs):
     starts = starts or spawn_starts(sim_map, ["robot_a", "robot_b"])
-    return to_verdict(check_team_plan(plan, sim_map, starts, speed=speed, **kwargs))
+    return to_verdict(check_team_plan(plan, sim_map, starts, speed=speed, robot_length=ROBOT_LENGTH, **kwargs))
 
 
 def fields(verdict, *names):

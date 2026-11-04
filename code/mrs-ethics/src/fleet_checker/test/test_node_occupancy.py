@@ -74,6 +74,18 @@ class TestStopClaims:
         with pytest.raises(ValueError, match="margin"):
             list(stop_claims(plan_of("r1", ("wait", 1, "n1")), margin=-0.1))
 
+    def test_a_robots_length_widens_each_stop_by_half_the_time_it_takes_to_drive_over_a_point(self):
+        # pass_time = length / speed: the front reaches the node half of it before the robot's
+        # middle does, and the back leaves half of it after. margin comes on top.
+        plan = plan_of("r1", ("wait", 10, "n1"), ("navigate", 5, "n2"))
+        assert stops(plan, pass_time=1.0) == [("n1", 0, -0.5, 10.5), ("n2", 1, 14.5, math.inf)]
+        assert stops(plan, pass_time=1.0, margin=0.5) == [("n1", 0, -1.0, 11.0),
+                                                          ("n2", 1, 14.0, math.inf)]
+
+    def test_negative_pass_time_is_refused(self):
+        with pytest.raises(ValueError, match="pass_time"):
+            list(stop_claims(plan_of("r1", ("wait", 1, "n1")), pass_time=-0.1))
+
 
 # ---------------- two robots at one node ----------------
 
@@ -102,6 +114,13 @@ class TestCheckNodeOccupancy:
         assert check_node_occupancy([r1, r2], WORLD) == []
         assert spans(check_node_occupancy([r1, r2], WORLD, margin=0.5)) == [
             ("n1", 9.5, 10.5, [("r1", 0), ("r2", 0)])]
+
+    def test_a_handover_is_too_tight_once_the_robots_have_a_length(self):
+        # Without margin either: when r1's middle leaves n1, its back is still over it.
+        r1 = plan_of("r1", ("wait", 10, "n1"), ("navigate", 5, "n2"))   # leaves n1 at 10 s
+        r2 = plan_of("r2", ("navigate", 10, "n1"))                        # arrives at n1 at 10 s
+        assert spans(check_node_occupancy([r1, r2], WORLD, pass_time=0.9)) == [
+            ("n1", 9.55, 10.45, [("r1", 0), ("r2", 0)])]
 
     def test_stops_in_a_one_robot_zone_are_left_to_s1(self):
         r1 = plan_of("r1", ("navigate", 5, "a1", "aisle"))
@@ -192,7 +211,8 @@ def test_no_tested_scenario_has_two_robots_stopped_at_one_node():
         people = [HumanObservation(human_id=f"person_{i}", position=p.position) for i, p in enumerate(people, 1)]
         for team_plan in team_plans:
             result = check_team_plan(team_plan, sim_map, spawn_starts(sim_map, ["robot_a", "robot_b"]),
-                                     speed=speed, people=people, crowding=CrowdingLimit(1.5, 1))
+                                     speed=speed, robot_length=0.45, people=people,
+                                     crowding=CrowdingLimit(1.5, 1))
             assert "NODE_OCCUPIED" not in [f.violation.code for f in result.findings], name
             checked += 1
     assert checked == sum(len(plans) for _, plans, _, _ in SCENARIOS.values())

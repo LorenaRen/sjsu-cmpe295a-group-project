@@ -22,9 +22,9 @@ NARROW_AISLE = SRC / "mrs_sim/worlds/narrow_aisle.yaml"
 
 def load(**changes):
     """Every parameter at its declared default, the required ones at the values of
-    config/gate.yaml (speed 0.5, S-2's R 1.5 m and N 1), then the changes."""
+    config/gate.yaml (speed 0.5, robot_length 0.45, S-2's R 1.5 m and N 1), then the changes."""
     values = {name: (None if default is REQUIRED else default) for name, (_, default, _) in PARAMETERS.items()}
-    values.update(speed=0.5, crowding_radius=1.5, crowding_max_robots=1)
+    values.update(speed=0.5, robot_length=0.45, crowding_radius=1.5, crowding_max_robots=1)
     values.update(changes)
     return load_settings(values, default_policy_file=DEFAULT_POLICY, default_people_file=DEFAULT_PEOPLE)
 
@@ -55,6 +55,19 @@ def test_speed_has_no_default():
         load(speed=None)
 
 
+def test_robot_length_has_no_default():
+    assert PARAMETERS["robot_length"][1] is REQUIRED
+    with pytest.raises(SettingsError, match="robot_length is not set"):
+        load(robot_length=None)
+    assert load().robot_length == 0.45
+
+
+def test_shipped_config_sets_the_robot_length_as_a_placeholder():
+    text = GATE_YAML.read_text()
+    assert yaml.safe_load(text)["mrs_ethical_gate"]["ros__parameters"]["robot_length"] == 0.45
+    assert "PLACEHOLDER" in text[text.index("# S-4"):text.index("robot_length:")]
+
+
 def test_shipped_policy_keeps_every_robot_out_of_restricted_zones():
     s = load()
     assert s.policy_file == DEFAULT_POLICY
@@ -67,7 +80,7 @@ def test_map_file_is_used_instead_of_world():
 
 
 @pytest.mark.parametrize("name, value", [
-    ("speed", 0.0), ("margin", -0.1), ("max_duration", 0.0), ("starvation_threshold", 0),
+    ("speed", 0.0), ("robot_length", 0.0), ("margin", -0.1), ("max_duration", 0.0), ("starvation_threshold", 0),
     ("robots", 0), ("robots", 27), ("crowding_radius", 0.0), ("crowding_max_robots", 0),
 ])
 def test_values_out_of_range_are_refused(name, value):
@@ -122,6 +135,7 @@ def test_describe_is_plain_json_for_the_start_up_log():
     assert d["robots"] == ["robot_a", "robot_b"]
     assert d["access_policy"] == {"by_kind": {"restricted": []}, "by_id": {}}
     assert d["crowding"] == {"radius": 1.5, "max_robots": 1}
+    assert d["robot_length"] == 0.45
     assert d["people"] == []
 
 

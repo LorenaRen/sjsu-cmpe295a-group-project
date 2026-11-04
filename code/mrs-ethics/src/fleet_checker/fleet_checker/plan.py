@@ -336,23 +336,29 @@ def claims(plan: Plan, margin: float = 0.0, hold_final: bool = True) -> Iterator
             yield Claim(r, plan.robot_id, i, start, step_end)
 
 
-def stop_claims(plan: Plan, margin: float = 0.0, hold_final: bool = True) -> Iterator[Claim]:
+def stop_claims(plan: Plan, margin: float = 0.0, hold_final: bool = True,
+                pass_time: float = 0.0) -> Iterator[Claim]:
     """Where and when the robot stands still at a waypoint (S-4): one Claim(node, robot,
     step, start, end) for each step that stands at its end_node, and, with hold_final,
     one for the node the plan ends at, from the end of the plan to +inf.
 
     Every step but a navigate step stands still. Driving through a node is not a stop,
-    and a plan without end_node (not from the compiler) has no stops. margin widens each
-    claim on both sides, as in claims().
+    and a plan without end_node (not from the compiler) has no stops. pass_time is how
+    long the robot's body takes to drive over a point (its length / speed): the times are
+    the robot's middle, so its front gets to the node pass_time / 2 earlier and its back
+    leaves pass_time / 2 later. margin widens each claim on both sides, as in claims().
     """
     if margin < 0:
         raise ValueError("margin must be >= 0")
+    if pass_time < 0:
+        raise ValueError("pass_time must be >= 0")
+    widen = pass_time / 2 + margin
     last = len(plan.steps) - 1
     for i, step in enumerate(plan.steps):
         if step.end_node is None:
             continue
         if step.action != Action.NAVIGATE:
-            end = math.inf if (hold_final and i == last) else step.t_end + margin
-            yield Claim(step.end_node, plan.robot_id, i, step.t_start - margin, end)
+            end = math.inf if (hold_final and i == last) else step.t_end + widen
+            yield Claim(step.end_node, plan.robot_id, i, step.t_start - widen, end)
         elif hold_final and i == last:
-            yield Claim(step.end_node, plan.robot_id, i, step.t_end - margin, math.inf)
+            yield Claim(step.end_node, plan.robot_id, i, step.t_end - widen, math.inf)
