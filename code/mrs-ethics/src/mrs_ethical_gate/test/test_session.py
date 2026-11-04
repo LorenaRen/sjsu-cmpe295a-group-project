@@ -14,7 +14,7 @@ from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation
 from mrs_ethical_gate.session import GateSession
 from mrs_ethical_gate.settings import PARAMETERS, REQUIRED, SettingsError, load_settings
-from mrs_ethical_gate.starts import RobotState, TeamSnapshot, TeamStateStarts
+from mrs_ethical_gate.starts import PersonSeen, RobotState, TeamSnapshot, TeamStateStarts
 
 SRC = Path(__file__).resolve().parents[2]
 SAMPLES_WORLD = SRC / "fleet_checker/test/fixtures/samples_world.yaml"
@@ -162,7 +162,7 @@ def test_summary_is_plain_json_for_the_log(session):
     assert json.loads(json.dumps(d.summary())) == {
         "verdict": "REJECT", "rule_ids": ["capacity_exceeded"], "must_replan": ["robot_b"],
         "replayed": False, "new_episode": True, "ledger": ledger(0, 0, 0, 1),
-        "positions": {"source": "spawns"}}
+        "positions": {"source": "spawns"}, "people": []}
 
 
 # ---------------- S-2: people ----------------
@@ -212,15 +212,22 @@ AT_SPAWNS = (at("robot_a", "west_s", 0.0, -1.2), at("robot_b", "east_n", 12.0, 1
 IN_THE_PASSAGE = (at("robot_a", "west_s", 0.0, -1.2), at("robot_b", "pass_w", 2.6, 0.0))
 
 
-@pytest.fixture
-def live(samples_map):
+LIMIT = CrowdingLimit(radius=1.5, max_robots=1)   # config/gate.yaml's placeholders
+
+
+def live_session(samples_map, people=()):
     """A session on samples_world that takes the robots' positions from /mrs/team_state."""
     return GateSession(samples_map, TeamStateStarts(samples_map, ("robot_a", "robot_b"), max_age=1.0),
-                       speed=0.5, robot_length=0.45)
+                       speed=0.5, robot_length=0.45, crowding=LIMIT, people=people)
 
 
-def observe(session, *robots, episode_id="ep1", stamp=10.0):
-    session.starts.observe(TeamSnapshot(episode_id, tuple(robots), stamp))
+@pytest.fixture
+def live(samples_map):
+    return live_session(samples_map)
+
+
+def observe(session, *robots, episode_id="ep1", stamp=10.0, blocked_edges=()):
+    session.starts.observe(TeamSnapshot(episode_id, tuple(robots), stamp, tuple(blocked_edges)))
 
 
 def test_without_a_snapshot_a_plan_is_rejected_unchecked(live):
@@ -264,6 +271,48 @@ def test_a_stale_position_rejects_the_plan_and_leaves_the_ledger_alone(live):
 def test_an_unreadable_plan_is_malformed_before_positions_count(live):
     d = decide(live, "{not json", now=10.0)
     assert d.verdict.rule_ids == (R.LLM_MALFORMED,) and d.summary()["positions"] is None
+
+
+def test_team_state_needs_a_crowding_limit_since_robots_may_see_people(samples_map):
+    with pytest.raises(ValueError, match="CrowdingLimit"):
+        GateSession(samples_map, TeamStateStarts(samples_map, ("robot_a", "robot_b"), max_age=1.0),
+                    speed=0.5, robot_length=0.45)
+
+
+def test_routes_go_around_the_snapshots_blocked_edges(live):
+    # With the passage blocked, both robots of the valid sample drive through the restricted office.
+    observe(live, *AT_SPAWNS, blocked_edges=["pass_w--pass_e"])
+    d = decide(live, VALID, now=10.0)
+    assert d.verdict.rule_ids == (R.REGION_ACCESS_DENIED,)
+    assert d.result.blocked_edges == (("pass_e", "pass_w"),)
+    assert d.summary()["positions"]["blocked_edges"] == ["pass_e--pass_w"]
+
+
+# The person of fixtures/samples_world_people.yaml, 1.1 m from corridor_2, where valid_two_robots
+# has robot_b wait while robot_a drives by.
+BY_CORRIDOR_2 = PersonSeen("person_1", 10.0, -1.0)
+
+
+def test_people_the_robots_see_are_checked_for_crowding(live):
+    observe(live, AT_SPAWNS[0], AT_SPAWNS[1]._replace(people=(BY_CORRIDOR_2,)))
+    d = decide(live, VALID, now=10.0)
+    assert d.verdict.rule_ids == (R.HUMAN_CROWDING,)
+    assert d.summary()["people"] == [{"id": "person_1", "x": 10.0, "y": -1.0, "from": "robot_b"}]
+
+
+def test_a_person_the_robots_see_is_where_they_see_them_not_where_the_file_says(samples_map):
+    file = (HumanObservation(human_id="person_1", position=(10.0, -1.0)),
+            HumanObservation(human_id="person_2", position=(0.0, 4.5)))     # in the office, away from both routes
+    session = live_session(samples_map, people=file)
+    # Without a robot seeing person_1, the file puts them next to corridor_2.
+    observe(session, *AT_SPAWNS)
+    assert decide(session, VALID, now=10.0).verdict.rule_ids == (R.HUMAN_CROWDING,)
+    # robot_a sees person_1 in the office now: no robot comes near them there.
+    observe(session, AT_SPAWNS[0]._replace(people=(PersonSeen("person_1", 5.0, 4.5),)), AT_SPAWNS[1])
+    d = decide(session, VALID, attempt=1, now=10.0)
+    assert d.verdict.verdict == APPROVE
+    assert d.summary()["people"] == [{"id": "person_1", "x": 5.0, "y": 4.5, "from": "robot_a"},
+                                     {"id": "person_2", "x": 0.0, "y": 4.5, "from": "file"}]
 
 
 def test_from_settings_reads_positions_from_team_state():

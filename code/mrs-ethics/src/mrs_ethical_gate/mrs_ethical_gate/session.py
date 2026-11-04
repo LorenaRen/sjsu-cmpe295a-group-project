@@ -21,9 +21,10 @@ A message is identified by (transaction_id, attempt): the planner reuses the tra
 for later attempts. A new episode_id starts from scratch (empty ledger, nothing remembered,
 no messages seen), so that episodes stay independent trials.
 
-S-2 checks around the people of the people file, taken to stand still where listed; when
-Module 3's /mrs/team_state exists, their live positions will come from there instead. S-2
-conflicts update the ledger exactly as S-1's do.
+S-2 checks around the people of the people file and, with start_source team_state, the people
+the robots see: a person in both is where the robots see them. Everyone is taken to stand still
+for the whole plan. S-2 conflicts update the ledger exactly as S-1's do. With team_state, routes
+also go around the snapshot's blocked edges.
 """
 from __future__ import annotations
 
@@ -56,13 +57,17 @@ class Decision:
     replayed: bool = False              # this (transaction_id, attempt) was decided before
     new_episode: bool = False           # this message started a new episode
     starts: Starts | UnknownStarts | None = None   # where the robots were; None if not looked at
+    people: tuple[tuple[HumanObservation, str], ...] = ()   # S-2's people, each with "file" or the
+                                                             # robot whose report counted
 
     def summary(self) -> dict[str, Any]:
         """Plain JSON values, for the node's log line."""
         return {"verdict": self.verdict.verdict, "rule_ids": list(self.verdict.rule_ids),
                 "must_replan": sorted(self.result.must_replan) if self.result else [],
                 "replayed": self.replayed, "new_episode": self.new_episode, "ledger": self.ledger,
-                "positions": self.starts.summary() if self.starts else None}
+                "positions": self.starts.summary() if self.starts else None,
+                "people": [{"id": p.human_id, "x": p.position[0], "y": p.position[1], "from": source}
+                           for p, source in self.people]}
 
 
 class GateSession:
@@ -77,12 +82,14 @@ class GateSession:
                  people: Sequence[HumanObservation] = (), crowding: CrowdingLimit | None = None):
         if people and crowding is None:
             raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
+        if isinstance(starts, TeamStateStarts) and crowding is None:
+            raise ValueError("team_state without a CrowdingLimit: the robots may see people, and S-2 needs R and N")
         self.sim_map = sim_map
         self.starts = FixedStarts(starts) if isinstance(starts, Mapping) else starts
+        self.people = tuple(people)    # the people file's
         self._check_args = dict(speed=speed, robot_length=robot_length, margin=margin,
                                 max_duration=max_duration,
-                                access_policy=access_policy, task_types=task_types,
-                                people=tuple(people), crowding=crowding)
+                                access_policy=access_policy, task_types=task_types, crowding=crowding)
         self.starvation_threshold = starvation_threshold
         self._start_episode(None)
 
@@ -134,13 +141,22 @@ class GateSession:
         if isinstance(starts, UnknownStarts):   # fail closed: a robot left out could be in the way
             return Decision(unknown_positions_verdict(starts.problems), None, None, self.ledger_summary(),
                             new_episode=new_episode, starts=starts)
+        people = self._people(starts)
         result = check_team_plan(plan, self.sim_map, starts.start_nodes, on_edges=starts.on_edges,
+                                 blocked_edges=starts.blocked_edges, people=[p for p, _ in people],
                                  ledger=self.ledger, plan_id=transaction_id, revision=attempt,
                                  **self._check_args)
         verdict = to_verdict(result)
         self._update_ledger(result, verdict, now)
         return Decision(verdict, plan if verdict.verdict == APPROVE else None, result, self.ledger_summary(),
-                        new_episode=new_episode, starts=starts)
+                        new_episode=new_episode, starts=starts, people=people)
+
+    def _people(self, starts: Starts) -> tuple[tuple[HumanObservation, str], ...]:
+        """The people file's and the people the robots see, by id; for an id in both, where the
+        robots see them, which is newer than the file."""
+        people = {p.human_id: (p, "file") for p in self.people}
+        people.update({p.human_id: (p, robot) for robot, p in starts.people_seen})
+        return tuple(people[i] for i in sorted(people))
 
     def ledger_summary(self) -> dict[str, dict[str, int]]:
         return {robot: {"yields": self.ledger.yield_count(robot),
