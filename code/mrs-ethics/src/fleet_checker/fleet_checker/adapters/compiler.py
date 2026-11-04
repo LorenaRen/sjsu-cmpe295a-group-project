@@ -15,6 +15,14 @@ stands), and every node it drives through or to, with the time it gets there
 (PlanStep.waypoints; the first step starts with the start node), so S-4 can tell
 when a robot is at a node.
 
+A robot between two nodes (team_state's at "a->b", passed as OnEdge) first
+drives the rest of its edge to b, then starts its tasks at b. What is left is
+measured from where its position projects onto the edge, cut by zone the same
+way. These lead-in steps belong to no task (StepOrigin.task_id None;
+CompiledTeamPlan.lead_ins counts them), and they reach b but start at no node:
+team_state says a robot is on an edge only when it is more than 0.5 m from
+every node, so no part of it is over a node then.
+
 Order: a robot does its tasks in list order, and depends_on may name tasks of
 other robots. Both kinds of "waits for" form one graph, and tasks are
 scheduled in topological order, each as early as what it waits for allows
@@ -45,8 +53,9 @@ who yields; that is R-1 and the fairness ledger.
 from __future__ import annotations
 
 import heapq
+import math
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import Mapping, NamedTuple
 
@@ -60,11 +69,20 @@ from .sim_map import SimMap
 PARKED_S = 1.0
 
 _LENGTH_DIGITS = 9  # route lengths equal to 1e-9 m are ties, decided by node names
+_AT_NODE_M = 1e-6   # a robot on an edge this close to its end is at the end node
+
+
+class OnEdge(NamedTuple):
+    """A robot between two nodes: driving from from_node to to_node, now at position."""
+    from_node: str
+    to_node: str
+    position: tuple[float, float]   # map frame [m]; only its projection onto the edge counts
 
 
 class StepOrigin(NamedTuple):
     """Where a compiled step came from, to translate a violation back to the TeamPlan."""
-    task_id: str | None     # None: the robot has no task and stays where it is
+    task_id: str | None     # None: the robot has no task and stays where it is, or it
+                            # finishes the edge it is on (CompiledTeamPlan.lead_ins)
     nodes: tuple[str, ...]  # graph nodes reached during the step; for a wait, where it waits
     priority: int | None    # Task.priority as proposed; kept for logs, never used for yielding
 
@@ -82,6 +100,14 @@ class CompiledTeamPlan:
     timings: dict[str, TaskTiming]              # task_id -> when it runs
     snapshot: WorldSnapshot                     # t0 and the zone each robot starts in
     violations: tuple[Violation, ...]           # compile errors; when there are any, plans is empty
+    # robot_id -> how many of its first steps drive the rest of the edge it is on (OnEdge).
+    # Only robots that have some edge left.
+    lead_ins: dict[str, int] = field(default_factory=dict)
+
+    def is_lead_in(self, robot: str, step: int) -> bool:
+        """Whether a step of a robot's plan drives the rest of the edge it is on now: no plan
+        changes that part."""
+        return step < self.lead_ins.get(robot, 0)
 
 
 class _Segment(NamedTuple):
@@ -104,13 +130,15 @@ def compile_team_plan(
     task_types: Mapping[str, TaskType] | None = None,
     plan_id: str = "teamplan",
     revision: int = 0,
+    on_edges: Mapping[str, OnEdge] | None = None,
 ) -> CompiledTeamPlan:
     """Compile every robot's tasks into a timed Plan.
 
     Args:
-        start_nodes: robot_id -> the graph node it is at now. Every robot in the
-            world, including robots the TeamPlan gives no task: they stay put,
-            and a parked robot still blocks others.
+        start_nodes: robot_id -> the graph node its plan starts from: where it is
+            now, or for a robot on an edge, the node the edge leads to. Every robot
+            in the world, including robots the TeamPlan gives no task: they stay
+            put, and a parked robot still blocks others.
         speed: nominal driving speed [m/s]. No default: Module 6's cruise speed
             is not decided yet.
         t0: current time on the simulation clock [s].
@@ -119,6 +147,8 @@ def compile_team_plan(
             decides, and full ties fall to robot_id order.
         plan_id, revision: ProposedPlan.transaction_id and attempt; each robot's
             Plan gets plan_id "<plan_id>/<robot_id>".
+        on_edges: robot_id -> the edge it is on, for robots between two nodes. Such
+            a robot first drives to the end of its edge, which must be its start node.
 
     Compile errors (unknown robot or target, no route, deadlock) come back as
     Violations, all of them at once, with no plans.
@@ -128,8 +158,11 @@ def compile_team_plan(
     for robot, node in start_nodes.items():
         if node not in sim_map.positions:
             raise ValueError(f"start node {node!r} of {robot!r} is not on map {sim_map.name!r}")
-    snapshot = WorldSnapshot(
-        time=t0, robot_regions={r: sim_map.zone_of[n] for r, n in start_nodes.items()})
+    lead_ins = {r: _rest_of_edge(sim_map, e, start_nodes.get(r), r) for r, e in (on_edges or {}).items()}
+    lead_ins = {r: segments for r, segments in lead_ins.items() if segments}
+    snapshot = WorldSnapshot(time=t0, robot_regions={
+        r: lead_ins[r][0].zone if r in lead_ins else sim_map.zone_of[n] for r, n in start_nodes.items()})
+    ready_at = {r: t0 + segments[-1].d_end / speed for r, segments in lead_ins.items()}
 
     violations: list[Violation] = []
     routes: dict[str, list[_Segment]] = {}
@@ -165,12 +198,13 @@ def compile_team_plan(
     if violations:
         return CompiledTeamPlan({}, {}, {}, snapshot, tuple(violations))
 
-    timings = _schedule(team_plan, order, routes, t0, speed)
+    timings = _schedule(team_plan, order, routes, t0, ready_at, speed)
     plans: dict[str, Plan] = {}
     origins: dict[str, tuple[StepOrigin, ...]] = {}
     for robot in sorted(start_nodes):
         steps, step_origins = _robot_steps(team_plan.tasks_of(robot), start_nodes[robot],
-                                           routes, timings, sim_map, t0, speed)
+                                           routes, timings, sim_map, t0, speed,
+                                           lead_ins.get(robot, []))
         plans[robot] = Plan(
             plan_id=f"{plan_id}/{robot}",
             revision=revision,
@@ -179,7 +213,8 @@ def compile_team_plan(
             steps=tuple(steps),
         )
         origins[robot] = tuple(step_origins)
-    return CompiledTeamPlan(plans, origins, timings, snapshot, ())
+    return CompiledTeamPlan(plans, origins, timings, snapshot, (),
+                            {r: len(segments) for r, segments in sorted(lead_ins.items())})
 
 
 # --------------------------------------------------------------------------
@@ -234,6 +269,42 @@ def _segments(sim_map: SimMap, path: list[str]) -> list[_Segment]:
                 segments.append(_Segment(piece.zone, d, end, reached, reached_d, (here, point),
                                          end_node))
             here, d = point, end
+    return segments
+
+
+def _rest_of_edge(sim_map: SimMap, on_edge: OnEdge, start: str | None, robot: str) -> list[_Segment]:
+    """What is left of the edge a robot is on, cut into one segment per zone; d is metres
+    from the robot. The robot is where its position projects onto the edge, clamped to the
+    edge's two ends, so a position beside the edge or just past one end still works."""
+    a, b = on_edge.from_node, on_edge.to_node
+    if start is None:
+        raise ValueError(f"{robot} is on {a}->{b} but has no start node")
+    if (a, b) not in sim_map.pieces:
+        raise ValueError(f"{a}->{b} is not an edge of map {sim_map.name!r}")
+    if b != start:
+        raise ValueError(f"{robot} is on {a}->{b} but its plan would start at {start}")
+    px, py = on_edge.position
+    if not (math.isfinite(px) and math.isfinite(py)):
+        raise ValueError(f"position of {robot} is not finite: {on_edge.position}")
+    (ax, ay), (bx, by) = sim_map.positions[a], sim_map.positions[b]
+    length = sim_map.neighbors[a][b]
+    behind = length * min(max(((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / length ** 2, 0.0), 1.0)
+
+    segments: list[_Segment] = []
+    pieces = sim_map.pieces[(a, b)]
+    f = behind / length
+    here, d, along = (ax + f * (bx - ax), ay + f * (by - ay)), 0.0, 0.0
+    for i, piece in enumerate(pieces):
+        along += piece.length
+        if along - behind <= _AT_NODE_M:   # this piece is behind the robot
+            continue
+        last = i == len(pieces) - 1
+        f = along / length
+        point = (bx, by) if last else (ax + f * (bx - ax), ay + f * (by - ay))
+        end = along - behind
+        segments.append(_Segment(piece.zone, d, end, (b,) if last else (), (end,) if last else (),
+                                 (here, point), b if last else None))
+        here, d = point, end
     return segments
 
 
@@ -303,14 +374,17 @@ def _describe_cycle(team_plan: TeamPlan, cycle: list[str]) -> str:
 
 
 def _schedule(team_plan: TeamPlan, order: list[str], routes: Mapping[str, list[_Segment]],
-              t0: float, speed: float) -> dict[str, TaskTiming]:
+              t0: float, ready_at: Mapping[str, float], speed: float) -> dict[str, TaskTiming]:
+    """ready_at: robot_id -> when it reaches the end of the edge it is on; t0 for the rest."""
     tasks = {t.task_id: t for a in team_plan.assignments for t in a.tasks}
+    robot_of = {t.task_id: a.robot_id for a in team_plan.assignments for t in a.tasks}
     previous = {b.task_id: a.task_id
                 for asg in team_plan.assignments for a, b in pairwise(asg.tasks)}
     timings: dict[str, TaskTiming] = {}
     for task_id in order:
         task = tasks[task_id]
-        ready = timings[previous[task_id]].done if task_id in previous else t0
+        ready = (timings[previous[task_id]].done if task_id in previous
+                 else ready_at.get(robot_of[task_id], t0))
         deps_done = max((timings[d].done for d in task.depends_on), default=ready)
         length = routes[task_id][-1].d_end if routes[task_id] else 0.0
         if task.action == TaskAction.WAIT:
@@ -326,23 +400,28 @@ def _schedule(team_plan: TeamPlan, order: list[str], routes: Mapping[str, list[_
 
 
 def _robot_steps(tasks: list[Task], start: str, routes: Mapping[str, list[_Segment]],
-                 timings: Mapping[str, TaskTiming], sim_map: SimMap,
-                 t0: float, speed: float) -> tuple[list[PlanStep], list[StepOrigin]]:
+                 timings: Mapping[str, TaskTiming], sim_map: SimMap, t0: float, speed: float,
+                 lead_in: list[_Segment]) -> tuple[list[PlanStep], list[StepOrigin]]:
     steps: list[PlanStep] = []
     origins: list[StepOrigin] = []
 
-    def add(action: Action, zone: str, t_start: float, t_end: float, task: Task,
+    def add(action: Action, zone: str, t_start: float, t_end: float, task: Task | None,
             nodes: tuple[str, ...], path: tuple[tuple[float, float], ...], end_node: str | None,
             waypoints: tuple[Waypoint, ...] = ()) -> None:
         steps.append(PlanStep(action=action, region=zone, t_start=t_start, t_end=t_end, path=path,
                               end_node=end_node, waypoints=waypoints))
-        origins.append(StepOrigin(task.task_id, nodes, task.priority))
+        origins.append(StepOrigin(task.task_id if task else None, nodes, task.priority if task else None))
 
     def stand(node: str, t_start: float, t_end: float, task: Task) -> None:
         add(Action.WAIT, sim_map.zone_of[node], t_start, t_end, task, (node,),
             (sim_map.positions[node],), node)
 
-    here, clock = start, t0
+    for seg in lead_in:   # the rest of the edge it is on; it starts at no node
+        reached = tuple(Waypoint(node=n, t=t0 + d / speed) for n, d in zip(seg.nodes, seg.node_d))
+        add(Action.NAVIGATE, seg.zone, t0 + seg.d_start / speed, t0 + seg.d_end / speed, None,
+            seg.nodes, seg.points, seg.end_node, reached)
+
+    here, clock = start, t0 + (lead_in[-1].d_end / speed if lead_in else 0.0)
     for task in tasks:
         tm = timings[task.task_id]
         if tm.depart > clock:    # navigate / hold_position: waits in place for depends_on

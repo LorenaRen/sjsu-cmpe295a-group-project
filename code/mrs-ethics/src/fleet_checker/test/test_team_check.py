@@ -7,6 +7,7 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan
 
+from fleet_checker.adapters.compiler import OnEdge
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 from fleet_checker.adapters.team_check import check_team_plan, conflicts, reason_of
 from fleet_checker.cross_plan import FairnessLedger
@@ -301,6 +302,72 @@ def test_the_robot_length_is_kept_for_rechecks(samples_map):
     result = check(samples_map, sample("valid_two_robots.json"))
     assert result.settings.robot_length == ROBOT_LENGTH
     assert result.recheck(result.team_plan).settings.robot_length == ROBOT_LENGTH
+
+
+def test_recheck_keeps_the_robots_that_are_on_an_edge(samples_map):
+    on_edges = {"robot_b": OnEdge("corridor_1", "pass_e", (8.6, 0.0))}
+    plan = sample("valid_two_robots.json")
+    result = check_team_plan(plan, samples_map, {"robot_a": "west_s", "robot_b": "pass_e"}, speed=SPEED,
+                             robot_length=ROBOT_LENGTH, on_edges=on_edges)
+    assert result.on_edges == on_edges and result.compiled.lead_ins == {"robot_b": 2}
+    assert result.recheck(plan).compiled.lead_ins == {"robot_b": 2}
+
+
+# ---------------- robots on an edge (team_state's at "a->b") ----------------
+
+def task(task_id, action, target, depends_on=()) -> dict:
+    return {"task_id": task_id, "action": action, "target": target, "priority": 1,
+            "depends_on": list(depends_on)}
+
+
+def team(*assignments) -> TeamPlan:
+    return TeamPlan.model_validate({"assignments": [{"robot_id": r, "tasks": ts} for r, ts in assignments]})
+
+
+def test_p2_leaves_out_the_rest_of_the_edge_a_robot_is_on(samples_map):
+    # robot_b is driving out of the restricted office: it is in there whatever the plan says.
+    starts, on_edges = {"robot_a": "west_s", "robot_b": "door_A"}, {"robot_b": OnEdge("office_e", "door_A", (9.0, 3.5))}
+    out = check_team_plan(team(("robot_b", [task("b1", "navigate", "corridor_2")])), samples_map, starts,
+                          speed=SPEED, robot_length=ROBOT_LENGTH, on_edges=on_edges)
+    assert out.approved
+    # A task that takes it back in is still checked: step 3 is b1's, the office steps before it are the edge's.
+    back_in = check_team_plan(team(("robot_b", [task("b1", "navigate", "office_1")])), samples_map, starts,
+                              speed=SPEED, robot_length=ROBOT_LENGTH, on_edges=on_edges)
+    assert [(f.violation.code, f.violation.refs[0].step_index) for f in back_in.findings] == [
+        ("REGION_ACCESS_DENIED", 3)]
+
+
+def yielded_before(robot: str, opponent: str) -> FairnessLedger:
+    ledger = FairnessLedger()
+    ledger.record_yield(robot, "earlier", 0.0, opponent)
+    return ledger
+
+
+def test_a_yielder_in_a_conflict_on_the_edge_it_is_on_has_the_keeper_change(samples_map):
+    # robot_b drives into the passage on the edge it is on (corridor_1 -> pass_e, 1.2 m left) while
+    # robot_a heads for it from room_2. R-1 picks robot_b, which has given way less, but no plan can
+    # change where robot_b is now, so robot_a must keep clear (margin 2 s, as in team_state mode).
+    plan = team(("robot_a", [task("a1", "navigate", "room_3")]), ("robot_b", [task("b1", "navigate", "corridor_2")]))
+    result = check_team_plan(plan, samples_map, {"robot_a": "room_2", "robot_b": "pass_e"}, speed=SPEED,
+                             robot_length=ROBOT_LENGTH, margin=2.0, ledger=yielded_before("robot_a", "robot_b"),
+                             on_edges={"robot_b": OnEdge("corridor_1", "pass_e", (8.6, 0.0))})
+    f, = result.findings
+    assert (f.violation.code, f.r1_yielders, f.must_fix) == ("CAPACITY_EXCEEDED", ("robot_b",), ("robot_a",))
+    assert result.compiled.lead_ins["robot_b"] == 2 and ("robot_b", 1) in [(r.robot_id, r.step_index)
+                                                                          for r in f.violation.refs]
+    assert conflicts(result)[0].yielders == ("robot_a",) and list(result.must_replan) == ["robot_a"]
+
+
+def test_a_yielder_reaching_a_node_on_the_edge_it_is_on_has_the_keeper_change(samples_map):
+    # robot_b reaches corridor_1 at 4 s at the end of its edge and drives on; robot_a drives through
+    # corridor_1 at 3 s. R-1 has robot_b give way, as it gets there later; it cannot.
+    plan = team(("robot_a", [task("a1", "navigate", "room_3")]), ("robot_b", [task("b1", "navigate", "room_2")]))
+    result = check_team_plan(plan, samples_map, {"robot_a": "corridor_2", "robot_b": "corridor_1"}, speed=SPEED,
+                             robot_length=ROBOT_LENGTH,
+                             on_edges={"robot_b": OnEdge("room_3", "corridor_1", (11.0, 0.0))})
+    f, = result.findings
+    assert (f.violation.code, f.violation.resource_id) == ("NODE_OCCUPIED", "corridor_1")
+    assert (f.r1_yielders, f.must_fix) == (("robot_b",), ("robot_a",))
 
 
 def test_recheck_runs_the_same_check_on_another_plan(samples_map):

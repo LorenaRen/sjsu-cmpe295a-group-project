@@ -11,7 +11,7 @@ import pytest
 
 try:
     import rclpy
-    from mrs_msgs.msg import EthicalVerdict, ProposedPlan, ValidatedPlan
+    from mrs_msgs.msg import EthicalVerdict, ProposedPlan, TeamState, ValidatedPlan, WorldState
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.parameter import Parameter
 
@@ -26,6 +26,7 @@ from mrs_common import load_sample, plan_from_json  # noqa: E402
 from mrs_common import reasons as R  # noqa: E402
 
 from mrs_ethical_gate.settings import SettingsError  # noqa: E402
+from mrs_ethical_gate.starts import team_snapshot  # noqa: E402
 
 if ROS_ERROR is None:
     # Outside the try: with ROS present, a broken gate_node must fail the tests, not skip them.
@@ -58,6 +59,7 @@ class Probe:
         self.node.create_subscription(ValidatedPlan, N.VALIDATED_PLAN, self.validated.append,
                                       qos_for(N.VALIDATED_PLAN))
         self.pub = self.node.create_publisher(ProposedPlan, N.PROPOSED_PLAN, qos_for(N.PROPOSED_PLAN))
+        self.team_state_pub = self.node.create_publisher(TeamState, N.TEAM_STATE, qos_for(N.TEAM_STATE))
 
 
 @pytest.fixture
@@ -78,6 +80,12 @@ def wired_with_a_person(ros):
 
 
 def _wired(*more):
+    executor, probe, gate = _start(*more)
+    yield executor, probe
+    _stop(executor, probe, gate)
+
+
+def _start(*more):
     """The gate on samples_world, required parameters as in config/gate.yaml, and a probe."""
     gate = GateNode(parameter_overrides=[Parameter("speed", value=0.5), Parameter("robot_length", value=0.45),
                                          Parameter("crowding_radius", value=1.5),
@@ -91,10 +99,32 @@ def _wired(*more):
     assert spin_until(executor, lambda: probe.pub.get_subscription_count() > 0
                       and gate.verdict_pub.get_subscription_count() > 0
                       and gate.validated_pub.get_subscription_count() > 0), "nodes did not discover each other"
-    yield executor, probe
+    return executor, probe, gate
+
+
+def _stop(executor, probe, gate):
     executor.shutdown()
     gate.destroy_node()
     probe.node.destroy_node()
+
+
+@pytest.fixture
+def live(ros):
+    """The gate with start_source team_state (team_state_max_age as in config/gate.yaml)."""
+    executor, probe, gate = _start(Parameter("start_source", value="team_state"),
+                                   Parameter("team_state_max_age", value=1.0))
+    assert spin_until(executor, lambda: probe.team_state_pub.get_subscription_count() > 0)
+    yield executor, probe, gate
+    _stop(executor, probe, gate)
+
+
+def publish_team_state(executor, probe, gate, robots: dict):
+    """Stand in for Module 3: one TeamState, stamped now, with robots as {robot: (at, x, y)}."""
+    msg = TeamState(episode_id="gate-test", stamp=probe.node.get_clock().now().to_msg())
+    msg.robots = [WorldState(robot_id=r, episode_id="gate-test", at=at, x=x, y=y, stamp=msg.stamp)
+                  for r, (at, x, y) in robots.items()]
+    probe.team_state_pub.publish(msg)
+    assert spin_until(executor, lambda: gate.session.starts.latest == team_snapshot(msg))
 
 
 def send(executor, probe, plan_json: str):
@@ -151,6 +181,24 @@ def test_two_robots_ending_at_one_node_get_a_reject(wired):
     assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.NODE_OCCUPIED])
     [c] = constraints_from_verdict(v)
     assert (c.kind, c.robot_id, c.task_id, c.node) == ("custom", "robot_b", "b1", "room_3")   # robot_b stays
+
+
+def test_with_team_state_and_no_snapshot_yet_a_plan_is_rejected_unchecked(live):
+    executor, probe, _ = live
+    _, v = send(executor, probe, load_sample("valid_two_robots.json"))
+    assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.UNKNOWN_ROBOT])
+    assert [(c.kind, c.robot_id) for c in constraints_from_verdict(v)] == [("custom", None)]
+
+
+def test_with_team_state_a_plan_is_checked_where_the_robots_are(live):
+    executor, probe, gate = live
+    publish_team_state(executor, probe, gate, {"robot_a": ("west_s", 0.0, -1.2), "robot_b": ("east_n", 12.0, 1.2)})
+    _, v = send(executor, probe, load_sample("valid_two_robots.json"))
+    assert v.verdict == "APPROVE"
+    # robot_b now stands in the passage, which robot_a has to drive through.
+    publish_team_state(executor, probe, gate, {"robot_a": ("west_s", 0.0, -1.2), "robot_b": ("pass_w", 2.6, 0.0)})
+    _, v = send(executor, probe, load_sample("valid_two_robots.json"))
+    assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.CAPACITY_EXCEEDED])
 
 
 def test_the_gate_does_not_start_without_a_speed(ros):

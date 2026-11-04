@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.9, 2026-11-04
+Status: draft v0.10, 2026-11-04
 
 ---
 
@@ -197,7 +197,9 @@ because one of its tasks ends there
 free the node, so the keeper must fix the plan.  `Finding.must_fix` names
 it, and so do `must_replan`, `conflicts()` and the constraint.
 `Finding.r1_yielders` keeps R-1's own choice, from which the verdict
-reads who yields and who keeps.
+reads who yields and who keeps.  The keeper must change too when the
+yielder gets to the node on the edge it is on when the plan starts, which
+no plan changes (S-1, S-2 and S-4 alike; see "Robots on an edge" below).
 
 The ledger follows `must_fix`: the REJECT counts toward F-2 for the keeper,
 and the approval records the yield for it (see "Updating the ledger").  It
@@ -216,6 +218,7 @@ up rejections, then jump the queue in other conflicts as "starving".
 | Ordering does not help, and the node is where the yielder's task ends | `custom`: wait at another node near it first, and go there only after the keeper has left.  `forbid_node` would tell the planner never to stop there, i.e. to give the task up | yielder |
 | Otherwise: the yielder only waits there between tasks | `forbid_node` for the yielder at that node | yielder |
 | The yielder is at the node from the start of its plan | `custom`: it has to leave before the keeper arrives | yielder |
+| The yielder gets to the node on the edge it is on now (team_state), and the keeper need not stay to the end there | `custom`: the yielder cannot wait; keep clear of the node while it is there | keeper |
 
 **Why the keeper's wait is checked on the whole plan.**  Every other
 `order_before` delays the yielder's getting to one place, and is verified
@@ -486,9 +489,9 @@ are written at different times:
 
 | Event | Rejections in a row (F-2) | Yields (R-1, F-1) |
 |---|---|---|
-| REJECT, and the plan compiles | +1 for each robot that must give way in this round: R-1's yielders, or the keeper of an S-4 conflict only the keeper can resolve (S-4) | unchanged; each conflict and its yielders are remembered until the next APPROVE (a later round's version of the same conflict replaces the earlier one) |
+| REJECT, and the plan compiles | +1 for each robot that must give way in this round (`must_fix`): R-1's yielders, or the keeper of an S-4 conflict only the keeper can resolve (S-4), or the keeper of a conflict whose yielder is in it on the edge it is on now (team_state) | unchanged; each conflict and its yielders are remembered until the next APPROVE (a later round's version of the same conflict replaces the earlier one) |
 | APPROVE | reset to 0 for every robot | one yield for each yielder of each remembered conflict; then nothing is remembered |
-| Compile error, unreadable plan, a message seen before | unchanged | unchanged |
+| Compile error, unreadable plan, unknown positions (team_state), a message seen before | unchanged | unchanged |
 
 A conflict is identified by its zone and the robots in it; the two halves
 of a head-on swap are one conflict.  P-1, P-2 and P-3 rejections do not
@@ -543,14 +546,61 @@ checker core (`plan.py`, `cross_plan.py`, `policy.py`) does not import it.
 | File | Does |
 |------|------|
 | `sim_map.py` | mrs_sim map file → `WorldMap`.  One region per zone; capacity from the map (none given = no limit); zone type → `RegionKind` (`room` → `OPEN_AREA`, `narrow` → `AISLE`, `keep_clear` → `KEEP_CLEAR`, `restricted` → `RESTRICTED`; other types are rejected).  Every edge is cut where it crosses a zone boundary, so the distance driven in each zone is known; zone adjacency comes from those cuts.  Maps with overlapping zones, nodes on a boundary two zones share, or edges that leave every zone are rejected. |
-| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from, the node it ends at (`PlanStep.end_node`; for a step that stands still, where it stands), and every node it drives through or to, with the time it gets there (`PlanStep.waypoints`), which S-4 needs.  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
-| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1, S-2 (when `people` and a `CrowdingLimit` are given) and S-4 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check, with the same people, on a changed plan.  `conflicts(result)` lists the S-1, S-2 and S-4 conflicts once each (both halves of a head-on swap are one), with where they are (zone, person or node) and their yielders, for the ledger. |
+| `compiler.py` | TeamPlan + map + start nodes → one timed `Plan` per robot.  Route = shortest path on the waypoint graph; time = distance ÷ nominal speed (a parameter, no default); order = each robot's task list plus `depends_on`.  Each step also gets its polyline (`PlanStep.path`: the nodes it reaches and the points where the route crosses a zone boundary, driven at constant speed; one point while the robot stands still), which S-2 measures distances from, the node it ends at (`PlanStep.end_node`; for a step that stands still, where it stands), and every node it drives through or to, with the time it gets there (`PlanStep.waypoints`), which S-4 needs.  A robot between two nodes (`OnEdge`, from team_state) first drives the rest of its edge, then starts its tasks at the edge's end (below).  Reports unknown robots, unknown targets, unreachable targets and dependency cycles, including cycles through task order, which Module 1's validation does not catch. |
+| `team_check.py` | `check_team_plan`: compile → P-1/P-2/P-3 for each robot → S-1, S-2 (when `people` and a `CrowdingLimit` are given) and S-4 + R-1 across robots.  Each violation carries its `mrs_common.reasons` code, the TeamPlan task ids it came from and the robots that must fix it.  Restricted zones default to "no robot may enter".  `recheck(plan)` runs the same check, with the same people, on a changed plan.  `conflicts(result)` lists the S-1, S-2 and S-4 conflicts once each (both halves of a head-on swap are one), with where they are (zone, person or node) and their yielders, for the ledger.  Robots on an edge: see below. |
 | `verdict.py` | `to_verdict`: a `check_team_plan` result → the decision fields of an `EthicalVerdict` (see "Verdict for Module 5" below). |
 
 `TeamPlan.priority` is kept for logs only; who yields is decided by R-1
 and the fairness ledger.  TeamPlan has no task type, so every robot is
 `DELIVERY` unless the caller says otherwise; R-1's task-type tie-break then
 never decides, and ties fall to entry time, then robot_id.
+
+### Robots on an edge (team_state)
+
+Module 3 says a robot is at a node when it is within 0.5 m of one, and
+otherwise gives the edge it drives on, `"a->b"`.  The gate passes such a
+robot to the compiler as `OnEdge(a, b, (x, y))`, with b as its start node
+(`mrs_ethical_gate/starts.py`).
+
+**Compiling.**  The robot first drives the rest of its edge, then starts
+its first task at b, and nothing that waits for that task can start
+earlier.  What is left is measured from where (x, y) projects onto the
+edge, clamped to its two ends, so a pose beside the edge or a little past
+an end still works; the sideways offset is dropped.  It is cut by zone like
+any route.  These **lead-in steps** belong to no task (`StepOrigin.task_id`
+None; `CompiledTeamPlan.lead_ins` counts them).  They reach b and start at
+no node: the robot is more than 0.5 m from every node, so for S-4 no part
+of it is over one.  The snapshot puts the robot in the zone of the
+projected point.
+
+**Checking.**  No plan changes where a robot drives now, so the rules treat
+the lead-in as fixed:
+
+| Case | What happens |
+|---|---|
+| P-2 on a lead-in step | Not reported: a robot driving out of a zone it may not enter is in there whatever the plan says.  Its tasks' own steps are checked as before. |
+| The keeper of a conflict leaves the zone (or the person) on its lead-in | The yielder waits for the keeper's **first task**: no task event marks the end of an edge, so that is the first one after it.  Verified as usual. |
+| The yielder's part of a conflict is on its lead-in (any of its steps in the finding) | It cannot wait, so **the keeper must change**: `must_fix` is the keeper, and the ledger follows it, as for S-4's keeper.  The keeper gets a `custom` constraint to keep clear while the yielder is there.  S-1, S-2 and S-4 alike. |
+| S-4: the keeper gets to the node on its lead-in and stays | As any keeper that stays (S-4), except that it cannot wait for the yielder: `forbid_node`, "you get to c on the edge you are on now". |
+
+R-1 is not changed: it still ranks the robots, and the yielder it picks is
+replaced by the keeper only in the third case.  With equal yields R-1
+usually picks the other robot anyway: the one on its lead-in is on its way
+already, so it enters first, and the robot that enters later gives way.
+
+**Known limitations.**
+
+1. **Two lead-ins in one conflict.**  If both robots are in it on their
+   lead-ins, no plan can keep them apart.  The gate still rejects the plan
+   (fail closed); the keeper's `custom` cannot be followed, and the planner
+   ends in its fallback.  It is the robots' own CBF that keeps them apart.
+2. **A `custom` where an ordering might do.**  The keeper could wait for
+   the yielder's first task, an `order_before` that would need the
+   whole-plan check of S-4's keeper wait.  Not built.
+3. **P-2 after the lead-in.**  A robot already inside a zone it may not
+   enter still gets P-2 for the task step that drives it out.  That is P-2's
+   rule for any robot in such a zone (a spawn slot there would do the
+   same), not something the lead-in adds.
 
 ### Assumptions to confirm with Module 4 (planner) and Module 6 (executor)
 
@@ -576,6 +626,9 @@ agreed interfaces:
    acceleration, turning on the spot or CBF slow-down.  S-1's `margin`
    absorbs that error.  Speed and margin are to be set from measurements in
    simulation; no accuracy figure is claimed yet.
+4. **A robot on an edge finishes it** before anything else, and drives on
+   from its end node (lead-in steps, above).  The gate does not move it
+   forward for the age of the snapshot.
 
 ---
 
@@ -599,6 +652,7 @@ are produced; MODIFY is designed (below) but not built.
 | P-3 `max_duration_exceeded` | `custom`, with the plan's duration and the limit |
 | Plan does not compile | `custom`, with the violation message |
 | `plan_json` is not a TeamPlan (nothing could be checked) | `custom`, with the first validation error and where it is (`unreadable_plan_verdict`); rule id `llm_malformed` |
+| The gate does not know where every robot is (team_state; nothing is checked) | `custom` for each robot whose position is unknown, saying why, or one for all of them (`unknown_positions_verdict`); rule id `unknown_robot`, level 1 |
 
 P-1 and P-2 name every node of the zone, not only the one in the plan:
 otherwise the next plan can stop at, or route through, a neighbouring
@@ -725,6 +779,7 @@ tested in a plain venv.
 | `/mrs/proposed_plan` | in | reliable, volatile, depth 100 | every ProposedPlan |
 | `/mrs/verdict` | out | reliable, volatile, depth 100 | exactly one EthicalVerdict per message, with the message's transaction_id, episode_id and attempt |
 | `/mrs/validated_plan` | out | reliable, transient local, depth 1 | APPROVE only: the TeamPlan as received, `source_verdict` APPROVE |
+| `/mrs/team_state` | in, `start_source: team_state` only | reliable, volatile, depth 100 | Module 3's TeamState; the gate keeps the latest |
 
 - **Messages.**  A message is identified by (transaction_id, attempt):
   the planner reuses the transaction_id for later attempts.  A message
@@ -735,23 +790,48 @@ tested in a plain venv.
 - **Episodes.**  A new episode_id starts a new ledger and forgets the
   messages seen ("Updating the ledger").  The episode_id of the plans is
   enough; the gate does not depend on `/mrs/episode_event`.
-- **Start nodes.**  `start_source: spawns`: robot i of the fleet
-  (`robots`, the same value as `sim.launch.py`'s) at the map's spawn slot
-  i, the whole fleet even when a plan names only some robots.  Right only
-  until the robots move.  `team_state` (Module 3's `/mrs/team_state`: one
-  snapshot of every robot at the same time, plus `blocked_edges`) is not
-  built yet.
-- **A robot on an edge** (`WorldState.at` = `"a->b"`, direction of travel)
-  is refused for now (`starts.node_from_at`).  Intended handling, to build
-  together with `team_state`: assume the robot finishes the edge it is on
-  (to confirm with Module 6), add a first step that covers the rest of the
-  edge (the zones and lengths of its remaining pieces, from the robot's
-  pose), then compile the plan from b.  Without that step the robot would
-  be in no zone until it reaches b, and a conflict there would be missed.
-  `at` naming a node is approximate too (within 0.5 m of it): up to
-  0.5 m ÷ speed of timing error, which the margin has to cover.
+- **Start nodes.**  Always the whole fleet (`robots`, the same value as
+  `sim.launch.py`'s), even when a plan names only some robots.
+  - `start_source: spawns`: robot i at the map's spawn slot i.  Right only
+    until the robots move.
+  - `start_source: team_state`: from Module 3's `/mrs/team_state` (one
+    snapshot of every robot), the latest one when a plan arrives
+    (`starts.TeamStateStarts`).  A robot at a node starts there; a robot on
+    the edge `"a->b"` first drives the rest of it ("Robots on an edge",
+    above).  `blocked_edges` are logged but not used yet: routes do not
+    avoid them.
+- **Unknown positions: fail closed.**  When the gate does not know where
+  every robot of the fleet is, it checks nothing and rejects the plan
+  (`unknown_robot`, level 1, a `custom` constraint per problem; the ledger
+  is left alone): a robot left out could be in the way of any plan.  The
+  cases: no snapshot yet; the snapshot is of another episode (one with an
+  empty episode_id goes for any); a robot of the fleet is missing from it;
+  an `at` the map does not have; a robot on an edge whose pose is outside
+  every zone of the map; no time stamp; a position older than
+  `team_state_max_age`; or one stamped more than that ahead of the gate's
+  clock, which means the two use different clocks (`use_sim_time`).  A
+  robot's age is the gate's clock minus its `WorldState.stamp`, or minus
+  the TeamState's when that is not set.  Robots of the snapshot outside the
+  fleet are left out and logged.  A `plan_json` that is not a TeamPlan is
+  `llm_malformed` first.
+- **No extrapolation.**  A robot is where the snapshot says, however old
+  that is (up to `team_state_max_age`).
+- **Error budget of team_state positions.**  Two errors add to the
+  compiler's: a robot is "at" a node up to 0.5 m from it, 1 s of driving at
+  the placeholder speed of 0.5 m/s, and its position can be up to
+  `team_state_max_age` old, 1 s at the placeholder, during which it may
+  have moved on.  About **2 s in the worst case, more than the default
+  margin of 0.5 s**.  So with `team_state`, **the margin should be at least
+  2 s until it is measured**; `replan_loop.launch.py team_state:=...` uses
+  2.0.  The price is approvals: at a 2 s margin, mrs_common's
+  `valid_two_robots`, approved at 0.5 s from the spawn slots, is rejected:
+  its robots drive through corridor_1 3 s apart, and each occupies it for
+  4.9 s (S-4).  The decision log gives the
+  snapshot's age and each robot's for every check, for measuring this
+  later.
 - **Times.**  Plans are compiled from t0 = 0, i.e. relative to the
-  check.  plan_id is `<transaction_id>/<robot>` and revision is the
+  check (with team_state, to when the plan is checked, not to the
+  snapshot's stamp).  plan_id is `<transaction_id>/<robot>` and revision is the
   attempt, so a finding's refs point at one message.
 - **latency_ms.**  Wall-clock time of `decide()` (`time.perf_counter`):
   reading, compiling and checking the plan and building the verdict,
@@ -760,7 +840,9 @@ tested in a plain venv.
   change rate; receiving and publishing are not included.
 - **Parameters.**  ROS parameters, read once at start-up and read-only
   (changing speed or margin mid-episode would make verdicts
-  incomparable): `world` / `map_file`, `robots`, `start_source`, `speed`
+  incomparable): `world` / `map_file`, `robots`, `start_source` and, for
+  `team_state`, `team_state_max_age` (no default; the file's 1.0 s, two
+  periods of WorldState's 2 Hz, is a placeholder), `speed`
   (no default; `config/gate.yaml` holds a placeholder until Module 6's
   speed is measured), `robot_length` (for S-4; no default either, and the
   file's 0.45 m is a placeholder), `margin`, `max_duration`, `starvation_threshold`,
@@ -772,7 +854,16 @@ tested in a plain venv.
   (`config/people.yaml`, nobody), named by the launch argument
   `people_file` because they belong to the scenario.  The node logs the
   effective settings as one JSON line at start-up, and one JSON line per
-  decision.
+  decision, which includes where the robots were ("positions": the source,
+  and for team_state the snapshot's age and each robot's `at` and age, or
+  why they are unknown).  `gate.launch.py` takes `start_source` and
+  `margin` too, which replace the params file's when given.
+- **fake_team_state** (`mrs_ethical_gate/dev_nodes`, a development node,
+  not Module 3) publishes one snapshot file (`snapshots/`) as a TeamState
+  at 2 Hz, every stamp the node clock now; `stop_after` stops it, so that a
+  test can see the gate take the last snapshot for too old.  It judges
+  nothing: whether an `at` is a node or an edge of the map is the gate's
+  to say.
 - **FALLBACK** (assumption, to confirm with Module 4): the all-hold plan
   (`hold_all_plan`, `source_verdict` FALLBACK) does not pass through the
   gate; Module 4 publishes it on `/mrs/validated_plan` itself.  The gate
@@ -809,8 +900,10 @@ tested in a plain venv.
     gets the last message of each, in no set order.  It has to take the
     newest (by stamp, or by transaction_id and attempt), not the last to
     arrive.
-  - The fallback holds each robot at its current node.  With `team_state`,
-    a robot on an edge has none, as for the gate's start nodes (above).
+  - The fallback holds each robot at its current node.  A robot on an
+    edge has none; as the gate assumes it finishes the edge, it would be
+    held at the edge's end node (to align with Module 4).  The fake
+    planner's fallback still holds the robots at their spawn nodes.
 
 ---
 

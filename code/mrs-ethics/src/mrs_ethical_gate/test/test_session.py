@@ -7,12 +7,14 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan
 
+from fleet_checker.adapters.compiler import OnEdge
 from fleet_checker.adapters.sim_map import load_sim_map
 from fleet_checker.adapters.verdict import APPROVE, REJECT
 from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation
 from mrs_ethical_gate.session import GateSession
 from mrs_ethical_gate.settings import PARAMETERS, REQUIRED, SettingsError, load_settings
+from mrs_ethical_gate.starts import RobotState, TeamSnapshot, TeamStateStarts
 
 SRC = Path(__file__).resolve().parents[2]
 SAMPLES_WORLD = SRC / "fleet_checker/test/fixtures/samples_world.yaml"
@@ -159,7 +161,8 @@ def test_summary_is_plain_json_for_the_log(session):
     d = decide(session, CONFLICT)
     assert json.loads(json.dumps(d.summary())) == {
         "verdict": "REJECT", "rule_ids": ["capacity_exceeded"], "must_replan": ["robot_b"],
-        "replayed": False, "new_episode": True, "ledger": ledger(0, 0, 0, 1)}
+        "replayed": False, "new_episode": True, "ledger": ledger(0, 0, 0, 1),
+        "positions": {"source": "spawns"}}
 
 
 # ---------------- S-2: people ----------------
@@ -199,6 +202,77 @@ def test_an_s4_conflict_only_the_keeper_can_resolve_counts_for_the_keeper(sessio
     assert d.ledger == ledger(0, 0, 1, 0)
 
 
+# ---------------- start_source team_state ----------------
+
+def at(robot_id, node_or_edge, x, y, stamp=10.0):
+    return RobotState(robot_id, node_or_edge, x, y, stamp)
+
+
+AT_SPAWNS = (at("robot_a", "west_s", 0.0, -1.2), at("robot_b", "east_n", 12.0, 1.2))
+IN_THE_PASSAGE = (at("robot_a", "west_s", 0.0, -1.2), at("robot_b", "pass_w", 2.6, 0.0))
+
+
+@pytest.fixture
+def live(samples_map):
+    """A session on samples_world that takes the robots' positions from /mrs/team_state."""
+    return GateSession(samples_map, TeamStateStarts(samples_map, ("robot_a", "robot_b"), max_age=1.0),
+                       speed=0.5, robot_length=0.45)
+
+
+def observe(session, *robots, episode_id="ep1", stamp=10.0):
+    session.starts.observe(TeamSnapshot(episode_id, tuple(robots), stamp))
+
+
+def test_without_a_snapshot_a_plan_is_rejected_unchecked(live):
+    d = decide(live, VALID, now=10.0)
+    assert (d.verdict.verdict, d.verdict.rule_ids, d.result, d.validated) == (REJECT, (R.UNKNOWN_ROBOT,), None, None)
+    assert [(c.kind, c.robot_id) for c in d.verdict.constraints] == [("custom", None)]
+    assert d.ledger == ledger(0, 0, 0, 0)
+    assert d.summary()["positions"] == {"source": "team_state", "snapshot_age_s": None, "unknown": [
+        {"robot": None, "why": "no /mrs/team_state has been received yet"}]}
+
+
+def test_the_plan_is_checked_where_the_snapshot_puts_the_robots(live):
+    observe(live, *AT_SPAWNS)
+    assert decide(live, VALID, now=10.5).verdict.verdict == APPROVE    # as from the spawn slots
+    # robot_b now stands in the passage at pass_w, where robot_a has to drive through.
+    observe(live, *IN_THE_PASSAGE)
+    d = decide(live, VALID, attempt=1, now=10.5)
+    assert d.verdict.rule_ids == (R.CAPACITY_EXCEEDED,)
+    assert d.result.start_nodes == {"robot_a": "west_s", "robot_b": "pass_w"}
+    assert d.summary()["positions"]["robots"]["robot_b"] == {"at": "pass_w", "age_s": 0.5}
+
+
+def test_a_robot_on_an_edge_first_drives_the_rest_of_it(live):
+    observe(live, AT_SPAWNS[0], at("robot_b", "corridor_1->pass_e", 8.6, 0.0))
+    d = decide(live, VALID, now=10.0)
+    assert d.result.on_edges == {"robot_b": OnEdge("corridor_1", "pass_e", (8.6, 0.0))}
+    assert d.result.compiled.lead_ins == {"robot_b": 2}
+
+
+def test_a_stale_position_rejects_the_plan_and_leaves_the_ledger_alone(live):
+    observe(live, *AT_SPAWNS)
+    decide(live, CONFLICT, now=10.0)                       # checked: a rejection for robot_b
+    d = decide(live, CONFLICT, attempt=1, now=12.0)        # positions 2 s old: not checked
+    assert d.verdict.rule_ids == (R.UNKNOWN_ROBOT,)
+    assert [(c.robot_id, c.text) for c in d.verdict.constraints] == [
+        (r, f"The gate does not know where {r} is: its position is 2.0 s old, more than team_state_max_age "
+            f"(1 s). Send the plan again once it does.") for r in ("robot_a", "robot_b")]
+    assert d.ledger == ledger(0, 0, 0, 1)
+
+
+def test_an_unreadable_plan_is_malformed_before_positions_count(live):
+    d = decide(live, "{not json", now=10.0)
+    assert d.verdict.rule_ids == (R.LLM_MALFORMED,) and d.summary()["positions"] is None
+
+
+def test_from_settings_reads_positions_from_team_state():
+    session = GateSession.from_settings(settings(start_source="team_state", team_state_max_age=0.8))
+    assert isinstance(session.starts, TeamStateStarts) and session.starts.max_age == 0.8
+    assert session.starts.fleet == ("robot_a", "robot_b")
+    assert decide(session, VALID).verdict.rule_ids == (R.UNKNOWN_ROBOT,)
+
+
 # ---------------- from the node's settings ----------------
 
 def settings(**changes):
@@ -231,7 +305,7 @@ def test_from_settings_checks_with_the_robot_length():
 
 def test_from_settings_places_the_whole_fleet_at_the_spawn_slots():
     session = GateSession.from_settings(settings())
-    assert session.start_nodes == {"robot_a": "west_s", "robot_b": "east_n"}
+    assert session.starts.at("ep1", now=0.0).start_nodes == {"robot_a": "west_s", "robot_b": "east_n"}
     # A plan that names only robot_b finds it at slot 1, with robot_a parked at slot 0.
     only_b = TeamPlan.model_validate({"assignments": [{"robot_id": "robot_b", "tasks": [
         {"task_id": "b1", "action": "hold_position", "target": "east_n", "priority": 1}]}]})
