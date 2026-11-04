@@ -48,7 +48,8 @@ from mrs_common import reasons as R
 from mrs_common.plan_schema import Constraint, TeamPlan
 from pydantic import ValidationError
 
-from ..plan import Action, Plan, RegionKind
+from ..plan import RegionKind
+from .node_presence import presence
 from .team_check import Finding, TeamCheckResult
 
 # The strings of EthicalVerdict.VERDICT_* (mrs_msgs needs a ROS build to import).
@@ -299,61 +300,37 @@ def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step
     wait nearby first (or that the task cannot be done, if the keeper never leaves), since
     forbidding the node would make it give the task up; else forbid it to wait there."""
     node = f.violation.resource_id
-    plans, origins = result.compiled.plans, result.compiled.origins
-    task = origins[yielder][y_step].task_id                     # what the yielder does while there
-    ends_there = task is not None and result.team_plan.task(task).target == node
-    arrive = _arrival_step(plans[yielder], y_step)
-    leave = _departure_step(plans[keeper], k_step)
-    k_task = origins[keeper][leave].task_id if leave is not None else None   # takes the keeper away
+    y = presence(result.compiled, result.team_plan, yielder, y_step, node)
+    k = presence(result.compiled, result.team_plan, keeper, k_step, node)
 
     def make(kind: str, text: str, **fields: Any) -> Constraint:
         return Constraint(kind=kind, rule_id=f.reason, robot_id=yielder, text=text, **fields)
 
-    if arrive is None:   # stands there from the start of its plan: it cannot come later
+    if y.from_start:   # stands there from the start of its plan: it cannot come later
         return make("custom", f"{yielder} stands at {node} from the start of its plan, and {keeper} "
                               f"would stop there while it does. Have {yielder} leave {node} before "
                               f"{keeper} gets there.", node=node)
-    y_task = origins[yielder][arrive].task_id                   # brings the yielder to the node
-    if k_task is not None:
-        again = _reordered(result, before=k_task, after=y_task)
+    if not k.stays:
+        again = _reordered(result, before=k.leave_task, after=y.arrive_task)
         if again is not None and not _in_conflict(again, f, keeper, yielder):
-            return make("order_before", f"{yielder}: start task {y_task} only after {keeper} has finished "
-                                        f"task {k_task}; both would stop at {node}, where only one robot "
-                                        f"can stand.", task_id=k_task, value=y_task)
-    if ends_there and k_task is None:
-        return make("custom", f"{yielder}: task {task} cannot be done with the plan as it is: its target "
+            return make("order_before", f"{yielder}: start task {y.arrive_task} only after {keeper} has "
+                                        f"finished task {k.leave_task}; both would stop at {node}, where "
+                                        f"only one robot can stand.",
+                        task_id=k.leave_task, value=y.arrive_task)
+    if y.ends_task and k.stays:
+        return make("custom", f"{yielder}: task {y.task} cannot be done with the plan as it is: its target "
                               f"{node} is where {keeper} stays until the end of its plan. Change where "
                               f"{keeper} ends, so that {node} is free when {yielder} gets there.",
-                    task_id=task, node=node)
-    if ends_there:
-        return make("custom", f"{yielder}: {node} is where task {task} ends, but {keeper} is stopped there "
-                              f"until it leaves with task {k_task}. Wait at another node near {node} "
+                    task_id=y.task, node=node)
+    if y.ends_task:
+        return make("custom", f"{yielder}: {node} is where task {y.task} ends, but {keeper} is stopped there "
+                              f"until it leaves with task {k.leave_task}. Wait at another node near {node} "
                               f"first, and go to {node} only after {keeper} has left it.",
-                    task_id=task, node=node)
-    until = ("stays there until the end of its plan" if k_task is None
-             else f"is stopped there until it leaves with task {k_task}")
-    return make("forbid_node", f"{yielder}: do not wait at {node}; {keeper} {until}.", task_id=task, node=node)
-
-
-def _arrival_step(plan: Plan, step: int) -> int | None:
-    """The step that brings the robot to where it stands in `step`: `step` itself for the
-    stop at the end of a drive, else the drive before its standing steps; None if it stands
-    there from the start of its plan."""
-    if plan.steps[step].action == Action.NAVIGATE:
-        return step
-    while step > 0 and plan.steps[step - 1].action != Action.NAVIGATE:
-        step -= 1
-    return step - 1 if step > 0 else None
-
-
-def _departure_step(plan: Plan, step: int) -> int | None:
-    """The step that takes the robot away from where it stands in `step`, or None if it
-    stays there to the end of its plan."""
-    if plan.steps[step].action == Action.NAVIGATE:
-        return None   # the stop at the end of the plan
-    while step + 1 < len(plan.steps) and plan.steps[step + 1].action != Action.NAVIGATE:
-        step += 1
-    return step + 1 if step + 1 < len(plan.steps) else None
+                    task_id=y.task, node=node)
+    until = ("stays there until the end of its plan" if k.stays
+             else f"is stopped there until it leaves with task {k.leave_task}")
+    return make("forbid_node", f"{yielder}: do not wait at {node}; {keeper} {until}.",
+                task_id=y.task, node=node)
 
 
 def _with_dependency(plan: TeamPlan, *, before: str, after: str) -> TeamPlan | None:
