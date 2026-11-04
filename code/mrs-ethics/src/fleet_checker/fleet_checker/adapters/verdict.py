@@ -20,6 +20,8 @@
   P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
   P-3 and compile errors             custom
   plan_json is not a TeamPlan        custom, rule llm_malformed (unreadable_plan_verdict)
+  the gate does not know where       custom, rule unknown_robot (unknown_positions_verdict):
+  every robot is                     nothing is checked
 
 Every node of the zone, not only the one in the plan: otherwise the next plan
 can stop at, or route through, a neighbouring node of the same zone and be
@@ -62,7 +64,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Sequence
 
 from mrs_common import reasons as R
 from mrs_common.plan_schema import Constraint, TeamPlan
@@ -232,6 +234,34 @@ def unreadable_plan_verdict(error: ValueError) -> VerdictContent:
         constraints=(Constraint(kind="custom", rule_id=R.LLM_MALFORMED,
                                 text=f"plan_json is not a valid TeamPlan: {problem}. "
                                      "Send a plan that matches the TeamPlan JSON schema."),),
+    )
+
+
+def unknown_positions_verdict(problems: Sequence[tuple[str | None, str]]) -> VerdictContent:
+    """REJECT without a check, because the gate does not know where every robot of the fleet is:
+    fail closed, since a robot left out could be in the way of any plan.
+
+    problems: (robot, or None when it is about every robot, why its position is unknown), from
+    the gate's start source. The rule id is unknown_robot, mrs_common's code for a robot whose
+    position is unknown. Each problem becomes a custom constraint: the planner cannot fix it,
+    only send the plan again later.
+    """
+    robots = sorted({robot for robot, _ in problems if robot is not None})
+    if any(robot is None for robot, _ in problems):
+        who = "the robots are"
+    else:
+        who = f"{robots[0]} is" if len(robots) == 1 else f"{_join(robots)} are"
+    return VerdictContent(
+        verdict=REJECT,
+        rule_ids=(R.UNKNOWN_ROBOT,),
+        standard_refs=(),
+        risk_score=SEVERITY[R.UNKNOWN_ROBOT] / TOP_LEVEL,
+        rationale=f"Plan not checked: the gate does not know where {who}. Send the plan again once it does.",
+        constraints=tuple(
+            Constraint(kind="custom", rule_id=R.UNKNOWN_ROBOT, robot_id=robot,
+                       text=f"The gate does not know where {robot + ' is' if robot else 'the robots are'}: "
+                            f"{why}. Send the plan again once it does.")
+            for robot, why in problems),
     )
 
 

@@ -36,7 +36,10 @@ PARAMETERS: dict[str, tuple[type, Any, str]] = {
               "mrs_sim world name, or a path to a .sdf with its .yaml next to it (as in sim.launch.py)"),
     "map_file": (str, "", "a map .yaml to use instead of world, e.g. a test map that has no .sdf"),
     "robots": (int, 2, "fleet size: robot_a, robot_b, ... at the map's spawn slots, as in sim.launch.py"),
-    "start_source": (str, "spawns", "where robots start: spawns (team_state needs Module 3, not built)"),
+    "start_source": (str, "spawns", "where robots start: spawns (the map's spawn slots) or team_state "
+                                    "(Module 3's /mrs/team_state)"),
+    "team_state_max_age": (float, REQUIRED, "start_source team_state: a position older than this [s], or "
+                                            "stamped more than this ahead of the gate's clock, is unknown"),
     "speed": (float, REQUIRED, "nominal driving speed [m/s] used to time each robot's plan"),
     "robot_length": (float, REQUIRED, "robot length [m] along its direction of travel; S-4 counts a robot "
                                       "at a node while any part of it is over the node"),
@@ -49,7 +52,7 @@ PARAMETERS: dict[str, tuple[type, Any, str]] = {
     "people_file": (str, "", "people for S-2 (YAML); empty: the package's config/people.yaml (nobody)"),
 }
 
-START_SOURCES = ("spawns",)
+START_SOURCES = ("spawns", "team_state")
 
 
 class SettingsError(ValueError):
@@ -85,6 +88,7 @@ class GateSettings:
     map_path: Path
     robots: tuple[str, ...]
     start_source: str
+    team_state_max_age: float | None   # [s]; only for start_source team_state
     speed: float
     robot_length: float
     margin: float
@@ -101,6 +105,7 @@ class GateSettings:
         """Plain JSON values, for the node's start-up log line."""
         return {
             "map": str(self.map_path), "robots": list(self.robots), "start_source": self.start_source,
+            "team_state_max_age": self.team_state_max_age,
             "speed": self.speed, "robot_length": self.robot_length, "margin": self.margin,
             "max_duration": self.max_duration,
             "starvation_threshold": self.starvation_threshold,
@@ -148,11 +153,16 @@ def load_settings(values: Mapping[str, Any], *, default_policy_file: Path,
     _require(1 <= v["robots"] <= 26, f"robots must be between 1 and 26, got {v['robots']}")
     robots = tuple(N.robot_ids(v["robots"]))
 
-    if v["start_source"] == "team_state":
-        raise SettingsError("start_source team_state is not built yet: it needs Module 3's "
-                            "/mrs/team_state; use spawns")
     _require(v["start_source"] in START_SOURCES,
              f"start_source must be one of {list(START_SOURCES)}, got {v['start_source']!r}")
+    max_age = v["team_state_max_age"]
+    if v["start_source"] == "team_state":
+        if max_age is None:
+            raise SettingsError("team_state_max_age is not set: give the oldest robot position [s] that "
+                                "start_source team_state may use (config/gate.yaml)")
+        _require(math.isfinite(max_age) and max_age > 0, f"team_state_max_age must be > 0 s, got {max_age}")
+    else:
+        max_age = None   # not used
 
     policy_file = Path(v["policy_file"]).expanduser().resolve() if v["policy_file"] else Path(default_policy_file)
     policy = _read_policy(policy_file)
@@ -165,6 +175,7 @@ def load_settings(values: Mapping[str, Any], *, default_policy_file: Path,
         map_path=_map_path(v["world"], v["map_file"]),
         robots=robots,
         start_source=v["start_source"],
+        team_state_max_age=None if max_age is None else float(max_age),
         speed=float(v["speed"]),
         robot_length=float(v["robot_length"]),
         margin=float(v["margin"]),

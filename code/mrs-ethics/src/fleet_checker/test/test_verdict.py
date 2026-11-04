@@ -596,3 +596,20 @@ def test_make_verdict_kwargs(samples_map):
 def test_verdict_strings_match_ethical_verdict_msg():
     found = dict(re.findall(r"^string VERDICT_(\w+)=(\w+)$", VERDICT_MSG.read_text(), re.M))
     assert found == {"APPROVE": APPROVE, "MODIFY": MODIFY, "REJECT": REJECT}
+
+
+# ---------------- positions unknown (the gate's start_source team_state) ----------------
+
+def test_unknown_positions_reject_the_plan_unchecked():
+    from fleet_checker.adapters.verdict import unknown_positions_verdict
+    v = unknown_positions_verdict(((None, "no /mrs/team_state has been received yet"),))
+    assert (v.verdict, v.rule_ids, v.standard_refs, v.risk_score) == (REJECT, (R.UNKNOWN_ROBOT,), (), 1 / 3)
+    assert fields(v, "kind", "rule_id", "robot_id", "text") == [
+        ("custom", R.UNKNOWN_ROBOT, None, "The gate does not know where the robots are: no /mrs/team_state "
+                                          "has been received yet. Send the plan again once it does.")]
+    assert v.rationale == ("Plan not checked: the gate does not know where the robots are. "
+                           "Send the plan again once it does.")
+    two = unknown_positions_verdict((("robot_a", "it is not in the latest /mrs/team_state"),
+                                     ("robot_b", "its position has no time stamp")))
+    assert fields(two, "robot_id") == [("robot_a",), ("robot_b",)]
+    assert two.rationale.startswith("Plan not checked: the gate does not know where robot_a and robot_b are.")

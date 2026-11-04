@@ -88,9 +88,25 @@ def test_values_out_of_range_are_refused(name, value):
         load(**{name: value})
 
 
-def test_team_state_start_source_is_not_built_yet():
-    with pytest.raises(SettingsError, match="team_state is not built yet"):
+def test_team_state_takes_positions_no_older_than_its_age_limit():
+    s = load(start_source="team_state", team_state_max_age=1.0)
+    assert (s.start_source, s.team_state_max_age) == ("team_state", 1.0)
+    assert PARAMETERS["team_state_max_age"][1] is REQUIRED
+    with pytest.raises(SettingsError, match="team_state_max_age is not set"):
         load(start_source="team_state")
+    for bad in (0.0, -1.0, float("inf")):
+        with pytest.raises(SettingsError, match="team_state_max_age must be"):
+            load(start_source="team_state", team_state_max_age=bad)
+    assert load().team_state_max_age is None     # spawns: not used
+
+
+def test_shipped_config_sets_the_age_limit_and_the_margin_it_needs():
+    text = GATE_YAML.read_text()
+    params = yaml.safe_load(text)["mrs_ethical_gate"]["ros__parameters"]
+    assert (params["start_source"], params["team_state_max_age"]) == ("spawns", 1.0)
+    assert "PLACEHOLDER" in text[text.index("# start_source team_state"):text.index("team_state_max_age:")]
+    # The error budget of team_state positions, next to the margin it is for.
+    assert "at least 2 s" in text[text.index("# Each occupancy interval"):text.index("margin:")]
 
 
 def test_unknown_start_source_is_refused():
@@ -137,6 +153,7 @@ def test_describe_is_plain_json_for_the_start_up_log():
     assert d["crowding"] == {"radius": 1.5, "max_robots": 1}
     assert d["robot_length"] == 0.45
     assert d["people"] == []
+    assert d["team_state_max_age"] is None
 
 
 # ---------------- S-2: R, N and the people ----------------

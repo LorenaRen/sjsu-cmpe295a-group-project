@@ -11,8 +11,13 @@ mrs_ethical_gate:
     # PLACEHOLDER: 0.45 is the chassis box of mrs_sim's mrs_bot.sdf (0.45 x 0.30 m), not a
     # measured robot. Turning on a node sweeps more than its length; the margin covers that.
     robot_length: 0.45
-    # Each occupancy interval is widened by this much at both ends [s] (rules_v1.md, S-1 and S-2).
+    # Each occupancy interval is widened by this much at both ends [s] (rules_v1.md, S-1, S-2, S-4).
     # Initial value, to be tuned by experiment.
+    # With start_source team_state, the start positions bring an error of their own that the margin
+    # has to cover (rules_v1.md, "Module 5 gate"): a robot counts as at a node up to 0.5 m from it
+    # (0.5 m / speed = 1 s), and its position can be up to team_state_max_age (1 s) old, so about
+    # 2 s in the worst case at these placeholder values, more than this 0.5 s. Until that is
+    # measured, use a margin of at least 2 s with team_state.
     margin: 0.5
     max_duration: 3600.0      # P-3: longest plan allowed [s]
     starvation_threshold: 3   # F-2: REJECTs in a row before a robot gets priority
@@ -22,5 +27,11 @@ mrs_ethical_gate:
     # CBF clearance for people, which is not set yet. The people are in people_file.
     crowding_radius: 1.5
     crowding_max_robots: 1
-    start_source: spawns      # team_state needs Module 3 (not built)
+    # Where the robots are when a plan is checked: spawns (the map's spawn slots, right only until the
+    # robots move) or team_state (Module 3's /mrs/team_state, read when a plan arrives).
+    start_source: spawns
+    # start_source team_state: a robot's position older than this [s], or stamped more than this
+    # ahead of the gate's clock, is unknown, and the plan is rejected unchecked (unknown_robot).
+    # PLACEHOLDER: two periods of WorldState's 2 Hz, not measured.
+    team_state_max_age: 1.0
     policy_file: ""           # empty: this package's config/policy.yaml
