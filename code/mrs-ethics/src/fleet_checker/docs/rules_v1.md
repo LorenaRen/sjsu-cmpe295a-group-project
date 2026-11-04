@@ -236,19 +236,40 @@ nobody drives through; round 4 is approved.  In `s4_park_after_pass`,
 robot_a drives through corridor_1 to corridor_2.  There robot_b can wait,
 and both keep their targets.
 
-**With S-1 and S-2.**  In a round every conflict ranks robots by the same
-key (F-2, yields, task type, first entry over all conflicts, robot id), so
-every `order_before` the checker sends has a robot with a lower key wait
-for one with a higher key: they cannot form a cycle among themselves.  The
-exception is the keeper's wait above, which points the other way.  It is
-checked on the plan as proposed, not together with the verdict's other
-orderings, so it could close a cycle with them in a rare case.  None of the
-tested scenarios has one.  The planner then cannot follow both (the fake
-planner refuses the second as circular), and the next round sees what it
-did.  `forbid_node` and `custom` are not orderings.  What a verification
-does not see, a fix for one rule causing a conflict under another, the
-next round catches on the REJECT path; MODIFY must check the whole plan
-again.
+**With S-1 and S-2, and a verdict's orderings together.**  In a round every
+conflict ranks robots by the same key (F-2, yields, task type, first entry
+over all conflicts, robot id), so the rules agree on who gives way to whom.
+That the orderings of one verdict never make tasks wait for each other in
+a cycle rests on a **check**, not on that ranking, for two reasons.  Each
+ordering is verified on its own.  And the keeper's wait above points the
+other way: the robot R-1 ranked higher waits.
+
+So once every constraint is made, all the verdict's `order_before` are
+added to one copy of the plan and checked for a cycle.  Two kinds of
+waiting count: `depends_on` (TeamPlan's own validation) and each robot's
+own task order (`compiler.deadlock`, the graph the compiler sorts tasks
+by).  TeamPlan's check alone is not enough: it accepts "a1 after b2" and
+"b2 after a2", though a2 comes after a1 on robot_a.
+
+- If the orderings would wait in a cycle, the keepers' waits fall back to
+  their `forbid_node`, last first, checking again after each one.  The
+  fallback's text says that waiting would close a cycle with the plan's
+  other orderings.
+- Every other ordering has a lower-ranked robot wait for a higher-ranked
+  one, so with the robots' task order they cannot close a cycle.  Only the
+  plan's own `depends_on` can.  Then those orderings too, last first,
+  become `custom` constraints saying so.
+
+`test_verdict.py` builds the first case on the parking map, where robot_b
+passes c and parks at e and robot_a drives through both: once through one
+task of robot_a, once through its task order.  The second case is tested
+on the helper itself: it needs three robots and a `depends_on` of the plan,
+and no compact map reaches it with each ordering verified on its own.
+`forbid_node` and `custom` are not orderings.
+
+What a verification does not see, a fix for one rule causing a conflict
+under another, the next round catches on the REJECT path; MODIFY must
+check the whole plan again.
 
 **Known limitations.**
 
@@ -268,8 +289,6 @@ again.
    conflict only the keeper can resolve follows from who can resolve it,
    not from the ranking.  So F-2 does not keep a starving keeper at the
    node; it still protects it in other conflicts.
-5. **The keeper's wait and the round's other orderings** are not checked
-   together (see "With S-1 and S-2").
 
 - **Scope:** cross-plan
 - **Data:** each step's `end_node`, `waypoints`, action and times
@@ -377,7 +396,10 @@ Resolution order (robots are ranked; the first n − c yield):
 **Entry time is taken once per robot per round**, not once per conflict:
 it is the robot's earliest claim start over *all* conflicts found in that
 round.  Every robot therefore has one global sort key for the round, and
-the yield relations of a round cannot form a cycle.  Taken per conflict,
+the yield relations of a round cannot form a cycle.  (The orderings a
+verdict sends are checked together for a cycle all the same, since S-4's
+keeper's wait points the other way: see S-4, "a verdict's orderings
+together".)  Taken per conflict,
 a head-on swap breaks this: it is reported as two conflicts (one in each
 region), each robot is "first" in the region it starts in, so each half
 would send the *other* robot back, and the two resulting orderings would
@@ -615,6 +637,14 @@ One ordering is checked on the whole plan instead: S-4's keeper waiting
 for a yielder that drives through the node.  It moves all that is left of
 the keeper's plan later, not just one robot's getting to one place, so the
 two robots must meet nowhere they did not meet before (see S-4).
+
+**All the orderings together.**  Each ordering is verified on its own.
+Then all the verdict's `order_before` are checked together for tasks
+waiting for each other in a cycle, through `depends_on` and through each
+robot's task order.  If they would, the S-4 keepers' waits fall back to
+`forbid_node` first, and any cycle left (only the plan's own `depends_on`
+can close one) turns the orderings into `custom`, last first.  Details
+under S-4.
 
 ### Other fields
 
