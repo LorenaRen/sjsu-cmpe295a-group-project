@@ -6,7 +6,8 @@ import pytest
 
 from fleet_checker.adapters.compiler import OnEdge
 from fleet_checker.adapters.sim_map import load_sim_map
-from mrs_ethical_gate.starts import (FixedStarts, RobotState, Starts, TeamSnapshot, TeamStateStarts,
+from fleet_checker.plan import HumanObservation
+from mrs_ethical_gate.starts import (FixedStarts, PersonSeen, RobotState, Starts, TeamSnapshot, TeamStateStarts,
                                      UnknownStarts, spawn_start_nodes, start_from, team_snapshot)
 
 SRC = Path(__file__).resolve().parents[2]
@@ -78,15 +79,22 @@ def stamp(t: float) -> SimpleNamespace:
     return SimpleNamespace(sec=int(t), nanosec=round((t - int(t)) * 1e9))
 
 
+def entity(entity_id, kind, x, y) -> SimpleNamespace:
+    return SimpleNamespace(id=entity_id, type=kind, at="", x=x, y=y, distance=1.0)
+
+
 def test_a_team_state_message_becomes_a_snapshot():
     msg = SimpleNamespace(
         episode_id="ep1", blocked_edges=["corridor_1--room_3"], stamp=stamp(10.25),
-        robots=[SimpleNamespace(robot_id="robot_a", at="west_s", x=0.0, y=-1.2, stamp=stamp(10.5)),
-                SimpleNamespace(robot_id="robot_b", at="corridor_1->pass_e", x=8.6, y=0.0, stamp=stamp(0.0))])
+        robots=[SimpleNamespace(robot_id="robot_a", at="west_s", x=0.0, y=-1.2, stamp=stamp(10.5), obstacles=[]),
+                SimpleNamespace(robot_id="robot_b", at="corridor_1->pass_e", x=8.6, y=0.0, stamp=stamp(0.0),
+                                obstacles=[entity("person_1", "person", 10.0, -1.0),
+                                           entity("box_1", "obstacle", 5.0, 0.0)])])
     assert team_snapshot(msg) == TeamSnapshot(
         episode_id="ep1", stamp=10.25, blocked_edges=("corridor_1--room_3",),
         robots=(RobotState("robot_a", "west_s", 0.0, -1.2, 10.5),
-                RobotState("robot_b", "corridor_1->pass_e", 8.6, 0.0, None)))   # 0 s 0 ns: not set
+                RobotState("robot_b", "corridor_1->pass_e", 8.6, 0.0, None,      # 0 s 0 ns: not set
+                           people=(PersonSeen("person_1", 10.0, -1.0),))))       # boxes are left out
 
 
 # ---------------- the latest snapshot, read when a plan arrives ----------------
@@ -118,7 +126,8 @@ def test_the_latest_snapshot_gives_every_robot_its_start(samples_map):
     assert starts.on_edges == {"robot_b": OnEdge("corridor_1", "pass_e", (8.6, 0.0))}
     assert (starts.snapshot_age, starts.ages) == (0.25, {"robot_a": 0.75, "robot_b": 0.5})
     assert starts.summary() == {
-        "source": "team_state", "snapshot_age_s": 0.25, "left_out": [], "blocked_edges_not_used": [],
+        "source": "team_state", "snapshot_age_s": 0.25, "left_out": [], "blocked_edges": [],
+        "blocked_edges_not_on_map": [],
         "robots": {"robot_a": {"at": "west_s", "age_s": 0.75}, "robot_b": {"at": "corridor_1->pass_e", "age_s": 0.5}}}
 
 
@@ -166,10 +175,58 @@ def test_a_snapshot_of_another_episode_says_nothing(samples_map):
 
 def test_robots_outside_the_fleet_are_left_out_and_logged(samples_map):
     extra = robot("robot_c", "room_3", 12.0, 0.0)
-    starts = team_state(samples_map, snapshot(*AT_SPAWNS, extra, blocked_edges=["corridor_1--room_3"])).at("ep1", now=10.0)
+    starts = team_state(samples_map, snapshot(*AT_SPAWNS, extra)).at("ep1", now=10.0)
     assert set(starts.start_nodes) == set(FLEET)
+    assert starts.summary()["left_out"] == ["robot_c"]
+
+
+# ---------------- blocked edges ----------------
+
+def test_blocked_edges_are_read_either_way_round(samples_map):
+    starts = team_state(samples_map, snapshot(*AT_SPAWNS, blocked_edges=["pass_w--pass_e", "corridor_1--room_3"]))
+    assert starts.at("ep1", now=10.0).blocked_edges == (("corridor_1", "room_3"), ("pass_e", "pass_w"))
+
+
+def test_blocked_edges_the_map_does_not_have_are_left_out_and_logged(samples_map):
+    # They cannot be on a route the checker computes; a map that does not match shows in `at` too.
+    s = team_state(samples_map, snapshot(*AT_SPAWNS, blocked_edges=["room_2--room_3", "corridor_1--room_3", "x"]))
+    starts = s.at("ep1", now=10.0)
+    assert (starts.blocked_edges, starts.blocked_not_on_map) == ((("corridor_1", "room_3"),), ("room_2--room_3", "x"))
     summary = starts.summary()
-    assert (summary["left_out"], summary["blocked_edges_not_used"]) == (["robot_c"], ["corridor_1--room_3"])
+    assert (summary["blocked_edges"], summary["blocked_edges_not_on_map"]) == (
+        ["corridor_1--room_3"], ["room_2--room_3", "x"])
+
+
+def test_a_robot_on_a_blocked_edge_is_unknown(samples_map):
+    on_edge = robot("robot_b", "corridor_1->pass_e", 8.6, 0.0)
+    starts = team_state(samples_map, snapshot(AT_SPAWNS[0], on_edge, blocked_edges=["corridor_1--pass_e"]))
+    assert starts.at("ep1", now=10.0).problems == (
+        ("robot_b", "it is on corridor_1->pass_e, which is blocked: whether it finishes the edge, turns back "
+                    "or stops is not known"),)
+
+
+# ---------------- people the robots see ----------------
+
+def test_people_come_from_what_the_robots_see(samples_map):
+    a, b = AT_SPAWNS
+    starts = team_state(samples_map, snapshot(a, b._replace(people=(PersonSeen("person_1", 10.0, -1.0),))))
+    assert starts.at("ep1", now=10.0).people_seen == (
+        ("robot_b", HumanObservation(human_id="person_1", position=(10.0, -1.0))),)
+
+
+def test_a_person_two_robots_see_is_where_the_newer_report_says(samples_map):
+    a = AT_SPAWNS[0]._replace(stamp=9.8, people=(PersonSeen("person_1", 10.0, -1.0),))
+    b = AT_SPAWNS[1]._replace(stamp=9.9, people=(PersonSeen("person_1", 10.2, -1.0),))
+    newer = team_state(samples_map, snapshot(a, b)).at("ep1", now=10.0)
+    assert newer.people_seen == (("robot_b", HumanObservation(human_id="person_1", position=(10.2, -1.0))),)
+    # Reports of the same age: the first robot's, by robot id.
+    same_age = team_state(samples_map, snapshot(a._replace(stamp=9.9), b)).at("ep1", now=10.0)
+    assert [robot for robot, _ in same_age.people_seen] == ["robot_a"]
+
+
+def test_people_seen_by_robots_outside_the_fleet_are_left_out(samples_map):
+    extra = robot("robot_c", "room_3", 12.0, 0.0)._replace(people=(PersonSeen("person_9", 12.0, 0.5),))
+    assert team_state(samples_map, snapshot(*AT_SPAWNS, extra)).at("ep1", now=10.0).people_seen == ()
 
 
 def test_unknown_positions_are_logged_with_the_reasons(samples_map):
