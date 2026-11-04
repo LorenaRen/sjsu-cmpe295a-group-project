@@ -4,7 +4,8 @@ The LLM names only targets; the compiler picks the route and the times, so a
 proposer cannot shorten its own timings or skip a zone.
 
 Route: shortest path on the waypoint graph (Dijkstra, edge length = Euclidean
-distance). Routes of equal length (to 1e-9 m) are told apart by comparing node
+distance), leaving out blocked edges in both directions (team_state's
+blocked_edges). Routes of equal length (to 1e-9 m) are told apart by comparing node
 names along the route, so the same input always gives the same route. Each
 edge is driven straight at `speed`; the time spent in each zone comes from
 where the edge crosses zone boundaries (SimMap.pieces). Each step also gets
@@ -41,7 +42,8 @@ behaves the same way.
                                                               robot stays there (claims' hold_final)
 
   - A hold_position that is not the robot's last task acts like navigate.
-  - The executor drives the same shortest path, including how ties are broken.
+  - The executor drives the same shortest path, including how ties are broken,
+    and leaves out the same blocked edges.
   - depends_on is enforced by events (TaskStatus "done"), not by these times.
     The times are estimates: speed is nominal, and acceleration, turning on
     the spot and CBF slow-downs are not modelled. The cross-plan check's
@@ -57,8 +59,9 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import pairwise
-from typing import Mapping, NamedTuple
+from typing import Collection, Mapping, NamedTuple
 
+from mrs_common import names as N
 from mrs_common.plan_schema import Action as TaskAction, Task, TeamPlan
 
 from ..plan import TIME_EPS, Action, Plan, PlanStep, TaskType, Violation, Waypoint, WorldSnapshot
@@ -131,6 +134,7 @@ def compile_team_plan(
     plan_id: str = "teamplan",
     revision: int = 0,
     on_edges: Mapping[str, OnEdge] | None = None,
+    blocked_edges: Collection[tuple[str, str]] = (),
 ) -> CompiledTeamPlan:
     """Compile every robot's tasks into a timed Plan.
 
@@ -149,6 +153,8 @@ def compile_team_plan(
             Plan gets plan_id "<plan_id>/<robot_id>".
         on_edges: robot_id -> the edge it is on, for robots between two nodes. Such
             a robot first drives to the end of its edge, which must be its start node.
+        blocked_edges: edges no route may use, as (node, node) pairs in either order.
+            A robot cannot be on one of them.
 
     Compile errors (unknown robot or target, no route, deadlock) come back as
     Violations, all of them at once, with no plans.
@@ -158,6 +164,10 @@ def compile_team_plan(
     for robot, node in start_nodes.items():
         if node not in sim_map.positions:
             raise ValueError(f"start node {node!r} of {robot!r} is not on map {sim_map.name!r}")
+    blocked = _blocked(sim_map, blocked_edges)
+    for robot, e in (on_edges or {}).items():
+        if frozenset((e.from_node, e.to_node)) in blocked:
+            raise ValueError(f"{robot} is on {e.from_node}{N.TRAVEL_SEP}{e.to_node}, which is blocked")
     lead_ins = {r: _rest_of_edge(sim_map, e, start_nodes.get(r), r) for r, e in (on_edges or {}).items()}
     lead_ins = {r: segments for r, segments in lead_ins.items() if segments}
     snapshot = WorldSnapshot(time=t0, robot_regions={
@@ -182,11 +192,12 @@ def compile_team_plan(
             continue
         here = start_nodes[robot]
         for t in tasks:
-            path = _shortest_path(sim_map.neighbors, here, t.target)
+            path = _shortest_path(sim_map.neighbors, here, t.target, blocked)
             if path is None:
+                without = f" without the blocked edges {', '.join(_edge_ids(blocked))}" if blocked else ""
                 violations.append(Violation(
                     code="NO_ROUTE",
-                    message=f"task {t.task_id!r} ({robot}): no path from {here!r} to {t.target!r}"))
+                    message=f"task {t.task_id!r} ({robot}): no path from {here!r} to {t.target!r}{without}"))
                 break   # where the robot would be after this task is unknown
             routes[t.task_id] = _segments(sim_map, path)
             here = t.target
@@ -221,10 +232,24 @@ def compile_team_plan(
 # Routing
 # --------------------------------------------------------------------------
 
-def _shortest_path(neighbors: Mapping[str, Mapping[str, float]],
-                   source: str, target: str) -> list[str] | None:
-    """Dijkstra. Heap entries are (length, route), so among equal lengths the
-    route whose node names sort first wins: deterministic, and easy to state."""
+def _blocked(sim_map: SimMap, blocked_edges: Collection[tuple[str, str]]) -> frozenset[frozenset[str]]:
+    """The blocked edges as unordered node pairs. Raises ValueError for one the map does not have."""
+    blocked = frozenset(frozenset(e) for e in blocked_edges)
+    for a, b in blocked_edges:
+        if (a, b) not in sim_map.pieces:
+            raise ValueError(f"{N.edge_id(a, b)} is not an edge of map {sim_map.name!r}")
+    return blocked
+
+
+def _edge_ids(edges: Collection[frozenset[str]]) -> list[str]:
+    return sorted(N.edge_id(*edge) for edge in edges)
+
+
+def _shortest_path(neighbors: Mapping[str, Mapping[str, float]], source: str, target: str,
+                   blocked: Collection[frozenset[str]] = frozenset()) -> list[str] | None:
+    """Dijkstra on the edges not blocked. Heap entries are (length, route), so among
+    equal lengths the route whose node names sort first wins: deterministic, and easy
+    to state."""
     heap: list[tuple[float, tuple[str, ...]]] = [(0.0, (source,))]
     finished: set[str] = set()
     while heap:
@@ -236,7 +261,7 @@ def _shortest_path(neighbors: Mapping[str, Mapping[str, float]],
             return list(route)
         finished.add(node)
         for nxt, edge in neighbors[node].items():
-            if nxt not in finished:
+            if nxt not in finished and frozenset((node, nxt)) not in blocked:
                 heapq.heappush(heap, (round(length + edge, _LENGTH_DIGITS), route + (nxt,)))
     return None
 
