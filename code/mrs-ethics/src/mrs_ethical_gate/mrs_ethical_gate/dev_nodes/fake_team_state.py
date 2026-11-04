@@ -10,7 +10,9 @@ the gate with start_source team_state (starts.py) to read.
       map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml   # with the gate and the fake planner
 
   out  /mrs/team_state   a TeamState: one WorldState per robot of the snapshot (robot_id, at, x, y,
-                         yaw; no zones, sectors or obstacles), every stamp the node clock now
+                         yaw, and the people it sees as obstacles of type person, with their
+                         distance from it; no zones or sectors), the snapshot's blocked edges,
+                         every stamp the node clock now
 
 With stop_after > 0 it stops publishing after that many seconds and exits, so that a test
 can see the gate take the last snapshot for too old. Exit codes: 0 when it stopped, 1 for a
@@ -20,13 +22,14 @@ timeouts do; the stamps come from the node clock, the clock the gate compares th
 from __future__ import annotations
 
 import json
+import math
 import signal
 import time
 from pathlib import Path
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from mrs_msgs.msg import TeamState, WorldState
+from mrs_msgs.msg import PerceivedEntity, TeamState, WorldState
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
@@ -77,6 +80,9 @@ class FakeTeamStateNode(Node):
         f, now = self.feed, self.get_clock().now().to_msg()
         msg = TeamState(episode_id=f.episode_id, blocked_edges=list(f.snapshot.blocked_edges), stamp=now)
         msg.robots = [WorldState(robot_id=r.robot_id, episode_id=f.episode_id, x=r.x, y=r.y, yaw=r.yaw, at=r.at,
+                                 obstacles=[PerceivedEntity(id=p.person_id, type=PerceivedEntity.TYPE_PERSON,
+                                                            x=p.x, y=p.y, distance=math.dist((r.x, r.y), (p.x, p.y)))
+                                            for p in f.snapshot.people if r.robot_id in p.seen_by],
                                  stamp=now)
                       for r in f.snapshot.robots]
         return msg

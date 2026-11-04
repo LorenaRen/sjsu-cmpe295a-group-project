@@ -83,6 +83,20 @@ def test_it_publishes_the_snapshot_stamped_now(ros):
     listener.destroy_node()
 
 
+def test_the_people_it_lists_are_obstacles_of_the_robots_that_see_them(ros):
+    fake = feed(Parameter("snapshot", value="person_by_corridor_2"), Parameter("rate", value=20.0))
+    executor = SingleThreadedExecutor()
+    executor.add_node(fake)
+    listener, got = listen(executor)
+    assert spin_until(executor, lambda: got)
+    seen = {r.robot_id: [(e.id, e.type, e.x, e.y, round(e.distance, 3)) for e in r.obstacles] for r in got[-1].robots}
+    # Only robot_b sees person_1, 2.2 m from east_n at (12, 1.2): sqrt(2^2 + 2.2^2) = 2.973 m.
+    assert seen == {"robot_a": [], "robot_b": [("person_1", "person", 10.0, -1.0, 2.973)]}
+    executor.shutdown()
+    fake.destroy_node()
+    listener.destroy_node()
+
+
 def test_it_stops_after_stop_after(ros):
     fake = feed(Parameter("snapshot", value="at_spawns"), Parameter("rate", value=20.0),
                 Parameter("stop_after", value=0.3))
