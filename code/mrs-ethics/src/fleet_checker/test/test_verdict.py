@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from mrs_common import load_sample, plan_from_json
 from mrs_common import reasons as R
-from mrs_common.plan_schema import TeamPlan, constraints_from_json, constraints_to_json
+from mrs_common.plan_schema import Constraint, TeamPlan, constraints_from_json, constraints_to_json
 
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 from fleet_checker.adapters.team_check import check_team_plan
@@ -392,6 +392,71 @@ def test_a_keeper_that_cannot_wait_without_a_cycle_ends_somewhere_else(samples_m
     assert (c.kind, c.robot_id, c.task_id, c.node) == ("forbid_node", "robot_b", "b1", "corridor_1")
     assert c.text.endswith("waiting until robot_a has gone by does not help: the tasks would wait for each "
                            "other in a cycle.")
+
+
+# ---------------- the orderings of a verdict, together ----------------
+# robot_b passes c at 4 s (b1 ends there, b2 drives on) and parks at e from 9 s; robot_a drives
+# w -> c -> e -> f, at c at 5 s and through e at 10 s. robot_a gets to both later, so it yields
+# in both. At c robot_b leaves: robot_a's task waits for b2. At e robot_b stays to the end:
+# robot_b waits for robot_a's task that drives through e. Each ordering works on its own (each
+# is verified), but together the tasks would wait for each other.
+
+PASSES_C_PARKS_AT_E = ("robot_b", [task("b1", "navigate", "c"), task("b2", "hold_position", "e")])
+
+
+def test_a_keepers_wait_that_closes_a_cycle_with_another_ordering_falls_back_to_forbid_node(parking):
+    # One task of robot_a, a1, drives through both nodes: a1 after b2 and b2 after a1.
+    plan = team(("robot_a", [task("a1", "navigate", "f")]), PASSES_C_PARKS_AT_E)
+    v = verdict_for(parking, plan, speed=1.0)
+    assert s4(v) == [
+        ("order_before", "robot_a", "b2", None, "a1",
+         "robot_a: start task a1 only after robot_b has finished task b2; both would drive through c at "
+         "the same time."),
+        ("forbid_node", "robot_b", "b2", "e", None,
+         "robot_b: do not end your plan at e. This changes your final stop, because robot_a has to drive "
+         "through e (task a1) and you would stay there until the end of your plan; waiting until robot_a "
+         "has gone by does not help: together with the other orderings of this plan, the tasks would wait "
+         "for each other in a cycle.")]
+
+
+def test_a_cycle_through_a_robots_own_task_order_is_found_too(parking):
+    # robot_a reaches c with a1 and drives through e with a2: a1 after b2 and b2 after a2. The
+    # depends_on alone have no cycle (TeamPlan accepts them), but a2 comes after a1.
+    plan = team(("robot_a", [task("a1", "navigate", "c"), task("a2", "navigate", "f")]),
+                PASSES_C_PARKS_AT_E)
+    v = verdict_for(parking, plan, speed=1.0)
+    assert [(c.kind, c.robot_id, c.task_id, c.node, c.value) for c in v.constraints] == [
+        ("order_before", "robot_a", "b2", None, "a1"), ("forbid_node", "robot_b", "b2", "e", None)]
+
+
+def test_a_cycle_left_without_the_keepers_waits_turns_the_last_orderings_into_custom():
+    """Orderings that make a robot R-1 ranked lower wait cannot form a cycle by themselves, nor
+    with each robot's task order; the plan's own depends_on can close one. robot_a yields to
+    robot_b, robot_b to robot_c, and c1 already waits for a2. No compact map reaches this with
+    each ordering verified on its own, so the last step of to_verdict is tested directly."""
+    from fleet_checker.adapters.verdict import _Proposal, _without_cycles
+    plan = team(("robot_a", [task("a1", "navigate", "x"), task("a2", "navigate", "y")]),
+                ("robot_b", [task("b1", "navigate", "x"), task("b2", "navigate", "y")]),
+                ("robot_c", [task("c1", "navigate", "z", depends_on=["a2"])]))
+    b_waits = Constraint(kind="order_before", rule_id=R.NODE_OCCUPIED, robot_id="robot_b", task_id="c1",
+                         value="b1", text="robot_b: start task b1 only after robot_c has finished task c1.")
+    a_waits = Constraint(kind="order_before", rule_id=R.CAPACITY_EXCEEDED, robot_id="robot_a", task_id="b2",
+                         value="a1", text="robot_a: start task a1 only after robot_b has finished task b2.")
+    kept, cut = _without_cycles(plan, [_Proposal(b_waits), _Proposal(a_waits)])
+    assert kept == b_waits
+    assert (cut.kind, cut.rule_id, cut.robot_id, cut.task_id) == ("custom", R.CAPACITY_EXCEEDED,
+                                                                  "robot_a", "a1")
+    assert cut.text == ("robot_a: start task a1 only after robot_b has finished task b2. This cannot be done "
+                        "together with the plan's own depends_on and this verdict's other orderings: the tasks "
+                        "would wait for each other in a cycle. Change the plan so that robot_a does not have to "
+                        "wait for task b2.")
+
+
+def test_orderings_that_work_together_are_left_alone(parking):
+    # Without a cycle the orderings stay as they are: robot_a waits for robot_b at c.
+    v = verdict_for(parking, team(("robot_a", [task("a1", "navigate", "e")]),
+                                  ("robot_b", [task("b1", "navigate", "s")])), speed=1.0)
+    assert [(c.kind, c.task_id, c.value) for c in v.constraints] == [("order_before", "b1", "a1")]
 
 
 # ---------------- one constraint per demand ----------------

@@ -252,6 +252,14 @@ def _waits_for(team_plan: TeamPlan) -> dict[str, list[str]]:
     return out
 
 
+def deadlock(team_plan: TeamPlan) -> list[str] | None:
+    """Tasks that wait for each other in a cycle, through depends_on or a robot's own task
+    order (cycle[i] waits for cycle[i + 1], last == first); None if there is none.
+    TeamPlan's own validation sees only depends_on. compile_team_plan reports a cycle as
+    DEPENDENCY_DEADLOCK; verdict.py checks a verdict's orderings with this."""
+    return _topological_order(team_plan)[1]
+
+
 def _topological_order(team_plan: TeamPlan) -> tuple[list[str], list[str] | None]:
     """Kahn's algorithm. Returns (order, None), or (partial order, cycle) when the
     tasks cannot all be ordered; cycle[i] waits for cycle[i + 1], last == first."""
