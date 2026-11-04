@@ -13,6 +13,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
+        ("share/" + package_name + "/scenarios", glob("scenarios/*.yaml")),   # the fake planner's
     ],
     install_requires=["setuptools", "pydantic>=2", "pyyaml"],
     zip_safe=True,
@@ -25,6 +26,8 @@ setup(
     entry_points={
         "console_scripts": [
             "gate = mrs_ethical_gate.gate_node:main",
+            # development node for testing the gate (dev_nodes/): a scripted stand-in for the planner
+            "fake_planner = mrs_ethical_gate.dev_nodes.fake_planner:main",
         ],
     },
 )

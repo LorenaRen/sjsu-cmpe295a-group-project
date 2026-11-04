@@ -17,7 +17,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
-| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 57 gate + 266 checker tests (Nov 2); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan` (§4.3) |
+| 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 148 gate + 266 checker tests (Nov 3); APPROVE / REJECT, robots start at spawn slots, people (S-2) from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
 
@@ -533,11 +533,60 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
   through walls.
 - No MODIFY: the gate never repairs a plan itself.
 - Assumed, to confirm with Module 4: FALLBACK plans (`hold_all_plan`) go to `/mrs/validated_plan`
-  directly, not through the gate.
+  directly, not through the gate. The fake planner (below) does it that way.
 
 Tests: `cd src/fleet_checker && pytest -q` and `cd src/mrs_ethical_gate && pytest -q`. Both run without
-ROS, for example in a plain venv; the six tests in `test_gate_node.py` also need the built and
-sourced workspace and skip otherwise.
+ROS, for example in a plain venv; the 13 tests in `test_gate_node.py` and `test_fake_planner_node.py`
+also need the built and sourced workspace and skip otherwise.
+
+#### Testing the replan loop: the fake planner
+
+`fake_planner` is a **development node** of this package (`mrs_ethical_gate/dev_nodes/`) for testing the
+gate without an LLM. It is not Module 4: it reads no mission or world state and makes no plan of its own.
+It sends a scenario's TeamPlan (`model_name: "fake"`), applies each REJECT's constraints to it mechanically,
+sends it again, and falls back when it cannot go on.
+
+```bash
+# the gate and the fake planner on the same map; everything ends when the fake planner does
+ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s1_passage_no_order \
+    map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml
+# or to a gate that is already running: give it the same map_file (or world) and robots as the gate
+ros2 run mrs_ethical_gate fake_planner --ros-args -p scenario:=s1_passage_no_order \
+    -p map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml -p use_sim_time:=false
+```
+
+It knows the waypoint graph and the constraints, and reads no zone type, so what it can fix shows how
+far the constraints alone guide a replan:
+
+| Constraint | What the fake planner does |
+|---|---|
+| `order_before` | adds the first task to the later task's `depends_on` |
+| `forbid_node` | moves the task's target to the nearest node (along the graph) it has not been refused; if the robot only waits at the node before the task, inserts a `navigate` to such a node first |
+| `avoid_node` | moves each task target that is avoided; if no task goes there, the route crosses it, which a TeamPlan cannot change: not applied |
+| `custom` | not applied: it is text for an LLM |
+
+A REJECT it can act on gives the next attempt (same `transaction_id`, `attempt` + 1). When it can change
+nothing (stuck), or after `max_attempts` plans (exhausted; 5, a placeholder until Module 4's cap is known),
+it publishes `hold_all_plan` on `/mrs/validated_plan` itself, as `FALLBACK`, with a `planning_exhausted`
+EpisodeEvent: the way Module 4 is assumed to, not through the gate (`rules_v1.md`, "Module 5 gate").
+
+Scenarios (`scenarios/`; give a name or a path), all on samples_world:
+
+| Scenario | What happens |
+|---|---|
+| `s1_passage_no_order` | REJECT `capacity_exceeded` with an `order_before`; approved in round 2 |
+| `s4_both_hold_room_3` | REJECT `node_occupied` with only a `custom` constraint: stuck, FALLBACK |
+| `p1_keep_clear_stop` | approved in round 3, after moving robot_b's target from door_A to office_e (restricted) to corridor_1. The approved plan parks robot_b at corridor_1, on robot_a's route: S-4 does not check a robot driving through a node where another one stands |
+| `p2_restricted_target` | approved in round 3: robot_a's waypoint moved out of the office, then an `order_before` |
+
+It logs one JSON line per round and a summary: the outcome; for each kind of constraint and rule, how many
+it changed the plan for, noted (nothing to change, the node is kept out of that robot's tasks from then
+on) or could not apply, and why; the task targets it changed. `summary_file:=...` also writes the summary
+as JSON. Exit code 0 when the loop ran to an outcome, 1 for a parameter or scenario it cannot run, 2 when
+no gate answered. Parameters: `scenario`, `world` / `map_file` / `robots` (as for the gate),
+`max_attempts`, `gate_wait` and `verdict_timeout` (seconds, 10.0 each), `summary_file`, `episode_id`
+(empty: a new one per run, so the gate starts with an empty ledger). `examples/fake_planner_s1_round2.json`
+is one recorded run of `s1_passage_no_order`.
 
 ---
 
