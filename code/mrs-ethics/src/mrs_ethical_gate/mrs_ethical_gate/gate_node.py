@@ -8,6 +8,10 @@ The callback receives, calls GateSession.decide and publishes; what it decides i
 session.py and tested without ROS. A message seen before gets the same verdict (and
 ValidatedPlan) again.
 
+With start_source team_state the node also subscribes to /mrs/team_state and hands each
+message to the session's TeamStateStarts, which keeps the latest; a plan is checked where
+that one puts the robots (starts.py). The decision log line says how old it was.
+
 latency_ms is the wall-clock time of decide(): reading, compiling and checking the plan and
 building the verdict. It is measured with time.perf_counter, not the node clock, because with
 use_sim_time the node clock is simulation time, which can pause or run at another rate. It
@@ -25,7 +29,7 @@ from pathlib import Path
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from mrs_msgs.msg import EthicalVerdict, ProposedPlan, ValidatedPlan
+from mrs_msgs.msg import EthicalVerdict, ProposedPlan, TeamState, ValidatedPlan
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.exceptions import ParameterUninitializedException
 from rclpy.executors import ExternalShutdownException
@@ -39,6 +43,7 @@ from mrs_common.qos import qos_for
 
 from .session import GateSession
 from .settings import PARAMETERS, REQUIRED, SettingsError, load_settings
+from .starts import TeamStateStarts, team_snapshot
 
 _ROS_TYPES = {str: Parameter.Type.STRING, int: Parameter.Type.INTEGER, float: Parameter.Type.DOUBLE}
 
@@ -53,6 +58,8 @@ class GateNode(Node):
         self.verdict_pub = self.create_publisher(EthicalVerdict, N.VERDICT, qos_for(N.VERDICT))
         self.validated_pub = self.create_publisher(ValidatedPlan, N.VALIDATED_PLAN, qos_for(N.VALIDATED_PLAN))
         self.create_subscription(ProposedPlan, N.PROPOSED_PLAN, self.on_plan, qos_for(N.PROPOSED_PLAN))
+        if isinstance(self.session.starts, TeamStateStarts):
+            self.create_subscription(TeamState, N.TEAM_STATE, self.on_team_state, qos_for(N.TEAM_STATE))
 
     def _declare_parameters(self) -> dict:
         """Declare every parameter of settings.PARAMETERS, read-only; None for one never set."""
@@ -79,6 +86,13 @@ class GateNode(Node):
                                                            node=self))
         self.get_logger().info("decision " + json.dumps({**ids, "latency_ms": round(latency_ms, 3),
                                                          **d.summary()}))
+
+    def on_team_state(self, msg: TeamState) -> None:
+        first = self.session.starts.latest is None
+        self.session.starts.observe(team_snapshot(msg))
+        if first:
+            self.get_logger().info(f"first {N.TEAM_STATE}: episode {msg.episode_id!r}, robots "
+                                   f"{[r.robot_id for r in msg.robots]}")
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
