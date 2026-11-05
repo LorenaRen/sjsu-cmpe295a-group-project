@@ -32,3 +32,12 @@ REPAIR_SCENARIOS = 50         # per cell of the repair benchmark: the first 50 o
 PEOPLE_SERIES = {"map": "bench_grid", "robots": (8, 16), "density": "medium", "people": 4}
 PERSON_OFFSET = 0.5           # [m] a person stands within this of an open-area node
 MANIFEST = BENCH_DIR / "manifest.csv"   # one digest per cell over all its scenarios
+
+# ---- the gate's settings, as config/gate.yaml ships them (a test checks) -------------------
+GATE = {"speed": 0.5, "robot_length": 0.45, "margin": 0.5, "crowding_radius": 1.5, "crowding_max_robots": 1}
+
+# ---- timing (bench/perf.py) ------------------------------------------------------------------
+PERF_REPETITIONS = 5          # every scenario of a cell is timed this often: 200 x 5 = 1000 samples
+PERF_WARMUP = (5, 2)          # (scenarios, repetitions) run untimed before each cell
+# The cost of the instruments: plain and timed runs of the same scenarios, one after the other.
+OVERHEAD = {"cell": ("bench_grid", 8, "medium", 0), "scenarios": 50, "repetitions": 4}
