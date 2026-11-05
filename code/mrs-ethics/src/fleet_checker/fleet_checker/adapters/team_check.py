@@ -22,13 +22,13 @@ enter is there whatever the plan says.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Collection, Mapping, NamedTuple, Sequence
 
 from mrs_common import reasons as R
 from mrs_common.plan_schema import TeamPlan
 
-from ..cross_plan import FairnessLedger, check_cross_plan_conflicts
+from ..cross_plan import ConflictMemo, FairnessLedger, check_cross_plan_conflicts
 from ..crowding import CrowdingLimit
 from ..plan import HumanObservation, RegionKind, TaskType, Violation
 from ..policy import DEFAULT_MAX_DURATION, AccessPolicy, validate_policy
@@ -82,6 +82,8 @@ class TeamCheckResult:
     people: tuple[HumanObservation, ...]   # where people are, for S-2
     ledger: FairnessLedger | None
     settings: CheckSettings
+    # What this check and its rechecks share (cross_plan.ConflictMemo); not part of the result.
+    memo: ConflictMemo | None = field(default=None, compare=False, repr=False)
 
     @property
     def approved(self) -> bool:
@@ -92,7 +94,7 @@ class TeamCheckResult:
         another plan, e.g. this one with a depends_on added. It reuses what such a change
         cannot change (compile_team_plan's base), and gives what recheck_full gives."""
         return _check(team_plan, self.sim_map, self.start_nodes, self.on_edges, self.blocked_edges,
-                      self.people, self.ledger, self.settings, base=self)
+                      self.people, self.ledger, self.settings, base=self, memo=self.memo)
 
     def recheck_full(self, team_plan: TeamPlan) -> TeamCheckResult:
         """recheck, with everything computed again from scratch: what recheck must give."""
@@ -183,20 +185,21 @@ def check_team_plan(
                              robot_length=robot_length)
     blocked = tuple(sorted({tuple(sorted(e)) for e in blocked_edges}))
     return _check(team_plan, sim_map, start_nodes, dict(on_edges or {}), blocked, tuple(people), ledger,
-                  settings)
+                  settings, memo=ConflictMemo())
 
 
 def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
            on_edges: Mapping[str, OnEdge], blocked_edges: tuple[tuple[str, str], ...],
            people: tuple[HumanObservation, ...], ledger: FairnessLedger | None,
-           s: CheckSettings, base: TeamCheckResult | None = None) -> TeamCheckResult:
+           s: CheckSettings, base: TeamCheckResult | None = None,
+           memo: ConflictMemo | None = None) -> TeamCheckResult:
     compiled = compile_team_plan(team_plan, sim_map, start_nodes, speed=s.speed, t0=s.t0,
                                  task_types=s.task_types, plan_id=s.plan_id, revision=s.revision,
                                  on_edges=on_edges, blocked_edges=blocked_edges,
                                  base=base.compiled if base is not None else None,
                                  base_plan=base.team_plan if base is not None else None)
     inputs = dict(team_plan=team_plan, sim_map=sim_map, start_nodes=start_nodes, on_edges=on_edges,
-                  blocked_edges=blocked_edges, people=people, ledger=ledger, settings=s)
+                  blocked_edges=blocked_edges, people=people, ledger=ledger, settings=s, memo=memo)
     if compiled.violations:
         findings = tuple(_finding(v, compiled, ()) for v in compiled.violations)
         return TeamCheckResult(compiled=compiled, findings=findings, must_replan={}, **inputs)
@@ -204,7 +207,10 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
     # (violation, robots that must fix it, the robots R-1 chose to give way)
     found: list[tuple[Violation, tuple[str, ...], tuple[str, ...]]] = []
     for robot, plan in compiled.plans.items():
-        for v in validate_policy(plan, sim_map.world, s.access_policy, s.max_duration):
+        policy = (validate_policy(plan, sim_map.world, s.access_policy, s.max_duration) if memo is None else
+                  memo.per_plan("policy", plan,
+                                lambda: validate_policy(plan, sim_map.world, s.access_policy, s.max_duration)))
+        for v in policy:
             if v.code == "REGION_ACCESS_DENIED" and all(compiled.is_lead_in(robot, r.step_index)
                                                         for r in v.refs):
                 continue   # it is in there already, on the edge it is on
@@ -212,7 +218,7 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
 
     conflicts, yielders = check_cross_plan_conflicts(
         list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin,
-        people=people, crowding=s.crowding, pass_time=s.robot_length / s.speed)
+        people=people, crowding=s.crowding, pass_time=s.robot_length / s.speed, memo=memo)
     for v in conflicts:
         r1 = tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))
         found.append((v, _who_must_change(v, r1, compiled, team_plan), r1))

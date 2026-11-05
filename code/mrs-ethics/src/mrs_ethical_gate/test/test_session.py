@@ -362,3 +362,10 @@ def test_from_settings_places_the_whole_fleet_at_the_spawn_slots():
     assert d.verdict.verdict == APPROVE
     assert set(d.result.compiled.plans) == {"robot_a", "robot_b"}
     assert d.result.compiled.snapshot.robot_regions == {"robot_a": "west_hall", "robot_b": "east_hall"}
+
+
+def test_a_decision_keeps_no_recheck_memo(session):
+    # Decisions stay in the session for replays; the memo a check shares with its rechecks
+    # would keep every claim and sweep of every decision of the episode alive.
+    d = decide(session, CONFLICT)
+    assert d.result.findings and d.result.memo is None

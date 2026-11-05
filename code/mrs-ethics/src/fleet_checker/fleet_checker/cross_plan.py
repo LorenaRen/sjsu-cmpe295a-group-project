@@ -37,7 +37,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple, Sequence, TypeVar
 
 from .crowding import CrowdingLimit, crowding_claims
 from .plan import (TIME_EPS, Claim, HumanObservation, Plan, StepRef, TaskType, Violation, WorldMap, claims,
@@ -115,6 +115,48 @@ def sweep_over_capacity(claims: Iterable[Claim], capacity: int) -> list[OverCapa
     return out
 
 
+_T = TypeVar("_T")
+
+
+class ConflictMemo:
+    """What one check and its rechecks share (team_check.TeamCheckResult): each plan's claims for
+    S-1, S-2 and S-4 (and, for team_check, its policy findings), and each resource's sweep.
+
+    A recheck keeps the Plan objects of the robots whose times did not change (compiler), so
+    their claims are found by the object itself; a resource's sweep is found by all it is
+    computed from, its capacity and the exact claims on it. Whatever is found is what computing
+    it again would give. One memo serves one map and one set of settings, which the checks of
+    a TeamCheckResult and its rechecks share.
+    """
+
+    def __init__(self) -> None:
+        self._per_plan: dict[tuple[Any, int], tuple[Plan, Any]] = {}
+        self._sweeps: dict[tuple[int, tuple[Claim, ...]], list[OverCapacity]] = {}
+
+    def per_plan(self, key: Any, plan: Plan, compute: Callable[[], _T]) -> _T:
+        entry = self._per_plan.get((key, id(plan)))
+        if entry is not None and entry[0] is plan:   # the entry keeps the plan, so its id is not reused
+            return entry[1]
+        value = compute()
+        self._per_plan[(key, id(plan))] = (plan, value)
+        return value
+
+    def sweep(self, claims: Sequence[Claim], capacity: int) -> list[OverCapacity]:
+        key = (capacity, tuple(claims))
+        found = self._sweeps.get(key)
+        if found is None:
+            found = self._sweeps[key] = sweep_over_capacity(claims, capacity)
+        return found
+
+
+def _plan_claims(memo: ConflictMemo | None, key: Any, plan: Plan, compute: Callable[[], list[Claim]]) -> list[Claim]:
+    return compute() if memo is None else memo.per_plan(key, plan, compute)
+
+
+def _sweep(memo: ConflictMemo | None, claims: Sequence[Claim], capacity: int) -> list[OverCapacity]:
+    return sweep_over_capacity(claims, capacity) if memo is None else memo.sweep(claims, capacity)
+
+
 def _capacity_of(resource_id: str, world: WorldMap) -> int:
     # Unknown ids are rejected by validate_plan; default to the strictest value.
     return world.capacity(resource_id) if world.knows(resource_id) else 1
@@ -177,6 +219,7 @@ def check_capacity_violations(
     world: WorldMap,
     margin: float = 0.0,
     hold_final: bool = True,
+    memo: ConflictMemo | None = None,
 ) -> list[CapacityConflict]:
     """Detect all capacity violations across multiple plans using sweep-line.
 
@@ -192,14 +235,15 @@ def check_capacity_violations(
     # Collect all claims grouped by resource
     resource_claims: dict[str, list[Claim]] = defaultdict(list)
     for plan in plans:
-        for claim in claims(plan, margin=margin, hold_final=hold_final):
+        for claim in _plan_claims(memo, ("S-1", margin, hold_final), plan,
+                                  lambda: list(claims(plan, margin=margin, hold_final=hold_final))):
             resource_claims[claim.resource_id].append(claim)
 
     # First pass: detect all capacity violations without edge swap labeling,
     # each resource on its own
     raw_conflicts: list[tuple[str, tuple[Claim, ...], float, float]] = []
     for resource_id, resource_claims_list in resource_claims.items():
-        for s in sweep_over_capacity(resource_claims_list, _capacity_of(resource_id, world)):
+        for s in _sweep(memo, resource_claims_list, _capacity_of(resource_id, world)):
             raw_conflicts.append((resource_id, s.claims, s.t_start, s.t_end))
 
     # Second pass: detect edge swaps by looking at pairs of conflicts
@@ -262,6 +306,7 @@ def check_crowding(
     limit: CrowdingLimit,
     margin: float = 0.0,
     hold_final: bool = True,
+    memo: ConflictMemo | None = None,
 ) -> list[CapacityConflict]:
     """Detect every stretch of time in which more than limit.max_robots robots are
     within limit.radius metres of the same person.
@@ -276,8 +321,10 @@ def check_crowding(
     conflicts: list[CapacityConflict] = []
     for person in people:
         person_claims = [c for plan in plans
-                         for c in crowding_claims(plan, [person], limit.radius, margin, hold_final)]
-        for s in sweep_over_capacity(person_claims, limit.max_robots):
+                         for c in _plan_claims(memo, ("S-2", person, limit.radius, margin, hold_final), plan,
+                                               lambda: list(crowding_claims(plan, [person], limit.radius,
+                                                                            margin, hold_final)))]
+        for s in _sweep(memo, person_claims, limit.max_robots):
             conflicts.append(CapacityConflict(person.human_id, s.claims, s.t_start, s.t_end,
                                               is_edge_swap=False, capacity=limit.max_robots))
     return conflicts
@@ -314,6 +361,7 @@ def check_node_occupancy(
     margin: float = 0.0,
     hold_final: bool = True,
     pass_time: float = 0.0,
+    memo: ConflictMemo | None = None,
 ) -> list[CapacityConflict]:
     """Detect every stretch of time in which two robots are at the same node: standing
     there or driving through it, while any part of them is over it (plan.node_claims).
@@ -325,16 +373,18 @@ def check_node_occupancy(
     drive through the same nodes at once, is S-1's alone. pass_time: how long a
     robot's body takes to drive over a point (its length / speed).
     """
+    def outside_one_robot_zones(plan: Plan) -> list[Claim]:
+        return [c for c in node_claims(plan, margin=margin, hold_final=hold_final, pass_time=pass_time)
+                if not (world.knows(r := plan.steps[c.step_index].region) and world.capacity(r) == 1)]
+
     by_node: dict[str, list[Claim]] = defaultdict(list)
     for plan in plans:
-        for c in node_claims(plan, margin=margin, hold_final=hold_final, pass_time=pass_time):
-            region = plan.steps[c.step_index].region
-            if world.knows(region) and world.capacity(region) == 1:
-                continue
+        for c in _plan_claims(memo, ("S-4", margin, hold_final, pass_time), plan,
+                              lambda: outside_one_robot_zones(plan)):
             by_node[c.resource_id].append(c)
     conflicts: list[CapacityConflict] = []
     for node, at_node in by_node.items():
-        for s in sweep_over_capacity(at_node, 1):
+        for s in _sweep(memo, at_node, 1):
             conflicts.append(CapacityConflict(node, s.claims, s.t_start, s.t_end,
                                               is_edge_swap=False, capacity=1))
     return conflicts
@@ -507,6 +557,7 @@ def check_cross_plan_conflicts(
     people: Sequence[HumanObservation] = (),
     crowding: CrowdingLimit | None = None,
     pass_time: float = 0.0,
+    memo: ConflictMemo | None = None,
 ) -> tuple[list[Violation], dict[str, list[Violation]]]:
     """Check multiple plans for cross-plan conflicts and assign yields.
 
@@ -526,6 +577,7 @@ def check_cross_plan_conflicts(
         people: People to check S-2 around; none, no S-2
         crowding: S-2's R and N; needed when there are people
         pass_time: How long a robot takes to drive over a point (S-4): its length / speed
+        memo: what a check and its rechecks share (ConflictMemo); None computes everything
 
     Returns:
         Tuple of:
@@ -540,13 +592,14 @@ def check_cross_plan_conflicts(
     plans_dict = {p.robot_id: p for p in plans}
 
     # Detect capacity violations (S-1) and crowding around people (S-2)
-    conflicts = check_capacity_violations(plans, world, margin=margin, hold_final=hold_final)
+    conflicts = check_capacity_violations(plans, world, margin=margin, hold_final=hold_final, memo=memo)
     all_violations = capacity_conflicts_to_violations(conflicts)
     if people:
-        crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final)
+        crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final, memo=memo)
         conflicts += crowded
         all_violations += crowding_conflicts_to_violations(crowded, crowding)
-    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final, pass_time=pass_time)
+    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final, pass_time=pass_time,
+                                   memo=memo)
     conflicts += stopped
     all_violations += node_conflicts_to_violations(stopped)
 

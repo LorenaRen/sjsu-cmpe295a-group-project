@@ -146,3 +146,61 @@ def TeamCheckResult_recheck(result, plan):
     """The recheck under test itself, not conftest's comparing wrapper (which also runs recheck_full)."""
     from conftest import INCREMENTAL_RECHECK
     return INCREMENTAL_RECHECK(result, plan)
+
+
+# ---------------- what a recheck reuses in detection: per robot and per resource ----------------
+
+@pytest.fixture
+def calls(monkeypatch):
+    """How often the policy checks and the sweeps run."""
+    import fleet_checker.adapters.team_check as team_check
+    import fleet_checker.cross_plan as cross_plan
+    counted = {"policy": 0, "sweep": 0}
+    real_policy, real_sweep = team_check.validate_policy, cross_plan.sweep_over_capacity
+
+    def policy(*args, **kwargs):
+        counted["policy"] += 1
+        return real_policy(*args, **kwargs)
+
+    def sweep(*args, **kwargs):
+        counted["sweep"] += 1
+        return real_sweep(*args, **kwargs)
+
+    monkeypatch.setattr(team_check, "validate_policy", policy)
+    monkeypatch.setattr(cross_plan, "sweep_over_capacity", sweep)
+    return counted
+
+
+def test_a_recheck_checks_the_policy_of_rebuilt_robots_only(samples_map, no_order, calls):
+    result = check_team_plan(no_order, samples_map, spawn_starts(samples_map, ["robot_a", "robot_b"]), **SETTINGS)
+    calls["policy"] = 0
+    TeamCheckResult_recheck(result, with_dependency(no_order, "a1", "b2"))   # only robot_b's timeline changes
+    assert calls["policy"] == 1
+
+
+def test_a_recheck_that_changes_no_timeline_sweeps_nothing_again(samples_map, no_order, calls):
+    result = check_team_plan(no_order, samples_map, spawn_starts(samples_map, ["robot_a", "robot_b"]), **SETTINGS)
+    calls["sweep"] = calls["policy"] = 0
+    TeamCheckResult_recheck(result, with_dependency(no_order, "b1", "a2"))   # nothing moves
+    assert calls == {"policy": 0, "sweep": 0}
+
+
+def test_a_recheck_sweeps_again_only_where_a_rebuilt_robot_is(samples_map, no_order, calls):
+    result = check_team_plan(no_order, samples_map, spawn_starts(samples_map, ["robot_a", "robot_b"]), **SETTINGS)
+    calls["sweep"] = 0
+    result.recheck_full(with_dependency(no_order, "a1", "b2"))
+    full = calls["sweep"]
+    calls["sweep"] = 0
+    TeamCheckResult_recheck(result, with_dependency(no_order, "a1", "b2"))
+    assert 0 < calls["sweep"] < full
+
+
+def test_recheck_full_reuses_nothing(samples_map, no_order, calls):
+    starts = spawn_starts(samples_map, ["robot_a", "robot_b"])
+    calls["sweep"] = calls["policy"] = 0
+    check_team_plan(no_order, samples_map, starts, **SETTINGS)
+    fresh = dict(calls)
+    result = check_team_plan(no_order, samples_map, starts, **SETTINGS)
+    calls["sweep"] = calls["policy"] = 0
+    result.recheck_full(no_order)
+    assert calls == fresh
