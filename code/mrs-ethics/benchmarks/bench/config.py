@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import SRC   # the checker's source tree: this repository's, or BENCH_SRC's
+
 BENCH_DIR = Path(__file__).resolve().parents[1]
-SRC = BENCH_DIR.parent / "src"
 
 # The maps, by the name the results use.
 MAP_FILES: dict[str, Path] = {

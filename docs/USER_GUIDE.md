@@ -671,8 +671,9 @@ planner. One command reruns everything, from the repository root:
 .venv/bin/python code/mrs-ethics/benchmarks/run.py --quick   # a few scenarios per cell
 ```
 
-Scenarios come from committed seeds and are checked against `benchmarks/manifest.csv`; see
-`benchmarks/README.md`.
+Scenarios come from committed seeds and are checked against `benchmarks/manifest.csv`.
+`benchmarks/compare.py` compares two versions of the checker: whether their verdicts are identical,
+and how long each takes, cell by cell, in turns. See `benchmarks/README.md`.
 
 ---
 

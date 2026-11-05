@@ -1,7 +1,39 @@
-"""Test maps shared by several test files."""
+"""Test maps shared by several test files, and the check that every recheck of every test equals
+a recheck done in full."""
 import pytest
 
 from fleet_checker.adapters.sim_map import sim_map_from_dict
+from fleet_checker.adapters.team_check import TeamCheckResult
+
+
+def assert_same_result(incremental: TeamCheckResult, full: TeamCheckResult) -> None:
+    """Equal field by field, and built in the same order: the verdict reads plans, timings,
+    origins and findings in the order they come in."""
+    assert incremental == full
+    for name in ("plans", "origins", "timings"):
+        assert list(getattr(incremental.compiled, name)) == list(getattr(full.compiled, name)), name
+    assert list(incremental.must_replan) == list(full.must_replan)
+
+
+INCREMENTAL_RECHECK = TeamCheckResult.recheck   # the method itself, before shadow_rechecks wraps it
+
+
+@pytest.fixture(autouse=True)
+def shadow_rechecks(monkeypatch):
+    """Every recheck in every test is also done in full (recheck_full), and the two results must be
+    the same: the incremental recheck may only save work, never change an answer. The count of
+    rechecks compared is returned, so a test can see that it ran."""
+    incremental = TeamCheckResult.recheck
+    compared = {"rechecks": 0}
+
+    def recheck(self, team_plan):
+        result = incremental(self, team_plan)
+        assert_same_result(result, TeamCheckResult.recheck_full(self, team_plan))
+        compared["rechecks"] += 1
+        return result
+
+    monkeypatch.setattr(TeamCheckResult, "recheck", recheck)
+    return compared
 
 # Two one-robot zones side by side between two rooms: robots crossing in
 # opposite directions swap places head-on at x = 2.

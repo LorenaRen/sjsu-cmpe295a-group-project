@@ -148,6 +148,7 @@ class GateSession:
                                  **self._check_args)
         verdict = to_verdict(result)
         self._update_ledger(result, verdict, now)
+        result = replace(result, memo=None)   # what the verdict's rechecks shared; kept decisions need none
         return Decision(verdict, plan if verdict.verdict == APPROVE else None, result, self.ledger_summary(),
                         new_episode=new_episode, starts=starts, people=people)
 
