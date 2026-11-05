@@ -3,6 +3,7 @@ the tools for a fair before/after comparison (compare.py)."""
 import csv
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -51,6 +52,16 @@ def test_a_run_can_time_another_source_tree(tmp_path):
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=REPO).stdout.strip()
     assert (src["path"], src["git_commit"]) == (str(config.SRC), head)
     assert f"`{head}`" in (tmp_path / "report.md").read_text()
+
+
+def test_a_source_tree_outside_the_repository_runs_too(tmp_path):
+    # A git worktree of another commit lives in a temporary directory, not under this checkout.
+    src = tmp_path / "src"
+    shutil.copytree(config.SRC, src, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    done = run_py("--quick", "--only", "perf", "--cell", "narrow_aisle/2/low/0", "--src", str(src),
+                  "--out", str(tmp_path / "out"))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert json.loads((tmp_path / "out/environment.json").read_text())["checker_src"]["path"] == str(src.resolve())
 
 
 def test_every_verdict_is_written_once_and_the_same_every_time(tmp_path):

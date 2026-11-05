@@ -57,7 +57,7 @@ def parameters(profile: Profile) -> dict[str, Any]:
                            "repetitions": profile.overhead_repetitions},
         "repair: scenarios per cell": profile.repair_scenarios, "repair: max attempts": config.REPAIR_MAX_ATTEMPTS,
         "gate settings": config.GATE,
-        "maps": {m: str(p.relative_to(root)) for m, p in config.MAP_FILES.items()},
+        "maps": {m: str(p.relative_to(root)) if p.is_relative_to(root) else str(p) for m, p in config.MAP_FILES.items()},
         "timer": "time.perf_counter_ns", "percentiles": "nearest rank", "garbage collection": "on",
     }
 
