@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-05T11:19:26-08:00",
+  "command": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/.venv/bin/python /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/diagnose_attempts.py run /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/attempts",
+  "profile": "full",
+  "git_commit": "c17bc6b3747ea3d6f8b8cdc24fde2a7b9cd6a594",
+  "git_dirty": false,
+  "machine": {
+    "model": "Mac14,15",
+    "cpu": "Apple M2",
+    "performance_cores": 4,
+    "efficiency_cores": 4,
+    "logical_cpus": 8,
+    "memory_gb": 8.0,
+    "os": "macOS-26.5.2-arm64-arm-64bit-Mach-O"
+  },
+  "checker_src": {
+    "path": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/code/mrs-ethics/src",
+    "git_commit": "c17bc6b3747ea3d6f8b8cdc24fde2a7b9cd6a594",
+    "git_dirty": false
+  },
+  "parent_process": "/bin/zsh",
+  "power": "Battery Power",
+  "kept_awake_by": "caffeinate (pid 8551): PreventUserIdleSystemSleep for pid 8550",
+  "load_average": [
+    6.27,
+    5.09,
+    3.75
+  ],
+  "busiest_processes": [
+    {
+      "pid": 401,
+      "cpu_percent": 10.0,
+      "command": "WindowServer"
+    },
+    {
+      "pid": 7045,
+      "cpu_percent": 8.3,
+      "command": "claude"
+    },
+    {
+      "pid": 6491,
+      "cpu_percent": 4.7,
+      "command": "Code Helper (Renderer)"
+    },
+    {
+      "pid": 6470,
+      "cpu_percent": 2.4,
+      "command": "Code Helper"
+    },
+    {
+      "pid": 4654,
+      "cpu_percent": 2.1,
+      "command": "Google Chrome Helper (Aperitif Renderer)"
+    }
+  ],
+  "python": {
+    "version": "3.14.4",
+    "implementation": "CPython",
+    "executable": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/.venv/bin/python",
+    "pydantic": "2.14.1",
+    "hash_seed": "0"
+  }
+}
