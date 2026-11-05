@@ -3,7 +3,7 @@ import pytest
 
 from bench import config
 from bench.maps import load_maps
-from bench.repair import OUTCOMES, classify, run_scenario, tally
+from bench.repair import OUTCOMES, case_counts, classify, run_scenario, tally
 from bench.scenarios import Scenario, generate
 
 from mrs_ethical_gate.dev_nodes.scenarios import load_scenario
@@ -72,3 +72,33 @@ def test_tally_counts_outcomes_with_intervals_and_the_constraints_by_kind(maps):
     assert sum(t["passed_in_round"].values()) == sum(1 for r in runs if r.passed_in_round)
     kinds = t["by_kind"]
     assert all(k["received"] == k["changed"] + k["noted"] + k["not_applied"] for k in kinds.values())
+    assert sum(c["received"] for c in t["by_case"].values()) == sum(k["received"] for k in kinds.values())
+
+
+def test_a_run_counts_what_each_situation_led_to(maps):
+    # VerdictContent.cases says which situation each constraint answers; the counts by situation
+    # add up to the fake planner's own counts by kind and rule.
+    runs = [run_scenario(generate(maps, "bench_grid", 8, "high", i), maps["bench_grid"], max_attempts=5)
+            for i in range(4)]
+    for run in runs:
+        summed = {}
+        for c in run.cases:
+            assert c["case"] and c["received"] == c["changed"] + c["noted"] + c["not_applied"]
+            summed[c["kind"], c["rule_id"]] = summed.get((c["kind"], c["rule_id"]), 0) + c["received"]
+        assert summed == {(c["kind"], c["rule_id"]): c["received"] for c in run.constraints}
+    assert {"yielder_waits"} <= {c["case"] for run in runs for c in run.cases if c["rule_id"] == "node_occupied"}
+
+
+def test_situations_are_paired_with_what_the_fake_planner_did_round_by_round():
+    rounds = [{"verdict": "REJECT", "constraints": [{"kind": "order_before", "rule_id": "node_occupied",
+                                                     "result": "changed"},
+                                                    {"kind": "custom", "rule_id": "node_occupied",
+                                                     "result": "not_applied"}]},
+              {"verdict": "APPROVE", "constraints": []}]
+    assert case_counts(rounds, [("yielder_waits", "wait_nearby"), ()]) == (
+        {"kind": "custom", "rule_id": "node_occupied", "case": "wait_nearby", "received": 1, "changed": 0,
+         "noted": 0, "not_applied": 1},
+        {"kind": "order_before", "rule_id": "node_occupied", "case": "yielder_waits", "received": 1,
+         "changed": 1, "noted": 0, "not_applied": 0})
+    # a checker from before VerdictContent.cases (compare.py runs old ones too): no situation
+    assert {c["case"] for c in case_counts(rounds, [None, None])} == {"-"}

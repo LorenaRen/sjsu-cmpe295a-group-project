@@ -230,6 +230,18 @@ def repair_constraint_rows(runs: Mapping[Cell, Sequence[RepairRun]]) -> list[dic
     return rows
 
 
+def repair_case_rows(runs: Mapping[Cell, Sequence[RepairRun]]) -> list[dict[str, Any]]:
+    """What the fake planner did with the constraints of each situation (VerdictContent.cases), by
+    kind and rule: per map, then over all."""
+    rows = []
+    for map_name in list(dict.fromkeys(c[0] for c in runs)) + ["*"]:
+        t = tally([r for c, rs in runs.items() if map_name in ("*", c[0]) for r in rs])
+        for (kind, rule, case), counts in t["by_case"].items():
+            rows.append({"map": map_name, "kind": kind, "rule_id": rule, "case": case,
+                         **{x: counts.get(x, 0) for x in ("received",) + RESULTS}})
+    return rows
+
+
 def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     with open(path, "w", newline="") as f:
         if not rows:
@@ -457,4 +469,28 @@ def _repair_section(repair: Mapping[str, Any]) -> list[str]:
     kinds = [c for c in repair["constraints"] if c["map"] == "*"]
     out += _table(["kind", "rule", "received", "changed", "noted", "not applied"],
                   [(c["kind"], c["rule_id"], c["received"], c["changed"], c["noted"], c["not_applied"]) for c in kinds])
+    s4 = sorted((c for c in repair.get("cases", []) if c["map"] == "*" and c["rule_id"] == "node_occupied"),
+                key=lambda c: -c["received"])
+    out += ["", "### S-4's constraints by situation", "",
+            "Over all scenarios, the situation each S-4 constraint answers (`VerdictContent.cases`; "
+            "every rule's are in `repair_cases.csv`).", ""]
+    out += _table(["situation", "kind", "received", "changed", "noted", "not applied"],
+                  [(f"`{c['case']}`: {S4_CASES.get(c['case'], '-')}", c["kind"], c["received"], c["changed"],
+                    c["noted"], c["not_applied"]) for c in s4]) if s4 else ["None."]
     return out + [""]
+
+
+# S-4's situations (verdict._stop_constraint), for the report; the benchmarks also run checkers
+# from before VerdictContent.cases, so the names are not imported from the checker.
+S4_CASES = {
+    "yielder_waits": "the yielder waits until the keeper has left (verified)",
+    "keeper_waits": "the keeper, there to the end of its plan, waits until the yielder has gone by (verified)",
+    "keeper_ends_elsewhere": "the keeper, there to the end of its plan, cannot wait: it ends somewhere else",
+    "no_waiting_there": "the yielder only waits there between tasks: it waits somewhere else",
+    "from_start": "the yielder is at the node when its plan starts",
+    "on_its_edge": "the yielder gets there on the edge it is on now: the keeper keeps clear",
+    "cannot_be_done": "the keeper stays there to the end of its plan, where a task of the yielder ends",
+    "passes_waiting_fails": "the yielder drives through, and waiting for the keeper does not help",
+    "wait_nearby": "a task of the yielder ends there, and waiting for the keeper does not help",
+    "cycle": "an ordering that, with the verdict's other orderings, would close a cycle",
+}

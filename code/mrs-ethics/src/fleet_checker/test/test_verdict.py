@@ -62,7 +62,9 @@ def drop_dependencies(plan: TeamPlan) -> TeamPlan:
 
 def verdict_for(sim_map, plan, starts=None, speed=SPEED, **kwargs):
     starts = starts or spawn_starts(sim_map, ["robot_a", "robot_b"])
-    return to_verdict(check_team_plan(plan, sim_map, starts, speed=speed, robot_length=ROBOT_LENGTH, **kwargs))
+    v = to_verdict(check_team_plan(plan, sim_map, starts, speed=speed, robot_length=ROBOT_LENGTH, **kwargs))
+    assert len(v.cases) == len(v.constraints) and all(v.cases)   # what situation each constraint answers
+    return v
 
 
 def fields(verdict, *names):
@@ -74,7 +76,7 @@ def fields(verdict, *names):
 def test_valid_plan_is_approved(samples_map):
     v = verdict_for(samples_map, sample("valid_two_robots.json"))
     assert v.verdict == APPROVE
-    assert v.rule_ids == () and v.constraints == () and v.standard_refs == ()
+    assert v.rule_ids == () and v.constraints == () and v.standard_refs == () and v.cases == ()
     assert v.risk_score == 0.0
 
 
@@ -87,6 +89,7 @@ def test_keep_clear_stop_forbids_stopping_at_door_A(samples_map):
     assert fields(v, "kind", "robot_id", "task_id", "node") == [("forbid_node", "robot_b", "b1", "door_A")]
     assert v.risk_score == pytest.approx(2 / 3)
     assert "door_A" in v.rationale and "keep-clear" in v.rationale
+    assert v.cases == ("stop",)
 
 
 def test_p1_covers_every_node_of_the_zone(samples_map):
@@ -111,6 +114,7 @@ def test_restricted_target_avoids_every_node_of_the_office(samples_map):
     ]
     assert v.risk_score == pytest.approx(2 / 3)
     assert "office" in v.rationale and "restricted" in v.rationale
+    assert v.cases == ("access",) * 3
 
 
 def test_p2_in_a_zone_without_nodes_is_custom(samples_map):
@@ -147,6 +151,7 @@ def test_head_on_swap_is_one_problem_and_one_ordering(two_narrow_zones):
     assert v.rule_ids == (R.EDGE_SWAP,)
     assert v.rationale.count("head-on") == 1                    # two findings, one problem
     assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_a", "b1", "a1")]
+    assert v.cases == ("ordering",)
 
 
 # ---------------- S-1 where ordering does not help -> custom ----------------
@@ -238,6 +243,11 @@ def s4(v):
             for c in v.constraints if c.rule_id == R.NODE_OCCUPIED]
 
 
+def s4_cases(v):
+    """The situation each S-4 constraint of a verdict answers (VerdictContent.cases)."""
+    return [case for c, case in zip(v.constraints, v.cases) if c.rule_id == R.NODE_OCCUPIED]
+
+
 PARKING_THREE = {"robot_a": "w", "robot_b": "n", "robot_c": "f"}
 SLOW_C = ("robot_c", [task("c1", "navigate", "h"), task("c2", "navigate", "f")])   # done at 8 s, far from c
 
@@ -254,6 +264,7 @@ def test_a_too_tight_handover_at_a_node_gives_a_verified_order_before(parking):
     assert s4(v) == [("order_before", "robot_a", "b2", None, "a1",
                       "robot_a: start task a1 only after robot_b has finished task b2; both would stop "
                       "at c, where only one robot can stand.")]
+    assert s4_cases(v) == ["yielder_waits"]
     fixed = edited(plan, lambda t: t["depends_on"].append("b2") if t["task_id"] == "a1" else None)
     assert verdict_for(parking, fixed, speed=1.0).verdict == APPROVE
 
@@ -266,6 +277,7 @@ def test_waiting_where_the_other_robot_stays_is_forbidden(parking):
     v = verdict_for(parking, plan, starts=PARKING_THREE, speed=1.0)
     assert s4(v) == [("forbid_node", "robot_a", "a2", "c", None,
                       "robot_a: do not wait at c; robot_b stays there until the end of its plan.")]
+    assert s4_cases(v) == ["no_waiting_there"]
 
 
 def test_waiting_where_the_other_robot_waits_too_is_forbidden_when_ordering_cannot_help(parking):
@@ -277,6 +289,7 @@ def test_waiting_where_the_other_robot_waits_too_is_forbidden_when_ordering_cann
     v = verdict_for(parking, plan, starts=PARKING_THREE, speed=1.0)
     assert s4(v) == [("forbid_node", "robot_a", "a2", "c", None,
                       "robot_a: do not wait at c; robot_b is stopped there until it leaves with task b2.")]
+    assert s4_cases(v) == ["no_waiting_there"]
 
 
 def test_a_target_held_for_a_while_means_wait_nearby_then_go(parking):
@@ -289,6 +302,7 @@ def test_a_target_held_for_a_while_means_wait_nearby_then_go(parking):
                       "robot_a: c is where task a1 ends, but robot_b is stopped there until it leaves "
                       "with task b2. Wait at another node near c first, and go to c only after robot_b "
                       "has left it.")]
+    assert s4_cases(v) == ["wait_nearby"]
     assert all(c.kind != "forbid_node" for c in v.constraints)
 
 
@@ -301,6 +315,7 @@ def test_a_target_held_to_the_end_cannot_be_reached_as_planned(parking):
                       "robot_b: you stay at c until the end of your plan, but c is where task a1 of "
                       "robot_a ends, so that task cannot be done with the plan as it is. End somewhere "
                       "else, so that c is free when robot_a gets there.")]
+    assert s4_cases(v) == ["cannot_be_done"]
 
 
 def test_a_yielder_standing_at_the_node_from_its_start_gets_custom(parking):
@@ -313,6 +328,7 @@ def test_a_yielder_standing_at_the_node_from_its_start_gets_custom(parking):
     assert s4(v) == [("custom", "robot_b", None, "n", None,
                       "robot_b stands at n from the start of its plan, and robot_a would stop there "
                       "while it does. Have robot_b leave n before robot_a gets there.")]
+    assert s4_cases(v) == ["from_start"]
 
 
 # ---------------- S-4 with a robot driving through the node ----------------
@@ -325,6 +341,7 @@ def test_two_robots_driving_through_one_node_at_once_take_turns(crossroads):
     assert s4(v) == [("order_before", "robot_a", "b1", None, "a1",
                       "robot_a: start task a1 only after robot_b has finished task b1; both would drive "
                       "through c at the same time.")]
+    assert s4_cases(v) == ["yielder_waits"]
     fixed = edited(CROSSING, lambda t: t["depends_on"].append("b1") if t["task_id"] == "a1" else None)
     assert verdict_for(crossroads, fixed, speed=1.0).verdict == APPROVE
 
@@ -338,6 +355,7 @@ def test_driving_through_where_a_robot_stops_for_a_while_waits_until_it_has_left
     assert s4(v) == [("order_before", "robot_a", "b2", None, "a1",
                       "robot_a: start task a1 only after robot_b has finished task b2; robot_a would drive "
                       "through c while robot_b stands there.")]
+    assert s4_cases(v) == ["yielder_waits"]
 
 
 def test_driving_through_where_waiting_would_close_a_cycle_gets_custom(parking):
@@ -351,6 +369,7 @@ def test_driving_through_where_waiting_would_close_a_cycle_gets_custom(parking):
                       "task b2, and making robot_a wait for robot_b does not fix it: the tasks would wait "
                       "for each other in a cycle. Change the plan so that robot_a drives through c when "
                       "robot_b is not there.")]
+    assert s4_cases(v) == ["passes_waiting_fails"]
 
 
 # robot_b parks at corridor_1 for good; robot_a has to drive through it.
@@ -370,6 +389,7 @@ def test_a_keeper_parked_where_the_other_robot_drives_through_waits_for_it_if_th
     assert s4(v) == [("order_before", "robot_b", "a1", None, "b1",
                       "robot_b: start task b1 only after robot_a has finished task a1; robot_a has to drive "
                       "through corridor_1, where you would stay until the end of your plan.")]
+    assert s4_cases(v) == ["keeper_waits"]
     fixed = edited(PARK_AFTER_PASS, lambda t: t["depends_on"].append("a1") if t["task_id"] == "b1" else None)
     assert verdict_for(samples_map, fixed).verdict == APPROVE
     assert [t.target for a in fixed.assignments for t in a.tasks] == ["corridor_2", "corridor_1"]
@@ -385,6 +405,7 @@ def test_a_keeper_whose_waiting_would_meet_the_other_robot_elsewhere_ends_somewh
                       "robot_a has to drive through corridor_1 (task a1) and you would stay there until the "
                       "end of your plan; waiting until robot_a has gone by does not help: you and robot_a "
                       "would then meet at room_3.")]
+    assert s4_cases(v) == ["keeper_ends_elsewhere"]
 
 
 def test_a_keeper_that_cannot_wait_without_a_cycle_ends_somewhere_else(samples_map):
@@ -394,6 +415,7 @@ def test_a_keeper_that_cannot_wait_without_a_cycle_ends_somewhere_else(samples_m
     assert (c.kind, c.robot_id, c.task_id, c.node) == ("forbid_node", "robot_b", "b1", "corridor_1")
     assert c.text.endswith("waiting until robot_a has gone by does not help: the tasks would wait for each "
                            "other in a cycle.")
+    assert v.cases == ("keeper_ends_elsewhere",)
 
 
 # ---------------- the orderings of a verdict, together ----------------
@@ -419,6 +441,7 @@ def test_a_keepers_wait_that_closes_a_cycle_with_another_ordering_falls_back_to_
          "through e (task a1) and you would stay there until the end of your plan; waiting until robot_a "
          "has gone by does not help: together with the other orderings of this plan, the tasks would wait "
          "for each other in a cycle.")]
+    assert s4_cases(v) == ["yielder_waits", "keeper_ends_elsewhere"]
 
 
 def test_a_cycle_through_a_robots_own_task_order_is_found_too(parking):
@@ -429,6 +452,7 @@ def test_a_cycle_through_a_robots_own_task_order_is_found_too(parking):
     v = verdict_for(parking, plan, speed=1.0)
     assert [(c.kind, c.robot_id, c.task_id, c.node, c.value) for c in v.constraints] == [
         ("order_before", "robot_a", "b2", None, "a1"), ("forbid_node", "robot_b", "b2", "e", None)]
+    assert v.cases == ("yielder_waits", "keeper_ends_elsewhere")
 
 
 def test_a_cycle_left_without_the_keepers_waits_turns_the_last_orderings_into_custom():
@@ -436,7 +460,7 @@ def test_a_cycle_left_without_the_keepers_waits_turns_the_last_orderings_into_cu
     with each robot's task order; the plan's own depends_on can close one. robot_a yields to
     robot_b, robot_b to robot_c, and c1 already waits for a2. No compact map reaches this with
     each ordering verified on its own, so the last step of to_verdict is tested directly."""
-    from fleet_checker.adapters.verdict import _Proposal, _without_cycles
+    from fleet_checker.adapters.verdict import _labelled, _Proposal, _without_cycles
     plan = team(("robot_a", [task("a1", "navigate", "x"), task("a2", "navigate", "y")]),
                 ("robot_b", [task("b1", "navigate", "x"), task("b2", "navigate", "y")]),
                 ("robot_c", [task("c1", "navigate", "z", depends_on=["a2"])]))
@@ -444,8 +468,10 @@ def test_a_cycle_left_without_the_keepers_waits_turns_the_last_orderings_into_cu
                          value="b1", text="robot_b: start task b1 only after robot_c has finished task c1.")
     a_waits = Constraint(kind="order_before", rule_id=R.CAPACITY_EXCEEDED, robot_id="robot_a", task_id="b2",
                          value="a1", text="robot_a: start task a1 only after robot_b has finished task b2.")
-    kept, cut = _without_cycles(plan, [_Proposal(b_waits), _Proposal(a_waits)])
+    proposals = [_Proposal(b_waits, case="yielder_waits"), _Proposal(a_waits, case="ordering")]
+    kept, cut = _without_cycles(plan, proposals)
     assert kept == b_waits
+    assert [p.case for p in _labelled(proposals, [kept, cut])] == ["yielder_waits", "cycle"]
     assert (cut.kind, cut.rule_id, cut.robot_id, cut.task_id) == ("custom", R.CAPACITY_EXCEEDED,
                                                                   "robot_a", "a1")
     assert cut.text == ("robot_a: start task a1 only after robot_b has finished task b2. This cannot be done "
@@ -459,6 +485,7 @@ def test_orderings_that_work_together_are_left_alone(parking):
     v = verdict_for(parking, team(("robot_a", [task("a1", "navigate", "e")]),
                                   ("robot_b", [task("b1", "navigate", "s")])), speed=1.0)
     assert [(c.kind, c.task_id, c.value) for c in v.constraints] == [("order_before", "b1", "a1")]
+    assert v.cases == ("yielder_waits",)
 
 
 # ---------------- one constraint per demand ----------------
@@ -483,6 +510,7 @@ def test_a_keeper_leaving_on_the_edge_it_is_on_is_waited_for_until_its_first_tas
                     on_edges={"robot_b": OnEdge("pass_e", "corridor_1", (7.6, 0.0))})
     assert v.rule_ids == (R.CAPACITY_EXCEEDED,)
     assert fields(v, "kind", "robot_id", "task_id", "value") == [("order_before", "robot_a", "b1", "a1")]
+    assert v.cases == ("ordering",)
 
 
 def test_a_yielder_in_the_zone_on_the_edge_it_is_on_has_the_keeper_keep_clear(samples_map):
@@ -507,6 +535,7 @@ def test_a_yielder_reaching_the_node_on_the_edge_it_is_on_has_the_keeper_keep_cl
     assert v.constraints[0].text == (
         "robot_a: robot_b gets to corridor_1 on the edge it is on now, so it cannot wait, and you would "
         "drive through it then. Change the plan so that you are not at corridor_1 while robot_b is there.")
+    assert v.cases == ("on_its_edge",)
 
 
 def test_a_keeper_that_stays_where_its_edge_ends_cannot_wait_and_ends_somewhere_else(samples_map):
@@ -517,6 +546,7 @@ def test_a_keeper_that_stays_where_its_edge_ends_cannot_wait_and_ends_somewhere_
     assert fields(v, "kind", "robot_id", "node") == [("forbid_node", "robot_b", "corridor_1")]
     assert v.constraints[0].text.endswith(
         "waiting until robot_a has gone by does not help: you get to corridor_1 on the edge you are on now.")
+    assert v.cases == ("keeper_ends_elsewhere",)
 
 
 def test_too_long_plan_is_custom(samples_map):
@@ -525,6 +555,7 @@ def test_too_long_plan_is_custom(samples_map):
     assert (c.kind, c.robot_id) == ("custom", "robot_b")
     assert "41 s" in c.text and "30 s" in c.text
     assert v.risk_score == pytest.approx(1 / 3)
+    assert v.cases == ("duration",)
 
 
 def test_compile_error_is_custom(samples_map):
@@ -535,6 +566,7 @@ def test_compile_error_is_custom(samples_map):
     [c] = v.constraints
     assert c.kind == "custom" and "room_9" in c.text
     assert v.risk_score == pytest.approx(1 / 3)
+    assert v.cases == ("compile",)
 
 
 # ---------------- plan_json that is not a TeamPlan -> custom ----------------
@@ -554,6 +586,7 @@ def test_unreadable_plan_is_rejected_as_malformed():
     # Names the field and what is allowed, like plan_echo does.
     assert "assignments.0.tasks.0.action: Input should be 'navigate', 'wait' or 'hold_position'" in c.text
     assert v.rationale.startswith("Plan rejected: plan_json is not a valid TeamPlan (")
+    assert v.cases == ("unreadable_plan",)
     assert tuple(constraints_from_json(constraints_to_json(v.constraints))) == v.constraints
 
 
@@ -612,4 +645,5 @@ def test_unknown_positions_reject_the_plan_unchecked():
     two = unknown_positions_verdict((("robot_a", "it is not in the latest /mrs/team_state"),
                                      ("robot_b", "its position has no time stamp")))
     assert fields(two, "robot_id") == [("robot_a",), ("robot_b",)]
+    assert (v.cases, two.cases) == (("unknown_position",), ("unknown_position",) * 2)
     assert two.rationale.startswith("Plan not checked: the gate does not know where robot_a and robot_b are.")

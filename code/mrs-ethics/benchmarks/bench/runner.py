@@ -14,8 +14,8 @@ from .env import environment
 from .maps import load_maps
 from .perf import Instruments, overhead, run_cell
 from .repair import run_scenario
-from .report import (overhead_row, people_rows, perf_cell_row, perf_scenario_rows, repair_constraint_rows,
-                     repair_scenario_rows, repair_summary_rows, write_csv, write_report)
+from .report import (overhead_row, people_rows, perf_cell_row, perf_scenario_rows, repair_case_rows,
+                     repair_constraint_rows, repair_scenario_rows, repair_summary_rows, write_csv, write_report)
 from .scenarios import Cell, cells, check_manifest, people_cells, scenarios_of
 from .verdicts import export
 
@@ -169,7 +169,9 @@ def _repair(maps: Mapping[str, Any], profile: Profile, out: Path, log: Callable[
             f"in {time.monotonic() - start:.1f} s")
     summary = repair_summary_rows(runs, config.REPAIR_MAX_ATTEMPTS)
     constraints = repair_constraint_rows(runs)
+    cases = repair_case_rows(runs)
     write_csv(out / "repair_scenarios.csv", [r for c in all_cells for r in repair_scenario_rows(c, runs[c], scenarios[c])])
     write_csv(out / "repair_summary.csv", summary)
     write_csv(out / "repair_constraints.csv", constraints)
-    return {"summary": summary, "constraints": constraints}
+    write_csv(out / "repair_cases.csv", cases)
+    return {"summary": summary, "constraints": constraints, "cases": cases}
