@@ -10,12 +10,16 @@
                                      the node, the yielder's task that brings it there),
                                      verified first; if it does not help, forbid_node, or
                                      custom when the node is where the yielder's task ends or
-                                     the yielder drives through it. If the keeper stays to the
-                                     end of its plan and the yielder has to be there, only the
-                                     keeper can free the node (team_check's must_fix): it waits
-                                     until a yielder driving through has gone by, verified on
-                                     the whole plan, or else ends somewhere else (forbid_node);
-                                     for a yielder whose task ends there, custom
+                                     the yielder drives through it. A yielder that stands
+                                     where it starts, waiting for its task: forbid_node (wait
+                                     elsewhere). Only the keeper can free the node (team_check's
+                                     must_fix) when it stays to the end of its plan and the
+                                     yielder has to be there: it waits until a yielder driving
+                                     through has gone by, verified on the whole plan, or else
+                                     ends somewhere else (forbid_node), and ends somewhere else
+                                     for a yielder whose task ends there; and when it waits
+                                     there for the yielder's task that brings the yielder
+                                     there: forbid_node (wait elsewhere)
   P-1 final_stop_in_passthrough      forbid_node for every node of the zone
   P-2 region_access_denied           avoid_node for every node of the zone; custom if it has none
   P-3 and compile errors             custom
