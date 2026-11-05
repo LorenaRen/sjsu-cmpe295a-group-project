@@ -1,0 +1,13 @@
+[     3.7 s] [1/6] old bench_grid/8/low/0: 3.5 s, load 1.70 -> 1.72
+[     7.1 s] [1/6] new bench_grid/8/low/0: 3.4 s, load 1.72 -> 1.74
+[    11.2 s] [2/6] new bench_grid/8/medium/0: 4.1 s, load 1.74 -> 1.92
+[    15.4 s] [2/6] old bench_grid/8/medium/0: 4.1 s, load 1.92 -> 1.92
+[    21.8 s] [3/6] old bench_grid/8/high/0: 6.4 s, load 1.92 -> 1.85
+[    28.1 s] [3/6] new bench_grid/8/high/0: 6.3 s, load 1.85 -> 1.95
+[    41.7 s] [4/6] new bench_grid/16/low/0: 13.6 s, load 1.95 -> 1.96
+[    56.1 s] [4/6] old bench_grid/16/low/0: 14.4 s, load 1.96 -> 1.96
+[    75.2 s] [5/6] old bench_grid/16/medium/0: 19.1 s, load 1.96 -> 2.05
+[    93.2 s] [5/6] new bench_grid/16/medium/0: 18.0 s, load 2.05 -> 2.18
+[   124.9 s] [6/6] new bench_grid/16/high/0: 31.7 s, load 2.18 -> 2.38
+[   159.8 s] [6/6] old bench_grid/16/high/0: 35.0 s, load 2.38 -> 2.26
+[   160.0 s] compare: /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/r1_compare_rerun/compare.md

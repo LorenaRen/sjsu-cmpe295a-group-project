@@ -27,6 +27,11 @@ From the repository root, with the venv the checker's tests use (Python 3.10+, p
 - **Before a full run**, plug the computer in and close other programs that use the CPU. The
   report records the power source and the busiest other processes at the start, so a run that
   was not quiet says so.
+- **Keep the output out of folders that sync to the cloud.** On a Mac with iCloud's "Desktop &
+  Documents Folders" on, a repository on the Desktop is uploaded as a run writes into it. In one
+  A/B the load rose to 3–6.7 while fileproviderd uploaded the files of the run before; the rerun,
+  with `--out` outside the synced folder, stayed at 1.7–2.4
+  (`reports/2026-11-04_Mac14-15_r1_compare/answer.md`). Copy the results into `reports/` afterwards.
 - **On macOS, wrap long runs in `caffeinate -i`**, so that the Mac does not sleep halfway. The
   report's "Kept awake by" row shows the assertion caffeinate held for the run (from `pmset -g
   assertions`), or that there was none. (caffeinate runs the command in place, so the run's parent

@@ -10,7 +10,7 @@ from mrs_common.plan_schema import TeamPlan
 from fleet_checker.adapters.compiler import OnEdge
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 from fleet_checker.adapters.team_check import check_team_plan, conflicts, reason_of
-from fleet_checker.cross_plan import FairnessLedger
+from fleet_checker.cross_plan import FairnessLedger, check_cross_plan_conflicts
 from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation, Violation
 
@@ -401,6 +401,24 @@ def test_max_duration_is_passed_to_p3(samples_map):
     result = check(samples_map, sample("valid_two_robots.json"), max_duration=30.0)
     assert codes(result) == ["MAX_DURATION_EXCEEDED"]
     assert list(result.must_replan) == ["robot_b"]
+
+
+def test_a_finding_names_exactly_the_robots_r1_chose_for_its_conflict(aisle_map):
+    # Four robots swap rooms through the one-robot aisle, two by two to the same node: R-1 has three
+    # of them give way in the aisle, and robot_a and robot_b in node conflicts too. Each finding names
+    # the robots R-1 chose for its own conflict, as check_cross_plan_conflicts lists them.
+    robots = ["robot_a", "robot_b", "robot_c", "robot_d"]
+    plan = team(*[(r, [task(r[-1] + "1", "hold_position", "room_e" if r in ("robot_a", "robot_c") else "room_w")])
+                  for r in robots])
+    result = check_team_plan(plan, aisle_map, spawn_starts(aisle_map, robots), speed=SPEED,
+                             robot_length=ROBOT_LENGTH)
+    violations, yielders = check_cross_plan_conflicts(list(result.compiled.plans.values()), aisle_map.world,
+                                                      pass_time=ROBOT_LENGTH / SPEED)
+    chosen = [tuple(r for r in robots if any(v is y for y in yielders.get(r, ()))) for v in violations]
+    assert [f.violation for f in result.findings] == violations
+    assert [f.r1_yielders for f in result.findings] == chosen
+    assert chosen[0] == ("robot_a", "robot_b", "robot_c")     # the aisle: 4 robots, room for 1
+    assert [sum(r in c for c in chosen) for r in robots] == [3, 3, 1, 0]
 
 
 @pytest.mark.parametrize("code", [
