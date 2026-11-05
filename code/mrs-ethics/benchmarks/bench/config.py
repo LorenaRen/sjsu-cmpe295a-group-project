@@ -20,3 +20,15 @@ ROBOTS: dict[str, tuple[int, ...]] = {
     "samples_world": (2, 4),
     "bench_grid": (2, 4, 8, 16, 32),
 }
+
+# ---- scenarios (bench/scenarios.py) --------------------------------------------------------
+# Every scenario's seed string is f"{MASTER_SEED}/{map}/{robots}/{density}/{index}".
+MASTER_SEED = "mrs-ethics-benchmarks-1"
+# Density: how likely each robot is sent to a target in the other half of the map (p_cross).
+DENSITIES: dict[str, float] = {"low": 0.0, "medium": 0.5, "high": 1.0}
+PERF_SCENARIOS = 200          # per cell of the timing benchmark
+REPAIR_SCENARIOS = 50         # per cell of the repair benchmark: the first 50 of the same scenarios
+# The S-2 series: the same scenarios as these cells, with people near open-area nodes.
+PEOPLE_SERIES = {"map": "bench_grid", "robots": (8, 16), "density": "medium", "people": 4}
+PERSON_OFFSET = 0.5           # [m] a person stands within this of an open-area node
+MANIFEST = BENCH_DIR / "manifest.csv"   # one digest per cell over all its scenarios
