@@ -90,6 +90,10 @@ class TeamCheckResult:
     def recheck(self, team_plan: TeamPlan) -> TeamCheckResult:
         """Run the same check (map, where the robots are, people, ledger, settings) on
         another plan, e.g. this one with a depends_on added."""
+        return self.recheck_full(team_plan)
+
+    def recheck_full(self, team_plan: TeamPlan) -> TeamCheckResult:
+        """recheck, with everything computed again from scratch: what recheck must give."""
         return _check(team_plan, self.sim_map, self.start_nodes, self.on_edges, self.blocked_edges,
                       self.people, self.ledger, self.settings)
 
