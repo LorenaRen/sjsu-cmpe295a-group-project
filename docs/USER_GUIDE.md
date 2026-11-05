@@ -660,6 +660,20 @@ no gate answered. Parameters: `scenario`, `world` / `map_file` / `robots` (as fo
 (empty: a new one per run, so the gate starts with an empty ledger). `examples/fake_planner_s1_round2.json`
 is one recorded run of `s1_passage_no_order`.
 
+#### Benchmarks of the checker
+
+`code/mrs-ethics/benchmarks/` measures, in the plain venv, how long a check takes (2 to 32 robots, split
+into compile, detection and the rechecks that verify constraints) and how far the constraints get the fake
+planner. One command reruns everything, from the repository root:
+
+```bash
+.venv/bin/python code/mrs-ethics/benchmarks/run.py           # full run, into benchmarks/results/<date>_<machine>/
+.venv/bin/python code/mrs-ethics/benchmarks/run.py --quick   # a few scenarios per cell
+```
+
+Scenarios come from committed seeds and are checked against `benchmarks/manifest.csv`; see
+`benchmarks/README.md`.
+
 ---
 
 ## 5. Adding your own package (Modules 2–8)
