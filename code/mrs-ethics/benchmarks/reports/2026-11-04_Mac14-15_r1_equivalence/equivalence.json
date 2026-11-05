@@ -1,0 +1,37 @@
+{
+  "lines": 9439,
+  "old_lines": 9439,
+  "new_lines": 9439,
+  "identical": 9439,
+  "first_difference": null,
+  "sha256": {
+    "old": "4d5127ac24d04359d2d9f26bd37257a86c680fd14655905ba3a56fe94956920e",
+    "new": "4d5127ac24d04359d2d9f26bd37257a86c680fd14655905ba3a56fe94956920e"
+  },
+  "sources": {
+    "old": {
+      "spec": "969d5a8",
+      "path": "/private/var/folders/9w/cgg3d6nj2yg9vq7pwvjfz6dm0000gn/T/bench-src-ry4cwn75/tree/code/mrs-ethics/src",
+      "git_commit": "969d5a8b3037b12eabc1db6ac1c0ddde0333b022"
+    },
+    "new": {
+      "spec": "f88f03b",
+      "path": "/private/var/folders/9w/cgg3d6nj2yg9vq7pwvjfz6dm0000gn/T/bench-src-xfqh2jy7/tree/code/mrs-ethics/src",
+      "git_commit": "f88f03bf7bd62df170b162508903f7874e5efac4"
+    }
+  },
+  "counts": {
+    "old": {
+      "timing_verdicts": 5800,
+      "repair_verdicts": 3639,
+      "lines": 9439,
+      "sha256": "4d5127ac24d04359d2d9f26bd37257a86c680fd14655905ba3a56fe94956920e"
+    },
+    "new": {
+      "timing_verdicts": 5800,
+      "repair_verdicts": 3639,
+      "lines": 9439,
+      "sha256": "4d5127ac24d04359d2d9f26bd37257a86c680fd14655905ba3a56fe94956920e"
+    }
+  }
+}
