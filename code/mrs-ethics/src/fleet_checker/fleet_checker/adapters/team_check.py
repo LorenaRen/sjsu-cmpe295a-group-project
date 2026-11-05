@@ -219,8 +219,14 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
     conflicts, yielders = check_cross_plan_conflicts(
         list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin,
         people=people, crowding=s.crowding, pass_time=s.robot_length / s.speed, memo=memo)
+    # The robots R-1 chose for each conflict, by the violation object R-1 listed (equal violations of
+    # two conflicts would still be two conflicts): one pass over yielders, not one per conflict.
+    chosen: dict[int, set[str]] = {}
+    for robot, vs in yielders.items():
+        for y in vs:
+            chosen.setdefault(id(y), set()).add(robot)
     for v in conflicts:
-        r1 = tuple(sorted(r for r, vs in yielders.items() if any(v is y for y in vs)))
+        r1 = tuple(sorted(chosen.get(id(v), ())))
         found.append((v, _who_must_change(v, r1, compiled, team_plan), r1))
 
     must_replan: dict[str, list[Violation]] = {}
