@@ -41,3 +41,6 @@ PERF_REPETITIONS = 5          # every scenario of a cell is timed this often: 20
 PERF_WARMUP = (5, 2)          # (scenarios, repetitions) run untimed before each cell
 # The cost of the instruments: plain and timed runs of the same scenarios, one after the other.
 OVERHEAD = {"cell": ("bench_grid", 8, "medium", 0), "scenarios": 50, "repetitions": 4}
+
+# ---- repair (bench/repair.py) ----------------------------------------------------------------
+REPAIR_MAX_ATTEMPTS = 5       # the fake planner's default: a placeholder until Module 4's cap is known
