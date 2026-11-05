@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-05T01:58:18-08:00",
+  "command": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/.venv/bin/python /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/wt_step2/code/mrs-ethics/benchmarks/run.py --only repair --out /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/s4_runs/2_fake_planner",
+  "profile": "full",
+  "git_commit": "14e04802f06726e8044509c415f87c1a88154d49",
+  "git_dirty": false,
+  "machine": {
+    "model": "Mac14,15",
+    "cpu": "Apple M2",
+    "performance_cores": 4,
+    "efficiency_cores": 4,
+    "logical_cpus": 8,
+    "memory_gb": 8.0,
+    "os": "macOS-26.5.2-arm64-arm-64bit-Mach-O"
+  },
+  "checker_src": {
+    "path": "/private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/wt_step2/code/mrs-ethics/src",
+    "git_commit": "14e04802f06726e8044509c415f87c1a88154d49",
+    "git_dirty": false
+  },
+  "parent_process": "/bin/zsh",
+  "power": "AC Power",
+  "kept_awake_by": "caffeinate (pid 99383): PreventUserIdleSystemSleep for pid 99381",
+  "load_average": [
+    1.85,
+    2.02,
+    2.05
+  ],
+  "busiest_processes": [
+    {
+      "pid": 99382,
+      "cpu_percent": 41.2,
+      "command": "Python"
+    },
+    {
+      "pid": 401,
+      "cpu_percent": 12.5,
+      "command": "WindowServer"
+    },
+    {
+      "pid": 91792,
+      "cpu_percent": 10.6,
+      "command": "XprotectService"
+    },
+    {
+      "pid": 78922,
+      "cpu_percent": 4.7,
+      "command": "Code Helper (Renderer)"
+    },
+    {
+      "pid": 332,
+      "cpu_percent": 4.4,
+      "command": "fseventsd"
+    }
+  ],
+  "python": {
+    "version": "3.14.4",
+    "implementation": "CPython",
+    "executable": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/.venv/bin/python",
+    "pydantic": "2.14.1",
+    "hash_seed": "0"
+  }
+}

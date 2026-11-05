@@ -1,0 +1,4 @@
+map,robots,density,people,samples,findings_mean,rechecks_mean_old,rechecks_mean_new,counts_identical,old_median_ms,new_median_ms,speedup_median,old_p95_ms,new_p95_ms,speedup_p95,old_p99_ms,new_p99_ms,speedup_p99,old_recheck_median_ms,new_recheck_median_ms
+bench_grid,8,medium,0,1000,5.535,5.825,5.825,True,2.6604,2.655,1.002,6.2216,6.1966,1.004,9.0319,9.1646,0.986,1.0525,1.0433
+bench_grid,16,medium,0,1000,21.635,24.52,24.52,True,15.2892,15.518,0.985,29.4328,29.7642,0.989,34.7638,35.3546,0.983,10.2298,10.481
+bench_grid,32,medium,0,1000,69.8,89.45,89.45,True,127.5665,129.226,0.987,189.9784,192.3445,0.988,210.6601,211.8931,0.994,104.0067,105.3325
