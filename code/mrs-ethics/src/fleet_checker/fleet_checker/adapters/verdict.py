@@ -79,7 +79,7 @@ from pydantic import ValidationError
 
 from ..plan import RegionKind
 from .compiler import deadlock
-from .node_presence import Presence, only_the_keeper_can_resolve, presence
+from .node_presence import Presence, keeper_in_the_way, only_the_keeper_can_resolve, presence
 from .team_check import Finding, TeamCheckResult
 
 # The strings of EthicalVerdict.VERDICT_* (mrs_msgs needs a ROS build to import).
@@ -461,9 +461,10 @@ def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[_Proposal]:
 
 def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step: int,
                      yielder: str, y_steps: list[int]) -> _Proposal:
-    """A yielder that stands where it starts, waiting for its task, waits somewhere else. Then,
-    in order of preference: make the yielder come only after the keeper has left (verified,
-    as for S-1). If the keeper stays to the end of its plan and the yielder has to be there,
+    """A yielder that stands where it starts, waiting for its task, waits somewhere else; a
+    keeper that stands there waiting for the yielder's task that brings the yielder there does
+    (the yielder cannot wait for it without a cycle). Then, in order of preference: make the
+    yielder come only after the keeper has left (verified, as for S-1). If the keeper stays to the end of its plan and the yielder has to be there,
     only the keeper can free the node: it waits for a yielder that drives through, if that
     works, else ends somewhere else; a yielder whose task ends there gets told, through the
     keeper, that the task cannot be done as it is. A yielder at the node on the edge it is on
@@ -497,6 +498,13 @@ def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step
             text=f"{keeper}: {yielder} gets to {node} on the edge it is on now, so it cannot wait, and you would "
                  f"{'drive through it' if k.passes else 'be there'} then. Change the plan so that you are not "
                  f"at {node} while {yielder} is there."), case="on_its_edge")
+    if keeper_in_the_way(result.team_plan, y, k):   # the keeper must change (team_check)
+        return _Proposal(Constraint(
+            kind="forbid_node", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
+            text=f"{keeper}: do not wait at {node}. {yielder} has to "
+                 f"{'drive through' if y.passes else 'get to'} {node} with task {y.arrive_task}, and your "
+                 f"task {k.leave_task} cannot start before that is done, so {yielder} cannot wait for you to "
+                 f"leave. Wait at another node until task {k.leave_task} may start."), case="keeper_in_the_way")
     why_not = None
     if not k.stays and not y.on_lead_in:
         again = _reordered(result, before=k.leave_task, after=y.arrive_task)

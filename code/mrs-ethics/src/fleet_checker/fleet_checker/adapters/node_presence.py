@@ -18,7 +18,7 @@ from typing import NamedTuple
 from mrs_common.plan_schema import TeamPlan
 
 from ..plan import TIME_EPS, Action
-from .compiler import CompiledTeamPlan
+from .compiler import CompiledTeamPlan, waits_for_task
 
 
 class Presence(NamedTuple):
@@ -87,3 +87,15 @@ def only_the_keeper_can_resolve(yielder: Presence, keeper: Presence) -> bool:
     there between tasks can wait somewhere else. (A yielder that is at the node on the edge it
     is on cannot change that either; team_check has the keeper change then too.)"""
     return keeper.stays and not yielder.from_start and (yielder.passes or yielder.ends_task)
+
+
+def keeper_in_the_way(team_plan: TeamPlan, yielder: Presence, keeper: Presence) -> bool:
+    """Whether the keeper has to wait somewhere else: it stands at the node until a task takes it
+    away, and the yielder has to be there later, to drive through it or to end a task there, but
+    cannot wait until the keeper has left, because the keeper's task that takes it away cannot
+    start before the yielder's task that brings it there is done (waiting would close a cycle).
+    Only the keeper can resolve that, by waiting somewhere else (team_check has it change)."""
+    return (not keeper.passes and not keeper.stays and keeper.leave_task is not None
+            and not yielder.from_start and not yielder.on_lead_in and yielder.arrive_task is not None
+            and (yielder.passes or yielder.ends_task)
+            and waits_for_task(team_plan, keeper.leave_task, yielder.arrive_task))

@@ -292,18 +292,18 @@ def test_waiting_where_the_other_robot_waits_too_is_forbidden_when_ordering_cann
     assert s4_cases(v) == ["no_waiting_there"]
 
 
-def test_a_target_held_for_a_while_means_wait_nearby_then_go(parking):
+def test_a_keeper_waiting_where_the_yielders_task_ends_waits_somewhere_else(parking):
     """c is where a1 ends. robot_b waits at c until a1 is done, so ordering a1 after b2 would
-    close a cycle; forbidding c would make robot_a give up a1. It is told to wait nearby."""
+    close a cycle, and forbidding c would make robot_a give up a1: robot_b, which waits at c
+    for robot_a, waits somewhere else (team_check: the keeper must fix it)."""
     plan = team(("robot_a", [task("a1", "hold_position", "c")]),
                 ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["a1"])]))
     v = verdict_for(parking, plan, speed=1.0)
-    assert s4(v) == [("custom", "robot_a", "a1", "c", None,
-                      "robot_a: c is where task a1 ends, but robot_b is stopped there until it leaves "
-                      "with task b2. Wait at another node near c first, and go to c only after robot_b "
-                      "has left it.")]
-    assert s4_cases(v) == ["wait_nearby"]
-    assert all(c.kind != "forbid_node" for c in v.constraints)
+    assert s4(v) == [("forbid_node", "robot_b", "b2", "c", None,
+                      "robot_b: do not wait at c. robot_a has to get to c with task a1, and your task b2 "
+                      "cannot start before that is done, so robot_a cannot wait for you to leave. Wait at "
+                      "another node until task b2 may start.")]
+    assert s4_cases(v) == ["keeper_in_the_way"]
 
 
 def test_a_target_held_to_the_end_cannot_be_reached_as_planned(parking):
@@ -373,18 +373,17 @@ def test_driving_through_where_a_robot_stops_for_a_while_waits_until_it_has_left
     assert s4_cases(v) == ["yielder_waits"]
 
 
-def test_driving_through_where_waiting_would_close_a_cycle_gets_custom(parking):
+def test_a_keeper_waiting_where_the_yielder_drives_through_waits_somewhere_else(parking):
     """robot_b stands at c until robot_a's second task is done, so robot_a cannot wait for it
-    before driving through c with its first."""
+    before driving through c with its first: robot_b waits somewhere else."""
     plan = team(("robot_a", [task("a1", "navigate", "e"), task("a2", "navigate", "f")]),
                 ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["a2"])]))
     v = verdict_for(parking, plan, speed=1.0)
-    assert s4(v) == [("custom", "robot_a", "a1", "c", None,
-                      "robot_a would drive through c while robot_b is stopped there until it leaves with "
-                      "task b2, and making robot_a wait for robot_b does not fix it: the tasks would wait "
-                      "for each other in a cycle. Change the plan so that robot_a drives through c when "
-                      "robot_b is not there.")]
-    assert s4_cases(v) == ["passes_waiting_fails"]
+    assert s4(v) == [("forbid_node", "robot_b", "b2", "c", None,
+                      "robot_b: do not wait at c. robot_a has to drive through c with task a1, and your task "
+                      "b2 cannot start before that is done, so robot_a cannot wait for you to leave. Wait at "
+                      "another node until task b2 may start.")]
+    assert s4_cases(v) == ["keeper_in_the_way"]
 
 
 # robot_b parks at corridor_1 for good; robot_a has to drive through it.
