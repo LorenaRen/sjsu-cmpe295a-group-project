@@ -667,7 +667,7 @@ into compile, detection and the rechecks that verify constraints) and how far th
 planner. One command reruns everything, from the repository root:
 
 ```bash
-.venv/bin/python code/mrs-ethics/benchmarks/run.py           # full run, into benchmarks/results/<date>_<machine>/
+.venv/bin/python code/mrs-ethics/benchmarks/run.py           # full run, into benchmarks/reports/<date>_<machine>/
 .venv/bin/python code/mrs-ethics/benchmarks/run.py --quick   # a few scenarios per cell
 ```
 

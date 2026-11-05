@@ -10,7 +10,7 @@ import pytest
 
 from bench import config
 from bench.env import environment
-from bench.runner import QUICK
+from bench.runner import FULL, QUICK, default_out
 from bench.scenarios import cells, people_cells
 
 RUN = config.BENCH_DIR / "run.py"
@@ -100,3 +100,17 @@ def test_the_environment_names_the_machine_and_the_python():
     assert {"date", "command", "git_commit", "git_dirty", "machine", "power", "load_average",
             "busiest_processes", "python", "profile"} <= set(env)
     assert env["python"]["version"].count(".") == 2
+
+
+def test_a_full_run_goes_to_reports_and_git_keeps_its_summaries_not_its_samples():
+    # The workspace's .gitignore leaves out every results/ directory (experiment output); reports/ is not one.
+    env = {"date": "2026-11-04T17:05:05-08:00", "machine": {"model": "Mac14,15"}}
+    full, quick = default_out(FULL, env), default_out(QUICK, env)
+    assert (full, quick) == (config.BENCH_DIR / "reports/2026-11-04_Mac14-15", config.BENCH_DIR / "reports/quick")
+    repo = config.BENCH_DIR.parents[2]
+
+    def ignored(path):
+        return subprocess.run(["git", "check-ignore", "-q", str(path.relative_to(repo))], cwd=repo).returncode == 0
+
+    assert not ignored(full / "report.md") and not ignored(full / "perf_summary.csv")
+    assert ignored(full / "perf_samples.csv") and ignored(quick / "report.md")

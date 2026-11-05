@@ -63,9 +63,9 @@ def parameters(profile: Profile) -> dict[str, Any]:
 
 def default_out(profile: Profile, env: Mapping[str, Any]) -> Path:
     if profile.name == "quick":
-        return config.BENCH_DIR / "results/quick"
+        return config.BENCH_DIR / "reports/quick"
     model = (env["machine"]["model"] or platform.node()).replace(",", "-")
-    return config.BENCH_DIR / "results" / f"{env['date'][:10]}_{model}"
+    return config.BENCH_DIR / "reports" / f"{env['date'][:10]}_{model}"
 
 
 def run(profile: Profile, out: Path | None = None, only: str | None = None, manifest: Path = config.MANIFEST,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the checker benchmarks (README.md). From the repository root, with the plain venv:
 
-    .venv/bin/python code/mrs-ethics/benchmarks/run.py           # the full run, into results/<date>_<machine>/
+    .venv/bin/python code/mrs-ethics/benchmarks/run.py           # the full run, into reports/<date>_<machine>/
     .venv/bin/python code/mrs-ethics/benchmarks/run.py --quick   # a few scenarios per cell: does everything run?
 
 It fixes PYTHONHASHSEED=0 (by starting itself again with it), and stops with exit code 2 if the
@@ -28,7 +28,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Run the checker benchmarks.")
     p.add_argument("--quick", action="store_true", help="a few scenarios per cell, to see that everything runs")
     p.add_argument("--only", choices=("perf", "repair"), help="run only the timing or only the repair benchmark")
-    p.add_argument("--out", type=Path, help="where to write the results (default: results/<date>_<machine>/)")
+    p.add_argument("--out", type=Path, help="where to write the results (default: reports/<date>_<machine>/)")
     p.add_argument("--manifest", type=Path, default=config.MANIFEST, help="the manifest to check the scenarios against")
     p.add_argument("--write-manifest", action="store_true",
                    help="write the manifest for the scenarios the generator makes now (only on purpose)")

@@ -27,8 +27,9 @@ From the repository root, with the venv the checker's tests use (Python 3.10+, p
 - **Before a full run**, plug the computer in and close other programs that use the CPU. The
   report records the power source and the busiest other processes at the start, so a run that
   was not quiet says so.
-- **Where the results go.** A full run writes into `results/<date>_<machine>/`; `--quick` writes
-  into `results/quick/`, which git ignores. The run log, `run.log`, gives each cell's wall time.
+- **Where the results go.** A full run writes into `reports/<date>_<machine>/`; `--quick` writes
+  into `reports/quick/`, which git ignores. (Not `results/`: the workspace's `.gitignore` leaves
+  out every `results/` directory, for experiment output.) The run log, `run.log`, gives each cell's wall time.
 
 ## What a run writes
 
