@@ -1,0 +1,7 @@
+cell,side,position,seconds,load_before_1min,load_before_5min,load_before_15min,load_after_1min,load_after_5min,load_after_15min
+bench_grid/4/medium/0,old,1,2.6,1.9,1.98,2.08,1.9,1.98,2.08
+bench_grid/4/medium/0,new,2,2.6,1.9,1.98,2.08,1.9,1.98,2.08
+bench_grid/8/medium/0,new,1,10.6,1.9,1.98,2.08,1.92,1.98,2.08
+bench_grid/8/medium/0,old,2,10.6,1.92,1.98,2.08,1.93,1.98,2.08
+bench_grid/16/medium/0,old,1,73.4,1.93,1.98,2.08,1.74,1.91,2.04
+bench_grid/16/medium/0,new,2,73.4,1.74,1.91,2.04,1.8,1.9,2.02
