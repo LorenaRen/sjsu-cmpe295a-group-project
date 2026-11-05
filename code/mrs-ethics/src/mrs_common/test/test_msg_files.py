@@ -95,6 +95,23 @@ def test_every_event_kind_is_accepted_by_make_episode_event():
         assert f"EpisodeEvent.{const}" in kinds, f"convert.EVENT_KINDS is missing EpisodeEvent.{const}"
 
 
+def test_every_dialogue_kind_is_accepted_by_make_dialogue_turn():
+    """A KIND_* constant added to DialogueTurn.msg must also be added to DIALOGUE_KINDS in convert.py."""
+    src = (Path(__file__).resolve().parents[1] / "mrs_common" / "convert.py").read_text()
+    kinds = re.search(r"DIALOGUE_KINDS = \((.*?)\)\n", src, re.S).group(1)
+    for const in (c for c in ALL["DialogueTurn"][1] if c.startswith("KIND_")):
+        assert f"DialogueTurn.{const}" in kinds, f"convert.DIALOGUE_KINDS is missing DialogueTurn.{const}"
+
+
+def test_dialogue_turn_fits_the_agreement_protocol():
+    fields, consts = ALL["DialogueTurn"]
+    assert {"kind", "speaker_id", "next_speaker", "text", "plan_json", "transaction_id"} <= set(fields)
+    assert "agree" not in fields, "agreement is a kind now; a plan no longer implies agreeing to it"
+    kinds = {v.strip() for k, (_, v) in consts.items() if k.startswith("KIND_")}
+    assert kinds == {"prompt", "proposal", "agreement", "discussion"}
+    assert consts["COORDINATOR"][1].strip() == "coordinator"
+
+
 def test_navigation_only_world_state():
     fields, _ = ALL["WorldState"]
     assert fields.get("zones") == "string[]" and fields.get("obstacles") == "PerceivedEntity[]"

@@ -21,6 +21,8 @@ TASK_STATES = (TaskStatus.STATE_STARTED, TaskStatus.STATE_REACHED, TaskStatus.ST
 EVENT_KINDS = (EpisodeEvent.KIND_START, EpisodeEvent.KIND_END, EpisodeEvent.KIND_VIOLATION,
                EpisodeEvent.KIND_TIMEOUT, EpisodeEvent.KIND_PLANNING_EXHAUSTED,
                EpisodeEvent.KIND_EDGE_BLOCKED, EpisodeEvent.KIND_EDGE_CLEARED)
+DIALOGUE_KINDS = (DialogueTurn.KIND_PROMPT, DialogueTurn.KIND_PROPOSAL, DialogueTurn.KIND_AGREEMENT,
+                  DialogueTurn.KIND_DISCUSSION)
 
 
 def stamp_now(node=None) -> Time:
@@ -79,11 +81,62 @@ def constraints_from_verdict(msg: EthicalVerdict) -> list[Constraint]:
 
 
 # ---- dialogue, status, events ---------------------------------------------------------
-def make_dialogue_turn(*, episode_id: str, speaker_id: str, text: str, round: int, attempt: int = 0,
-                       transaction_id: str = "", plan: Optional[TeamPlan] = None, node=None) -> DialogueTurn:
+def make_dialogue_turn(*, episode_id: str, kind: str, speaker_id: str, round: int, attempt: int = 0,
+                       transaction_id: str = "", text: str = "", plan: Optional[TeamPlan] = None,
+                       next_speaker: str = "", node=None) -> DialogueTurn:
+    """One DialogueTurn, checked against the Module 4 protocol. Prefer the four helpers below.
+
+    Only a proposal carries a plan; only a prompt comes from the coordinator, and every prompt
+    names the next speaker."""
+    if kind not in DIALOGUE_KINDS:
+        raise ValueError(f"kind must be one of {DIALOGUE_KINDS}, got '{kind}'")
+    if (kind == DialogueTurn.KIND_PROPOSAL) != (plan is not None):
+        raise ValueError("a proposal, and only a proposal, carries a plan")
+    if kind == DialogueTurn.KIND_PROMPT:
+        if speaker_id != DialogueTurn.COORDINATOR:
+            raise ValueError(f"a prompt comes from '{DialogueTurn.COORDINATOR}', got '{speaker_id}'")
+        if not next_speaker:
+            raise ValueError("a prompt must name next_speaker")
+    else:
+        if speaker_id == DialogueTurn.COORDINATOR or not speaker_id:
+            raise ValueError(f"a {kind} comes from an agent's robot id, got '{speaker_id}'")
+        if next_speaker:
+            raise ValueError("only a prompt names next_speaker")
     return DialogueTurn(episode_id=episode_id, transaction_id=transaction_id, attempt=int(attempt),
-                        round=int(round), speaker_id=speaker_id, text=text, agree=plan is not None,
-                        plan_json=plan_to_json(plan) if plan is not None else "", stamp=stamp_now(node))
+                        round=int(round), kind=kind, speaker_id=speaker_id, next_speaker=next_speaker,
+                        text=text, plan_json=plan_to_json(plan) if plan is not None else "",
+                        stamp=stamp_now(node))
+
+
+def make_turn_prompt(*, episode_id: str, transaction_id: str, attempt: int, round: int, next_speaker: str,
+                     text: str = "", node=None) -> DialogueTurn:
+    """Coordinator: name the next speaker. The prompt that opens an attempt carries the mission and,
+    after a REJECT, the verdict's rationale and constraints in text."""
+    return make_dialogue_turn(episode_id=episode_id, kind=DialogueTurn.KIND_PROMPT,
+                              speaker_id=DialogueTurn.COORDINATOR, round=round, attempt=attempt,
+                              transaction_id=transaction_id, text=text, next_speaker=next_speaker, node=node)
+
+
+def make_proposal(*, episode_id: str, transaction_id: str, attempt: int, round: int, speaker_id: str,
+                  plan: TeamPlan, text: str = "", node=None) -> DialogueTurn:
+    """Agent: propose a plan. A new proposal replaces the previous one and restarts the agreement count."""
+    return make_dialogue_turn(episode_id=episode_id, kind=DialogueTurn.KIND_PROPOSAL, speaker_id=speaker_id,
+                              round=round, attempt=attempt, transaction_id=transaction_id, text=text,
+                              plan=plan, node=node)
+
+
+def make_agreement(*, episode_id: str, transaction_id: str, attempt: int, round: int, speaker_id: str,
+                   text: str = "", node=None) -> DialogueTurn:
+    """Agent: accept the latest proposal of this attempt, unchanged."""
+    return make_dialogue_turn(episode_id=episode_id, kind=DialogueTurn.KIND_AGREEMENT, speaker_id=speaker_id,
+                              round=round, attempt=attempt, transaction_id=transaction_id, text=text, node=node)
+
+
+def make_discussion(*, episode_id: str, transaction_id: str, attempt: int, round: int, speaker_id: str,
+                    text: str, node=None) -> DialogueTurn:
+    """Agent: a text-only turn (a question, an objection, information about its robot)."""
+    return make_dialogue_turn(episode_id=episode_id, kind=DialogueTurn.KIND_DISCUSSION, speaker_id=speaker_id,
+                              round=round, attempt=attempt, transaction_id=transaction_id, text=text, node=node)
 
 
 def make_task_status(*, transaction_id: str, episode_id: str, robot_id: str, task_id: str, state: str,
