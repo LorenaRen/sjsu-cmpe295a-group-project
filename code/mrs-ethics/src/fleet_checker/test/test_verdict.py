@@ -331,6 +331,21 @@ def test_a_yielder_standing_at_the_node_from_its_start_gets_custom(parking):
     assert s4_cases(v) == ["from_start"]
 
 
+def test_a_yielder_waiting_where_it_starts_waits_somewhere_else(parking):
+    """robot_b stands at n, where it starts, until robot_c's c1 is done (14 s); robot_a gets to n
+    at 9 s and stays. The ledger makes robot_b give way: it can wait for c1 somewhere else."""
+    ledger = FairnessLedger()
+    ledger.record_yield("robot_a", "earlier", 0.0, "robot_b")
+    plan = team(("robot_a", [task("a1", "hold_position", "n")]),
+                ("robot_b", [task("b1", "navigate", "s", depends_on=["c1"])]),
+                ("robot_c", [task("c1", "navigate", "w")]))
+    v = verdict_for(parking, plan, starts=PARKING_THREE, speed=1.0, ledger=ledger)
+    assert s4(v) == [("forbid_node", "robot_b", "b1", "n", None,
+                      "robot_b: do not wait at n, where you start; robot_a would stop there while you do. "
+                      "Wait at another node until task b1 may start.")]
+    assert s4_cases(v) == ["from_start"]
+
+
 # ---------------- S-4 with a robot driving through the node ----------------
 
 def test_two_robots_driving_through_one_node_at_once_take_turns(crossroads):

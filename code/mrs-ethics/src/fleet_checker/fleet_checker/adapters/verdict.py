@@ -461,7 +461,8 @@ def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[_Proposal]:
 
 def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step: int,
                      yielder: str, y_steps: list[int]) -> _Proposal:
-    """In order of preference: make the yielder come only after the keeper has left (verified,
+    """A yielder that stands where it starts, waiting for its task, waits somewhere else. Then,
+    in order of preference: make the yielder come only after the keeper has left (verified,
     as for S-1). If the keeper stays to the end of its plan and the yielder has to be there,
     only the keeper can free the node: it waits for a yielder that drives through, if that
     works, else ends somewhere else; a yielder whose task ends there gets told, through the
@@ -477,6 +478,13 @@ def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step
         return _Proposal(Constraint(kind=kind, rule_id=f.reason, robot_id=yielder, text=text, **fields), case=case)
 
     if y.from_start:   # there from the start of its plan: it cannot come later
+        if not y.passes and y.task is not None and not y.ends_task:
+            # It stands where it starts, waiting before task y.task: it can wait somewhere else.
+            return make("forbid_node", "from_start",
+                        f"{yielder}: do not wait at {node}, where you start; {keeper} would "
+                        f"{'drive through it' if k.passes else 'stop there'} while you do. Wait at another "
+                        f"node until task {y.task} may start.",
+                        task_id=y.task, node=node)
         is_there = "stands at" if not y.passes else "drives off from"
         return make("custom", "from_start",
                     f"{yielder} {is_there} {node} from the start of its plan, and {keeper} would "
