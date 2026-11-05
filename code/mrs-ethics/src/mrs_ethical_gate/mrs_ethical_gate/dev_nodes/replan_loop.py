@@ -138,7 +138,7 @@ class FakePlanner:
 
         start = time.perf_counter()
         repair = apply_constraints(self._sent.plan, constraints_from_json(v.constraints_json), self._graph,
-                                   self._banned)
+                                   self._banned, self._start_nodes)
         planning_ms = (time.perf_counter() - start) * 1e3
         self._outcomes.extend((v.attempt + 1, o) for o in repair.outcomes)
         if not repair.changes:

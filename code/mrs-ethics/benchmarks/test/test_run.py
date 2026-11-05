@@ -39,7 +39,7 @@ def test_a_quick_run_writes_every_file(quick):
     names = {p.name for p in quick.iterdir()}
     assert names == {"perf_summary.csv", "perf_scenarios.csv", "perf_samples.csv", "people_series.csv",
                      "overhead.csv", "repair_scenarios.csv", "repair_summary.csv", "repair_constraints.csv",
-                     "environment.json", "report.md", "run.log"}
+                     "repair_cases.csv", "environment.json", "report.md", "run.log"}
     n_cells = len(cells(QUICK.robots)) + len(people_cells(QUICK.people_robots))
     assert len(rows(quick / "perf_summary.csv")) == n_cells
     assert len(rows(quick / "perf_scenarios.csv")) == n_cells * QUICK.perf_scenarios
@@ -51,7 +51,8 @@ def test_the_report_says_what_was_run_and_where_the_numbers_are(quick):
     text = (quick / "report.md").read_text()
     for heading in ("Quick run", "## Setup", "## Method", "## 1. Checker timing", "### Where the time goes",
                     "### Rechecks against fleet size", "### S-2: the extra time of people",
-                    "### What the instruments cost", "## 2. Repairability", "## Limitations", "| Kept awake by |"):
+                    "### What the instruments cost", "## 2. Repairability", "### S-4's constraints by situation",
+                    "## Limitations", "| Kept awake by |"):
         assert heading in text, heading
     env = json.loads((quick / "environment.json").read_text())
     assert env["python"]["hash_seed"] == "0" and env["profile"] == "quick"

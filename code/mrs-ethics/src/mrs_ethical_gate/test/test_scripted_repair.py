@@ -153,6 +153,46 @@ def test_a_waiting_point_and_a_retarget_in_one_reject():
     assert [o.result for o in r.outcomes] == [CHANGED, CHANGED]
 
 
+def test_a_robot_that_waits_at_its_start_node_before_its_first_task_waits_somewhere_else():
+    # S-4: robot_a starts at z and stands there until b1 is done, before a1 takes it to w. The
+    # constraint names a1 and z, and no task comes before a1: z is where robot_a starts.
+    plan = team(("robot_a", [task("a1", "navigate", "w", depends_on=["b1"])]),
+                ("robot_b", [task("b1", "navigate", "v")]))
+    r = apply_constraints(plan, [forbid("robot_a", "a1", "z", rule=R.NODE_OCCUPIED)], GRAPH,
+                          start_nodes={"robot_a": "z", "robot_b": "x"})
+    assert [(t.task_id, t.action.value, t.target, t.depends_on) for t in r.plan.tasks_of("robot_a")] == [
+        ("a1_wait", "navigate", "y", []), ("a1", "navigate", "w", ["b1"])]
+    assert results(r) == [(CHANGED, "a1_wait: navigate y before a1, to wait there instead of at z")]
+
+
+def test_a_first_task_that_neither_starts_nor_ends_at_the_node_is_not_applied():
+    plan = team(("robot_a", [task("a1", "navigate", "w", depends_on=["b1"])]),
+                ("robot_b", [task("b1", "navigate", "v")]))
+    for starts in (None, {"robot_a": "x", "robot_b": "y"}):
+        r = apply_constraints(plan, [forbid("robot_a", "a1", "z", rule=R.NODE_OCCUPIED)], GRAPH,
+                              start_nodes=starts)
+        [o] = r.outcomes
+        assert (o.result, r.plan) == (NOT_APPLIED, plan)
+        assert "first task" in o.why_not
+
+
+def test_a_new_target_is_never_where_another_robot_ends_its_plan():
+    # y is the nearest node to z, but robot_a ends its plan there; w and x are next (2 m), by name.
+    plan = team(("robot_a", [task("a1", "hold_position", "y")]), ("robot_b", [task("b1", "hold_position", "z")]))
+    r = apply_constraints(plan, [forbid("robot_b", "b1", "z")], GRAPH)
+    assert r.plan.task("b1").target == "w"
+
+
+def test_a_waiting_point_is_never_where_another_robot_ends_its_plan():
+    # robot_a waits at z before a2. y (1 m) is where robot_b, with no task, stays; w (2 m) is
+    # where robot_c ends. x (2 m) is left.
+    plan = team(("robot_a", [task("a1", "navigate", "z"), task("a2", "navigate", "v", depends_on=["c1"])]),
+                ("robot_b", []), ("robot_c", [task("c1", "hold_position", "w")]))
+    r = apply_constraints(plan, [forbid("robot_a", "a2", "z", rule=R.NODE_OCCUPIED)], GRAPH,
+                          start_nodes={"robot_a": "x", "robot_b": "y", "robot_c": "v"})
+    assert r.plan.task("a2_wait").target == "x"
+
+
 def test_an_inserted_task_gets_an_id_no_other_task_has():
     plan = team(("robot_a", [task("a1", "navigate", "z"), task("a2", "navigate", "w", depends_on=["a2_wait"])]),
                 ("robot_b", [task("a2_wait", "navigate", "v")]))

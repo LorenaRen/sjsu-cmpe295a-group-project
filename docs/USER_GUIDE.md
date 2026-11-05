@@ -643,7 +643,8 @@ Scenarios (`scenarios/`; give a name or a path), all on samples_world:
 | Scenario | What happens |
 |---|---|
 | `s1_passage_no_order` | REJECT `capacity_exceeded` with an `order_before`; approved in round 2 |
-| `s4_both_hold_room_3` | REJECT `node_occupied` with only a `custom` constraint, for robot_b, which got there first and stays: stuck, FALLBACK |
+| `s4_both_hold_room_3` | REJECT `node_occupied`: robot_b, which gets to room_3 first and would stay, gets a `forbid_node` to end somewhere else; approved in round 2, robot_b's target moved to east_n |
+| `s4_end_where_b_stands` | REJECT `node_occupied` with only a `custom` constraint: robot_a would end at east_n, where robot_b, with no task, stands, and no `forbid_node` can name a task of robot_b: stuck, FALLBACK |
 | `p1_keep_clear_stop` | approved in round 4: robot_b's target moves from door_A to office_e (restricted) to corridor_1, then, since robot_a has to drive through corridor_1 and robot_b waiting for it would make them meet at room_3, to corridor_2 |
 | `p2_restricted_target` | approved in round 3: robot_a's waypoint moved out of the office, then an `order_before` |
 | `s4_park_after_pass` | REJECT `node_occupied`: robot_b would park at corridor_1, which robot_a drives through; robot_b gets an `order_before` to wait until robot_a has gone by, and round 2 is approved with both targets kept |

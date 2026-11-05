@@ -132,7 +132,7 @@ def test_the_s1_conflict_is_fixed_in_round_2(loop_with):
 
 
 def test_a_plan_it_cannot_fix_ends_in_the_fallback(loop_with):
-    fake, probe = loop_with("s4_both_hold_room_3")
+    fake, probe = loop_with("s4_end_where_b_stands")
     assert fake.exit_code == EXIT_DONE
     assert fake.loop.summary()["outcome"] == "stuck"
     txn = fake.loop.transaction_id

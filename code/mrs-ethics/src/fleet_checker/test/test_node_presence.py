@@ -9,7 +9,7 @@ from mrs_common import load_sample, plan_from_json
 from mrs_common.plan_schema import TeamPlan
 
 from fleet_checker.adapters.compiler import OnEdge, compile_team_plan
-from fleet_checker.adapters.node_presence import only_the_keeper_can_resolve, presence
+from fleet_checker.adapters.node_presence import Presence, keeper_in_the_way, only_the_keeper_can_resolve, presence
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
 
 SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
@@ -172,3 +172,36 @@ def test_a_yielder_there_from_its_start_can_leave_first(samples_map):
     y, k = roles(samples_map, plan, "robot_b", 0, "robot_a", 2, "east_n")
     assert (y.from_start, k.stays) == (True, True)
     assert not only_the_keeper_can_resolve(y, k)
+
+
+# robot_b's b2 waits for robot_a's a2, which comes after a1.
+CHAIN = team(("robot_a", [task("a1", "navigate", "room_2"), task("a2", "hold_position", "west_s")]),
+             ("robot_b", [task("b1", "navigate", "room_3"), task("b2", "navigate", "east_n", depends_on=["a2"])]))
+
+
+def stand(robot, *, arrive=0, leave=1, leave_task="b2"):
+    """Standing at the node, there from step `arrive` (None: from the start) to `leave` (None: to the end)."""
+    return Presence(robot, "n", False, arrive, leave, None, leave_task, leave_task, False, False)
+
+
+def come(robot, task_id, *, passes=True, ends=False, arrive=2, lead_in=False):
+    """Coming to the node with task_id, to drive through it or to stand there."""
+    return Presence(robot, "n", passes, arrive, arrive if passes else None, task_id, task_id if passes else None,
+                    task_id, ends, lead_in)
+
+
+def test_a_keeper_waiting_for_the_yielder_where_the_yielder_has_to_be_is_in_the_way():
+    # robot_b stands at the node until b2 starts, and b2 waits for a2: robot_a cannot wait until
+    # robot_b has left before it drives through (a1) or ends a task there (a2).
+    assert keeper_in_the_way(CHAIN, come("robot_a", "a1"), stand("robot_b"))
+    assert keeper_in_the_way(CHAIN, come("robot_a", "a2", passes=False, ends=True), stand("robot_b"))
+
+
+def test_otherwise_the_keeper_is_not_in_the_way():
+    keeper, yielder = stand("robot_b"), come("robot_a", "a1")
+    assert not keeper_in_the_way(CHAIN, yielder, stand("robot_b", leave_task="b1"))   # b1 waits for nothing
+    assert not keeper_in_the_way(CHAIN, yielder, stand("robot_b", leave=None, leave_task=None))   # stays
+    assert not keeper_in_the_way(CHAIN, yielder, come("robot_b", "b2"))                # drives through
+    assert not keeper_in_the_way(CHAIN, come("robot_a", "a1", arrive=None), keeper)    # there from the start
+    assert not keeper_in_the_way(CHAIN, come("robot_a", "a1", lead_in=True), keeper)   # on its edge
+    assert not keeper_in_the_way(CHAIN, come("robot_a", "a2", passes=False), keeper)   # only waits there

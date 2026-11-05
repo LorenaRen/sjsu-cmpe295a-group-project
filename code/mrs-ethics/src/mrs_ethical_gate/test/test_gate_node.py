@@ -184,7 +184,7 @@ def test_two_robots_ending_at_one_node_get_a_reject(wired):
     _, v = send(executor, probe, both_at_room_3)
     assert (v.verdict, list(v.rule_ids)) == ("REJECT", [R.NODE_OCCUPIED])
     [c] = constraints_from_verdict(v)
-    assert (c.kind, c.robot_id, c.task_id, c.node) == ("custom", "robot_b", "b1", "room_3")   # robot_b stays
+    assert (c.kind, c.robot_id, c.task_id, c.node) == ("forbid_node", "robot_b", "b1", "room_3")   # it stays
 
 
 def test_with_team_state_and_no_snapshot_yet_a_plan_is_rejected_unchecked(live):

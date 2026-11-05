@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.12, 2026-11-04
+Status: draft v0.13, 2026-11-05
 
 ---
 
@@ -210,6 +210,15 @@ reads who yields and who keeps.  The keeper must change too when the
 yielder gets to the node on the edge it is on when the plan starts, which
 no plan changes (S-1, S-2 and S-4 alike; see "Robots on an edge" below).
 
+The keeper must also fix the plan when it stands at the node, waiting
+before a task that takes it away, and that task cannot start before the
+yielder's task that brings the yielder there is done
+(`node_presence.keeper_in_the_way`, on `compiler.waits_for_task`: the
+`depends_on` and each robot's task order, the graph `compiler.deadlock`
+checks).  The yielder has to be there, to drive through or to end a task,
+but cannot wait for the keeper to leave: that would close a cycle.  Only
+the keeper can resolve it, by waiting somewhere else.
+
 The ledger follows `must_fix`: the REJECT counts toward F-2 for the keeper,
 and the approval records the yield for it (see "Updating the ledger").  It
 is the robot that gives way.  Counting the rejection for R-1's yielder
@@ -222,12 +231,35 @@ up rejections, then jump the queue in other conflicts as "starving".
 |---|---|---|
 | The keeper leaves later, and making the yielder's task that brings it to the node wait for the keeper's task that takes it away removes the conflict (checked again, as for S-1) | `order_before` | yielder |
 | **The keeper stays to the end of its plan and the yielder drives through the node** | the keeper waits: `order_before`, the keeper's task that brings it to the node after the yielder's task that takes it through, if that works on the **whole plan** (below); else `forbid_node` for the keeper at the node, whose text says that this changes its final stop, because the yielder has to drive through, and why waiting does not help | keeper |
-| The keeper stays to the end of its plan, and the node is where the yielder's task ends | `custom`: the yielder's task cannot be done with the plan as it is; end somewhere else | keeper |
+| The keeper stays to the end of its plan, and the node is where the yielder's task ends | `forbid_node` for the keeper at the node, whose text says that this changes its final stop, because the yielder's task ends there.  A keeper with no task gets `custom` (the yielder's task cannot be done with the plan as it is) | keeper |
+| The keeper stands at the node, waiting before a task that takes it away; the yielder has to drive through it or end a task there; and the keeper's task cannot start before the yielder's (waiting would close a cycle) | `forbid_node` for the keeper at the node, for the task it waits for: wait at another node | keeper |
 | Ordering does not help, and the yielder drives through the node | `custom`, saying why waiting does not help | yielder |
 | Ordering does not help, and the node is where the yielder's task ends | `custom`: wait at another node near it first, and go there only after the keeper has left.  `forbid_node` would tell the planner never to stop there, i.e. to give the task up | yielder |
 | Otherwise: the yielder only waits there between tasks | `forbid_node` for the yielder at that node | yielder |
-| The yielder is at the node from the start of its plan | `custom`: it has to leave before the keeper arrives | yielder |
+| The yielder stands at the node from the start of its plan, waiting for its task | `forbid_node` for the yielder at the node, for that task: wait at another node | yielder |
+| The yielder drives off from the node at the start of its plan, has no task, or its task ends there | `custom`: it has to leave before the keeper arrives | yielder |
 | The yielder gets to the node on the edge it is on now (team_state), and the keeper need not stay to the end there | `custom`: the yielder cannot wait; keep clear of the node while it is there | keeper |
+
+**Why waiting somewhere else is a `forbid_node`.**  A planner can act on
+`forbid_node`; it cannot act on text it has to interpret.  In the repair
+benchmark (`benchmarks/`, 1350 scenarios, before this change), every S-4
+`custom` came after round 1.  Round 1's `order_before` made yielders wait
+where they stood, at their start nodes, which are on other robots'
+routes.  `VerdictContent.cases` names the situation of each constraint:
+
+| Situation (`cases`) | `custom` constraints |
+|---|---|
+| `passes_waiting_fails`: the yielder drives through, and waiting would close a cycle (most: a keeper waiting at its own start node) | 10,450 |
+| `from_start`: the yielder stands where it starts | 4,655 |
+| `wait_nearby`: the yielder's task ends there | 3,157 |
+| `cycle`: an ordering of the verdict that would close a cycle | 2,151 |
+| `cannot_be_done`: the keeper stays where the yielder's task ends | 1,660 |
+
+The three `forbid_node` rows above cover a yielder or keeper that waits
+in the way, and the keeper that would stay where the yielder's task ends.
+They are not verified: the checker does not know where the planner will
+wait, so a new meeting there is the next round's to catch, as for every
+`forbid_node`.
 
 **Why the keeper's wait is checked on the whole plan.**  Every other
 `order_before` delays the yielder's getting to one place, and is verified
@@ -297,7 +329,9 @@ check the whole plan again.
    robots meeting head-on in a room are reported only if they meet within
    `robot_length / 2 + margin × speed` (0.475 m) of a node.  A meeting
    between two nodes of a room, which has no capacity, is the CBF's.
-4. **A starving keeper still has to move.**  Which robot must fix a
+4. **"Wait at another node" is not verified.**  Where the robot will
+   wait is the planner's choice; the next round checks it.
+5. **A starving keeper still has to move.**  Which robot must fix a
    conflict only the keeper can resolve follows from who can resolve it,
    not from the ranking.  So F-2 does not keep a starving keeper at the
    node; it still protects it in other conflicts.
@@ -498,7 +532,7 @@ are written at different times:
 
 | Event | Rejections in a row (F-2) | Yields (R-1, F-1) |
 |---|---|---|
-| REJECT, and the plan compiles | +1 for each robot that must give way in this round (`must_fix`): R-1's yielders, or the keeper of an S-4 conflict only the keeper can resolve (S-4), or the keeper of a conflict whose yielder is in it on the edge it is on now (team_state) | unchanged; each conflict and its yielders are remembered until the next APPROVE (a later round's version of the same conflict replaces the earlier one) |
+| REJECT, and the plan compiles | +1 for each robot that must give way in this round (`must_fix`): R-1's yielders, or the keeper of an S-4 conflict only the keeper can resolve (it stays to the end, or waits in the yielder's way; S-4), or the keeper of a conflict whose yielder is in it on the edge it is on now (team_state) | unchanged; each conflict and its yielders are remembered until the next APPROVE (a later round's version of the same conflict replaces the earlier one) |
 | APPROVE | reset to 0 for every robot | one yield for each yielder of each remembered conflict; then nothing is remembered |
 | Compile error, unreadable plan, unknown positions (team_state), a message seen before | unchanged | unchanged |
 

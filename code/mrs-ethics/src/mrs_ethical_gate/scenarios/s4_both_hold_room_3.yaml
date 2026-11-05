@@ -1,7 +1,8 @@
 # Fake planner scenario (mrs_ethical_gate/dev_nodes/scenarios.py).
 description: >-
-  Both robots hold at room_3, where robot_b arrives first (S-4). The gate's only constraint
-  is a custom one, which the fake planner cannot apply: this exercises the fallback.
+  Both robots hold at room_3, where robot_b arrives first (S-4). Only robot_b can free room_3:
+  it is told to end somewhere else (forbid_node), the fake planner moves its target, and round
+  2 is approved.
 map: samples_world
 plan:
   assignments:

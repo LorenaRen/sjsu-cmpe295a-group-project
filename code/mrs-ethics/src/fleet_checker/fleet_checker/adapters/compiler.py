@@ -402,6 +402,22 @@ def _waits_for(team_plan: TeamPlan) -> dict[str, list[str]]:
     return out
 
 
+def waits_for_task(team_plan: TeamPlan, task_id: str, other: str) -> bool:
+    """Whether task_id cannot start before task `other` is done: `other` is in its depends_on, or
+    before it on its robot, or waited for by one of those, and so on (as _waits_for orders them)."""
+    waits_for = _waits_for(team_plan)
+    seen: set[str] = set()
+    todo = list(waits_for[task_id])
+    while todo:
+        t = todo.pop()
+        if t == other:
+            return True
+        if t not in seen:
+            seen.add(t)
+            todo.extend(waits_for[t])
+    return False
+
+
 def deadlock(team_plan: TeamPlan) -> list[str] | None:
     """Tasks that wait for each other in a cycle, through depends_on or a robot's own task
     order (cycle[i] waits for cycle[i + 1], last == first); None if there is none.

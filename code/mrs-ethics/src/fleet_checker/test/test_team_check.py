@@ -433,3 +433,13 @@ def test_every_code_the_pipeline_emits_is_a_reason_code(code):
 def test_unregistered_code_is_refused():
     with pytest.raises(ValueError, match="unknown reason code"):
         reason_of(Violation(code="ROBOT_WAS_TIRED", message=""))
+
+
+def test_an_s4_conflict_whose_keeper_waits_in_the_way_is_the_keepers_to_fix(parking):
+    """robot_b stands at c until robot_a's second task is done; robot_a drives through c with its
+    first, so it cannot wait for robot_b to leave: robot_b must wait somewhere else."""
+    plan = team(("robot_a", [task("a1", "navigate", "e"), task("a2", "navigate", "f")]),
+                ("robot_b", [task("b1", "navigate", "c"), task("b2", "navigate", "s", depends_on=["a2"])]))
+    result = check_team_plan(plan, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0, robot_length=ROBOT_LENGTH)
+    [f] = result.findings
+    assert (f.reason, f.r1_yielders, f.must_fix) == (R.NODE_OCCUPIED, ("robot_a",), ("robot_b",))

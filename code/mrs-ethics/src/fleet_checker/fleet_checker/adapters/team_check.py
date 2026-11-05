@@ -8,10 +8,12 @@
 
 A policy violation is for the robot that proposed the step to fix. For a
 conflict (S-1, S-2 or S-4), R-1 and the fairness ledger choose which robots give
-way, and those replan; TeamPlan priority plays no part. One exception, in S-4:
-when the keeper stays at the node to the end of its plan and the yielder has to be
-there after it (node_presence.only_the_keeper_can_resolve), waiting cannot help, and
-the keeper must change its plan instead. The same goes for a yielder whose part
+way, and those replan; TeamPlan priority plays no part. Exceptions, in S-4: when
+the keeper stays at the node to the end of its plan and the yielder has to be there
+after it (node_presence.only_the_keeper_can_resolve), waiting cannot help, and the
+keeper must change its plan instead; likewise when the keeper stands there waiting
+for the yielder's task that brings the yielder there (node_presence.keeper_in_the_way:
+the yielder waiting would close a cycle). The same goes for a yielder whose part
 of the conflict is on the edge it is on when the plan starts (a lead-in step,
 compiler.OnEdge): no plan changes where a robot drives now. The ledger is only
 read here: recording yields belongs to whatever runs the replan loop.
@@ -33,7 +35,7 @@ from ..crowding import CrowdingLimit
 from ..plan import HumanObservation, RegionKind, TaskType, Violation
 from ..policy import DEFAULT_MAX_DURATION, AccessPolicy, validate_policy
 from .compiler import CompiledTeamPlan, OnEdge, compile_team_plan
-from .node_presence import only_the_keeper_can_resolve, presence
+from .node_presence import keeper_in_the_way, only_the_keeper_can_resolve, presence
 from .sim_map import SimMap
 
 # The map only labels a zone "restricted"; this is the rule that goes with the
@@ -263,8 +265,9 @@ def _keeper_must_change(violation: Violation, compiled: CompiledTeamPlan, team_p
     if violation.code != "NODE_OCCUPIED":
         return False
     node = violation.resource_id
-    return only_the_keeper_can_resolve(presence(compiled, team_plan, y, min(y_steps), node),
-                                       presence(compiled, team_plan, k, max(k_steps), node))
+    y_at = presence(compiled, team_plan, y, min(y_steps), node)
+    k_at = presence(compiled, team_plan, k, max(k_steps), node)
+    return only_the_keeper_can_resolve(y_at, k_at) or keeper_in_the_way(team_plan, y_at, k_at)
 
 
 def _finding(violation: Violation, compiled: CompiledTeamPlan, must_fix: tuple[str, ...],

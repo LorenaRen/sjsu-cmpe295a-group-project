@@ -77,6 +77,19 @@ def test_a_reject_gives_the_next_attempt_with_the_constraints_applied():
     assert f.transaction_id == "txn-1" and f.awaiting == 1
 
 
+def test_a_robot_waiting_where_it_starts_is_moved_by_its_start_node():
+    # robot_a stands at x, where it starts (STARTS), until b1 is done: a forbid_node of x for its
+    # first task a1 has it wait somewhere else.
+    plan = team(("robot_a", [task("a1", "navigate", "z", depends_on=["b1"])]),
+                ("robot_b", [task("b1", "navigate", "v")]))
+    f = fake(plan)
+    f.first()
+    stand = Constraint(kind="forbid_node", rule_id=R.NODE_OCCUPIED, robot_id="robot_a", task_id="a1", node="x",
+                       text="robot_a: do not wait at x.")
+    p = f.on_verdict(reject(0, stand, rule_ids=(R.NODE_OCCUPIED,)))
+    assert [(t.task_id, t.target) for t in p.plan.tasks_of("robot_a")] == [("a1_wait", "y"), ("a1", "z")]
+
+
 def test_approve_ends_the_loop():
     f = fake()
     f.first()
@@ -271,6 +284,7 @@ def without_dependencies(plan: TeamPlan) -> TeamPlan:
 S1_NO_ORDER = without_dependencies(plan_from_json(load_sample("valid_two_robots.json")))
 KEEP_CLEAR_STOP = plan_from_json(load_sample("keep_clear_stop.json"))
 RESTRICTED_TARGET = plan_from_json(load_sample("restricted_target.json"))
+END_WHERE_B_STANDS = team(("robot_a", [task("a1", "hold_position", "east_n")]))   # robot_b: no task
 BOTH_HOLD_ROOM_3 = team(("robot_a", [task("a1", "hold_position", "room_3")]),
                         ("robot_b", [task("b1", "hold_position", "room_3")]))
 PARK_AFTER_PASS = team(("robot_a", [task("a1", "hold_position", "corridor_2")]),
@@ -334,21 +348,31 @@ def test_restricted_target_takes_three_rounds(run_with_gate):
     assert results(f, 2) == [("order_before", CHANGED)]
 
 
-def test_two_robots_holding_at_one_node_cannot_be_fixed(run_with_gate):
+def test_of_two_robots_holding_at_one_node_the_one_there_first_ends_somewhere_else(run_with_gate):
+    # robot_b gets to room_3 first and would stay: only it can free room_3 for a1.
     f, done = run_with_gate(BOTH_HOLD_ROOM_3)
+    assert done == Finished("approved")
+    assert results(f, 1) == [("forbid_node", CHANGED)]
+    assert f.summary()["targets_changed"] == {"b1": ["room_3", "east_n"]}
+
+
+def test_ending_where_a_robot_with_no_task_stands_cannot_be_fixed(run_with_gate):
+    # robot_b has no task, so no forbid_node can name one: the only constraint is custom.
+    f, done = run_with_gate(END_WHERE_B_STANDS)
     assert done.outcome == "stuck"
     assert results(f, 1) == [("custom", NOT_APPLIED)]
     assert f.summary()["fallback"]["hold"] == {"robot_a": "west_s", "robot_b": "east_n"}
 
 
-def test_a_fix_for_one_rule_can_lead_to_a_conflict_under_another(run_with_gate):
+def test_a_robot_moved_out_of_the_passage_does_not_go_where_another_robot_ends(run_with_gate):
     # Round 1: robot_b may not park in the passage (P-1), and robot_a cannot just wait for it
-    # (S-1, custom). Moving robot_b to corridor_1 puts it on robot_a's target (S-4, custom).
+    # (S-1, custom). The nearest node, corridor_1, is where robot_a ends, so robot_b goes to
+    # corridor_2. (Moved to corridor_1, it would stay on robot_a's target: S-4, round 2, stuck.)
     f, done = run_with_gate(B_PARKS_IN_PASSAGE)
-    assert done.outcome == "stuck"
-    assert rule_ids(f) == [[R.CAPACITY_EXCEEDED, R.FINAL_STOP_IN_PASSTHROUGH], [R.NODE_OCCUPIED]]
+    assert done == Finished("approved")
+    assert rule_ids(f) == [[R.CAPACITY_EXCEEDED, R.FINAL_STOP_IN_PASSTHROUGH], []]
     assert sorted(results(f, 1)) == [("custom", NOT_APPLIED), ("forbid_node", CHANGED), ("forbid_node", NOTED)]
-    assert f.summary()["targets_changed"] == {"b1": ["pass_e", "corridor_1"]}
+    assert f.summary()["targets_changed"] == {"b1": ["pass_e", "corridor_2"]}
 
 
 def test_one_attempt_is_not_enough_for_the_s1_conflict(run_with_gate):

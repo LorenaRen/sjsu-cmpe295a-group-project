@@ -53,6 +53,7 @@ From the repository root, with the venv the checker's tests use (Python 3.10+, p
 | `repair_scenarios.csv` | per scenario: outcome, rounds, round-1 findings, targets moved, tasks inserted, and each constraint kind's counts |
 | `repair_summary.csv` | outcomes with Wilson 95 % intervals per cell, per map and fleet size, and over all |
 | `repair_constraints.csv` | what the fake planner did with each kind of constraint, by kind and rule |
+| `repair_cases.csv` | the same by kind, rule and the situation each constraint answers (`VerdictContent.cases`, e.g. S-4's `yielder_waits`) |
 | `environment.json` | the setup, as JSON |
 
 ## Reproducing a run

@@ -10,7 +10,7 @@ import pytest
 from mrs_common import hold_all_plan, load_sample, plan_from_json
 from mrs_common.plan_schema import TeamPlan
 
-from fleet_checker.adapters.compiler import PARKED_S, OnEdge, StepOrigin, compile_team_plan
+from fleet_checker.adapters.compiler import PARKED_S, OnEdge, StepOrigin, compile_team_plan, waits_for_task
 from fleet_checker.adapters.sim_map import load_sim_map, sim_map_from_dict, spawn_starts
 from fleet_checker.plan import validate_plan
 
@@ -444,3 +444,13 @@ def test_plan_ids_follow_the_transaction(samples_map):
     c = compile_on(samples_map, sample("valid_two_robots.json"), plan_id="tx-1", revision=2)
     assert c.plans["robot_b"].plan_id == "tx-1/robot_b"
     assert c.plans["robot_b"].revision == 2
+
+
+def test_a_task_waits_for_what_its_depends_on_and_its_robots_earlier_tasks_wait_for():
+    plan = team(("robot_a", [task("a1", "navigate", "room_2"), task("a2", "navigate", "west_s")]),
+                ("robot_b", [task("b1", "navigate", "room_3"), task("b2", "navigate", "east_n", depends_on=["a2"])]))
+    assert waits_for_task(plan, "b2", "a2")       # depends_on
+    assert waits_for_task(plan, "b2", "a1")       # a2 comes after a1 on robot_a
+    assert waits_for_task(plan, "b2", "b1")       # b2 comes after b1 on robot_b
+    assert not waits_for_task(plan, "a1", "b2") and not waits_for_task(plan, "b1", "a1")
+    assert not waits_for_task(plan, "a1", "a1")
