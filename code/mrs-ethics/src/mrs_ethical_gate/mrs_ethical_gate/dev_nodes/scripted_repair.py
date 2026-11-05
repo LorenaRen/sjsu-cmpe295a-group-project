@@ -1,16 +1,18 @@
 """How the fake planner changes a TeamPlan for the constraints of a REJECT (pure Python, no ROS).
 
-The fake planner knows the waypoint graph and the constraints, nothing else. It reads no zone
-type and no rule, so what it manages to fix shows how far the gate's constraints alone can
-guide a replan. It imports nothing from the checker's own checks (fleet_checker's verdict,
+The fake planner knows the waypoint graph, the constraints and where its robots start, nothing
+else. It reads no zone type and no rule, so what it manages to fix shows how far the gate's
+constraints alone can guide a replan. It imports nothing from the checker's own checks (fleet_checker's verdict,
 team_check, cross_plan): a test tool that shared their code would share their bugs, and the
 loop would pass anyway.
 
   order_before (task_id K, value Y)  add K to Y's depends_on
   forbid_node  (robot r, task T)     T ends at one of the nodes (P-1: the plan ends there):
                                      retarget T. Otherwise, if r stands at one of them before T,
-                                     waiting for T's depends_on (S-4): insert a navigate to
-                                     another node before T, so that r waits there; T is unchanged
+                                     waiting for T's depends_on (S-4) where the task before T
+                                     ends, or where r starts if T is its first task: insert a
+                                     navigate to another node before T, so that r waits there;
+                                     T is unchanged
   avoid_node   (robot r)             retarget every task of r that goes to an avoided node. If
                                      none does, r's route crosses the zone, and a TeamPlan cannot
                                      choose the route: it has no via-points, the route to each
@@ -26,10 +28,15 @@ node of the zone, not only the one the plan uses. Each constraint ends up
 
 A retarget, or an inserted waiting point, goes to the nearest allowed node: the shortest path
 length on the waypoint graph from the refused node (ties: by node name) that is not in r's
-banned set. The banned set is every node a forbid_node or avoid_node has named for r so far in
-this planning cycle; the caller passes it from one REJECT to the next, so that a robot is never
-sent back to a node already refused. Crossing a banned node on the way is fine: the distance
-only ranks candidates, it is not the route.
+banned set, and not where another robot ends its plan (the target of its last task, or where it
+starts if it has no task): two robots cannot both stay at one node. The banned set is every
+node a forbid_node or avoid_node has named for r so far in this planning cycle; the caller
+passes it from one REJECT to the next, so that a robot is never sent back to a node already
+refused. Crossing a banned node on the way is fine: the distance only ranks candidates, it is
+not the route.
+
+Where its robots start (the scenario's start nodes, as a planner knows where its robots are) is
+used only to recognise a robot waiting where it starts.
 
 Every change is monotone (depends_on only grows, a retarget never returns to a banned node, an
 insertion only adds a task), so the fake planner never proposes a plan it has proposed before.
@@ -87,10 +94,12 @@ class Repair:
 
 
 def apply_constraints(plan: TeamPlan, constraints: Sequence[Constraint], graph: Graph,
-                      banned: Mapping[str, frozenset[str]] | None = None) -> Repair:
+                      banned: Mapping[str, frozenset[str]] | None = None,
+                      start_nodes: Mapping[str, str] | None = None) -> Repair:
     """Apply the constraints of one REJECT to plan. `banned` is the previous REJECT's
-    Repair.banned (None for the first). The plan given is not modified."""
-    edit = _Edit(plan, graph, banned or {}, constraints)
+    Repair.banned (None for the first); start_nodes, robot -> where it starts (None: not known).
+    The plan given is not modified."""
+    edit = _Edit(plan, graph, banned or {}, constraints, start_nodes or {})
     outcomes: dict[int, Outcome] = {}
     forbid: dict[tuple[str | None, str | None], list[int]] = {}
     avoid: dict[str | None, list[int]] = {}
@@ -120,9 +129,10 @@ class _Edit:
     """The plan being changed, as plain data, and the nodes each robot may not be sent to."""
 
     def __init__(self, plan: TeamPlan, graph: Graph, banned: Mapping[str, frozenset[str]],
-                 constraints: Sequence[Constraint]):
+                 constraints: Sequence[Constraint], start_nodes: Mapping[str, str]):
         self.data = plan.model_dump(mode="json")
         self.graph = graph
+        self.start = dict(start_nodes)
         self.tasks = {t["task_id"]: t for a in self.data["assignments"] for t in a["tasks"]}
         self.owner = {t["task_id"]: a["robot_id"] for a in self.data["assignments"] for t in a["tasks"]}
         self.task_lists = {a["robot_id"]: a["tasks"] for a in self.data["assignments"]}
@@ -175,6 +185,8 @@ class _Edit:
         before = self._task_before(robot, task_id)
         if before is not None and self.target_before[before] in nodes:   # waits there before the task
             return self._waits_elsewhere(robot, task_id, self.target_before[before], group)
+        if before is None and self.start.get(robot) in nodes:            # waits where it starts
+            return self._waits_elsewhere(robot, task_id, self.start[robot], group)
         where = f"the task before it, {before}, ends at {self.target_before[before]}" if before \
             else f"it is {robot}'s first task"
         return {i: Outcome(c, NOT_APPLIED, why_not=f"task {task_id} does not stop at {c.node}: it goes to "
@@ -241,6 +253,13 @@ class _Edit:
                 outcomes[i] = Outcome(c, CHANGED, change="; ".join(changed[c.node]))
         return outcomes
 
+    def _where_others_end(self, robot: str) -> set[str]:
+        """Where every other robot ends its plan, as the plan stands now: its last task's target,
+        or where it starts if it has no task."""
+        ends = {tasks[-1]["target"] for other, tasks in self.task_lists.items() if other != robot and tasks}
+        return ends | {node for other, node in self.start.items()
+                       if other != robot and not self.task_lists.get(other)}
+
     def _task_before(self, robot: str, task_id: str) -> str | None:
         ids = self.task_order[robot]
         i = ids.index(task_id)
@@ -256,7 +275,7 @@ class _Edit:
         """The node nearest to start along the graph that robot may be sent to (ties: by name)."""
         if start not in self.graph:
             return None
-        banned = self.banned.get(robot, set())
+        banned = self.banned.get(robot, set()) | self._where_others_end(robot)
         best = {start: 0.0}
         heap = [(0.0, start)]
         while heap:

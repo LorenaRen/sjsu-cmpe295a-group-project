@@ -77,6 +77,19 @@ def test_a_reject_gives_the_next_attempt_with_the_constraints_applied():
     assert f.transaction_id == "txn-1" and f.awaiting == 1
 
 
+def test_a_robot_waiting_where_it_starts_is_moved_by_its_start_node():
+    # robot_a stands at x, where it starts (STARTS), until b1 is done: a forbid_node of x for its
+    # first task a1 has it wait somewhere else.
+    plan = team(("robot_a", [task("a1", "navigate", "z", depends_on=["b1"])]),
+                ("robot_b", [task("b1", "navigate", "v")]))
+    f = fake(plan)
+    f.first()
+    stand = Constraint(kind="forbid_node", rule_id=R.NODE_OCCUPIED, robot_id="robot_a", task_id="a1", node="x",
+                       text="robot_a: do not wait at x.")
+    p = f.on_verdict(reject(0, stand, rule_ids=(R.NODE_OCCUPIED,)))
+    assert [(t.task_id, t.target) for t in p.plan.tasks_of("robot_a")] == [("a1_wait", "y"), ("a1", "z")]
+
+
 def test_approve_ends_the_loop():
     f = fake()
     f.first()
@@ -341,14 +354,15 @@ def test_two_robots_holding_at_one_node_cannot_be_fixed(run_with_gate):
     assert f.summary()["fallback"]["hold"] == {"robot_a": "west_s", "robot_b": "east_n"}
 
 
-def test_a_fix_for_one_rule_can_lead_to_a_conflict_under_another(run_with_gate):
+def test_a_robot_moved_out_of_the_passage_does_not_go_where_another_robot_ends(run_with_gate):
     # Round 1: robot_b may not park in the passage (P-1), and robot_a cannot just wait for it
-    # (S-1, custom). Moving robot_b to corridor_1 puts it on robot_a's target (S-4, custom).
+    # (S-1, custom). The nearest node, corridor_1, is where robot_a ends, so robot_b goes to
+    # corridor_2. (Moved to corridor_1, it would stay on robot_a's target: S-4, round 2, stuck.)
     f, done = run_with_gate(B_PARKS_IN_PASSAGE)
-    assert done.outcome == "stuck"
-    assert rule_ids(f) == [[R.CAPACITY_EXCEEDED, R.FINAL_STOP_IN_PASSTHROUGH], [R.NODE_OCCUPIED]]
+    assert done == Finished("approved")
+    assert rule_ids(f) == [[R.CAPACITY_EXCEEDED, R.FINAL_STOP_IN_PASSTHROUGH], []]
     assert sorted(results(f, 1)) == [("custom", NOT_APPLIED), ("forbid_node", CHANGED), ("forbid_node", NOTED)]
-    assert f.summary()["targets_changed"] == {"b1": ["pass_e", "corridor_1"]}
+    assert f.summary()["targets_changed"] == {"b1": ["pass_e", "corridor_2"]}
 
 
 def test_one_attempt_is_not_enough_for_the_s1_conflict(run_with_gate):
