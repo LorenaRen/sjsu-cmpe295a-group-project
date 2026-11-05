@@ -1,4 +1,7 @@
-# Quick runs are only to see that everything runs; every sample of a run is in perf_samples.csv,
-# which run.py writes but the repository does not keep (the summaries and per-scenario rows are kept).
+# The workspace's .gitignore leaves out every results/ directory (experiment output, Modules 7-11).
+# Here a full run's summaries and report are kept, so that a later run, such as one after an
+# optimization, can be compared with them. Its raw samples (perf_samples.csv, which run.py
+# writes) and quick runs are not kept.
+!results/
 results/quick/
 results/*/perf_samples.csv
