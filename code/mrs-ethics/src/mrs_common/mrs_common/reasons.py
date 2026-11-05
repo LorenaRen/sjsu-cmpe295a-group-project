@@ -18,6 +18,7 @@ from typing import Any
 LLM_TIMEOUT = "llm_timeout"                # an LLM call exceeded its wall-clock timeout
 LLM_ERROR = "llm_error"                    # API error that retries did not fix (rate limit, network, 5xx)
 LLM_MALFORMED = "llm_malformed"            # output still invalid after the one retry with the validation error
+NO_AGREEMENT = "no_agreement"              # dialogue ended after max rounds without every agent accepting one plan
 PLANNING_EXHAUSTED = "planning_exhausted"  # attempt cap reached without an approved plan; all robots hold
 
 # ---- shared checker (Module 5) --------------------------------------------------

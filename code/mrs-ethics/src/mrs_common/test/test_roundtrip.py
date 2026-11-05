@@ -14,9 +14,11 @@ try:
 
     from mrs_common.convert import (constraints_from_verdict, make_episode_event, make_proposed_plan,
                                     make_task_status, make_validated_plan, make_verdict, plan_from_msg)
+    from mrs_common.convert import (make_agreement, make_dialogue_turn, make_discussion, make_proposal,
+                                    make_turn_prompt)
     from mrs_common.convert import world_state_to_summary
-    from mrs_msgs.msg import (EpisodeEvent, EthicalVerdict, PerceivedEntity, ProposedPlan, TeamState,
-                              ValidatedPlan, WorldState)
+    from mrs_msgs.msg import (DialogueTurn, EpisodeEvent, EthicalVerdict, PerceivedEntity, ProposedPlan,
+                              TeamState, ValidatedPlan, WorldState)
     ROS_ERROR = None
 except ImportError as e:  # workspace not built / not sourced
     ROS_ERROR = str(e)
@@ -106,3 +108,39 @@ def test_world_state_summary_for_the_prompt():
     assert s == {"robot_id": "robot_a", "at": "corridor_1->room_3", "zones": ["corridor_1"],
                  "sectors": {"front": "blocked", "left": "clear"},
                  "perceived": [{"type": "person", "id": "person_1", "at": "corridor_1", "distance": 1.2}]}
+
+
+def test_dialogue_turns_round_trip():
+    plan = plan_from_json(load_sample("valid_two_robots.json"))
+    ids = {"episode_id": "ep-test", "transaction_id": "tx-1", "attempt": 0}
+    prompt = wire(make_turn_prompt(**ids, round=1, next_speaker="robot_a", text="Mission: swap rooms."))
+    assert (prompt.kind, prompt.speaker_id, prompt.next_speaker) == ("prompt", DialogueTurn.COORDINATOR, "robot_a")
+    assert prompt.plan_json == ""
+    proposal = wire(make_proposal(**ids, round=1, speaker_id="robot_a", plan=plan, text="I go first."))
+    assert proposal.kind == DialogueTurn.KIND_PROPOSAL and plan_from_msg(proposal) == plan
+    assert proposal.next_speaker == "" and proposal.transaction_id == "tx-1"
+    agreement = wire(make_agreement(**ids, round=1, speaker_id="robot_b"))
+    assert agreement.kind == DialogueTurn.KIND_AGREEMENT and agreement.plan_json == ""
+    note = wire(make_discussion(**ids, round=2, speaker_id="robot_b", text="corridor_2 looks busy"))
+    assert note.kind == DialogueTurn.KIND_DISCUSSION and note.text == "corridor_2 looks busy"
+
+
+def test_dialogue_builder_rejects_turns_that_break_the_protocol():
+    plan = plan_from_json(load_sample("valid_two_robots.json"))
+    base = {"episode_id": "e", "round": 1}
+    with pytest.raises(ValueError):   # unknown kind
+        make_dialogue_turn(**base, kind="vote", speaker_id="robot_a")
+    with pytest.raises(ValueError):   # a proposal without a plan
+        make_dialogue_turn(**base, kind=DialogueTurn.KIND_PROPOSAL, speaker_id="robot_a")
+    with pytest.raises(ValueError):   # an agreement may not carry its own plan
+        make_dialogue_turn(**base, kind=DialogueTurn.KIND_AGREEMENT, speaker_id="robot_b", plan=plan)
+    with pytest.raises(ValueError):   # prompts come only from the coordinator
+        make_dialogue_turn(**base, kind=DialogueTurn.KIND_PROMPT, speaker_id="robot_a", next_speaker="robot_b")
+    with pytest.raises(ValueError):   # a prompt must name the next speaker
+        make_dialogue_turn(**base, kind=DialogueTurn.KIND_PROMPT, speaker_id=DialogueTurn.COORDINATOR)
+    with pytest.raises(ValueError):   # the coordinator does not propose, agree or discuss
+        make_dialogue_turn(**base, kind=DialogueTurn.KIND_DISCUSSION, speaker_id=DialogueTurn.COORDINATOR,
+                           text="hi")
+    with pytest.raises(ValueError):   # only prompts name a next speaker
+        make_dialogue_turn(**base, kind=DialogueTurn.KIND_DISCUSSION, speaker_id="robot_a", text="hi",
+                           next_speaker="robot_b")
