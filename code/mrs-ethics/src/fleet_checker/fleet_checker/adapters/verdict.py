@@ -37,6 +37,13 @@ otherwise a custom constraint says why ordering them does not help. S-2 works th
 same way, with "near this person" for "in this zone"; its texts name the person's
 nearest node, because the planner knows nodes, not where people stand.
 
+The check again is TeamCheckResult.recheck, which reuses what an added depends_on
+cannot change: every route, the plans of robots whose task times stay the same, and
+their claims, policy findings and sweeps (compiler.py, cross_plan.ConflictMemo). It
+gives exactly what checking the copy from scratch (recheck_full) gives; the tests
+compare the two on every recheck, and the benchmarks on every verdict of their
+scenarios.
+
 The verification looks only at that pair of robots in that zone. It does not
 guarantee that the reordered plan creates no new conflict elsewhere: on the
 REJECT path the next round's check catches those; MODIFY (designed, not built)

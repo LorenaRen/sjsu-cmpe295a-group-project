@@ -67,9 +67,36 @@ From the repository root, with the venv the checker's tests use (Python 3.10+, p
 
 ## Comparing two versions of the checker
 
-Run the same command on both commits, on the same machine and under the same conditions, and
-compare `perf_summary.csv` cell by cell. The manifest guarantees that both runs timed the same
-scenarios, and the report's setup lines say what each one ran on.
+`compare.py` runs this benchmark on two versions of the checker. The benchmark's code is always
+this checkout's: only the checker differs. A version is a git commit, checked out into a
+temporary worktree, or a `code/mrs-ethics/src` directory. On macOS, wrap long runs in
+`caffeinate -i`, so that the Mac does not sleep halfway.
+
+```bash
+caffeinate -i .venv/bin/python code/mrs-ethics/benchmarks/compare.py verdicts --old <commit> --new <commit>
+caffeinate -i .venv/bin/python code/mrs-ethics/benchmarks/compare.py timing --old <commit> --new <commit>
+caffeinate -i .venv/bin/python code/mrs-ethics/benchmarks/compare.py timing --old <commit> --new <commit> \
+    --cell bench_grid/16/medium/0 --cell bench_grid/32/medium/0           # some cells only
+```
+
+- **`verdicts`** writes every verdict of both versions: one per timing scenario as generated, and
+  one per round of every repair run, whose plans carry the fake planner's `depends_on`. The two
+  files are then compared line by line. `equivalence.md` says whether they are identical byte for
+  byte. The files themselves are not kept in git; `equivalence.json` has their SHA-256.
+- **`timing`** runs each cell as one `run.py --only perf --cell` process per version, each with
+  its own warm-up.
+  - The two versions take turns going first (the old in even cells, the new in odd ones), so
+    that drift over the session falls on both.
+  - The load average before and after each process goes into `load.csv`.
+  - `compare.csv` and `compare.md` give the old median, p95 and p99 over the new.
+  - Both versions compute the same verdicts, so every scenario's findings, rechecks, constraints
+    and verdict must match. `compare.md` says whether they did; if not, the comparison does not
+    count.
+- **An A/A run first**, with the same commit on both sides, shows how far two runs of one
+  version differ.
+
+`run.py` has the options it uses: `--src DIR` runs another source tree, `--cell` runs some
+cells only, and `--verdicts` writes `verdicts.jsonl`.
 
 ## Tests
 

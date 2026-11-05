@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.11, 2026-11-04
+Status: draft v0.12, 2026-11-04
 
 ---
 
@@ -691,7 +691,12 @@ starts; the ordering may close a cycle with the plan's `depends_on`; or the
 plan may already contain it (the conflict then comes from the time
 margin).  So each suggested `order_before` is added as a `depends_on` to a
 copy of the TeamPlan, and the copy is checked again with the same map,
-start nodes, people, ledger and settings.  If the conflict between those
+start nodes, people, ledger and settings.  (That check reuses what an added
+`depends_on` cannot change: every route, the plans of the robots whose task
+times stay the same, and their claims, policy findings and sweeps.  The
+result is the same as checking the copy from scratch; the tests compare the
+two on every recheck, and the benchmarks every verdict of their scenarios.)
+If the conflict between those
 two robots in that zone (for S-2: near that person) is gone, the
 `order_before` is sent; otherwise a `custom` constraint says why ordering
 them does not help.  For S-2 the reasons are the same, with "near the
