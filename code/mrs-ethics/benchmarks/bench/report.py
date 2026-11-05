@@ -83,7 +83,7 @@ def people_rows(samples: Mapping[Cell, Sequence[Sample]], scenarios: Mapping[Cel
     The extra time is per scenario (the median of its repetitions with people, less without),
     then over the scenarios."""
     rows = []
-    for cell in [c for c in samples if c[3] == people]:
+    for cell in [c for c in samples if c[3] == people and c[:3] + (0,) in samples]:
         base = cell[:3] + (0,)
 
         def medians(c: Cell, attr: str) -> dict[int, float]:
@@ -366,6 +366,8 @@ def write_report(path: Path, env: Mapping[str, Any], params: Mapping[str, Any], 
          "; ".join(f"{p['command']} {p['cpu_percent']:g}" for p in env["busiest_processes"]) or "-"),
         ("Python", f"{py['implementation']} {py['version']} (`{py['executable']}`), pydantic {py['pydantic']}, "
                    f"PYTHONHASHSEED={py['hash_seed']}"),
+        ("Checker source", f"`{env['checker_src']['path']}`, git `{env['checker_src']['git_commit']}`"
+                           + (", with uncommitted changes" if env["checker_src"]["git_dirty"] else "")),
     ])
     out += ["", "### Parameters", ""] + _table(["Parameter", "Value"], [
         (k, f"`{json.dumps(v)}`" if not isinstance(v, str) else v) for k, v in params.items()])
@@ -418,8 +420,10 @@ def _perf_section(perf: Mapping[str, Any]) -> list[str]:
                         f"{_num(p['rechecks_mean_without'])} / {_num(p['rechecks_mean_with'])}") for p in perf["people"]])
         out.append("")
     o = perf["overhead"]
-    out += ["### What the instruments cost", "",
-            f"On {o['map']}, {o['robots']} robots, {o['density']}: {o['pairs']} pairs of the same scenario plain and "
+    out += ["### What the instruments cost", ""]
+    if o is None:
+        return out + ["Not run: only some cells were run (`--cell`).", ""]
+    out += [f"On {o['map']}, {o['robots']} robots, {o['density']}: {o['pairs']} pairs of the same scenario plain and "
             f"instrumented. Instrumented less plain: median {_ms(o['diff_median_ms'])} ms "
             f"({_pct(o['diff_share'])} of the plain median of {_ms(o['plain_median_ms'])} ms), "
             f"p95 {_ms(o['diff_p95_ms'])} ms.", ""]

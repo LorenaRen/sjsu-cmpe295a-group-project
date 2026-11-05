@@ -4,3 +4,6 @@
 # directory, for experiment output; the benchmarks write to reports/.)
 reports/quick/
 reports/*/perf_samples.csv
+# compare.py: each cell's own run, and the verdict files (large; equivalence.json has their SHA-256)
+reports/*/runs/
+reports/*/*/verdicts.jsonl

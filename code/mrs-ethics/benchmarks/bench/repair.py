@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from mrs_common.plan_schema import constraints_to_json, plan_to_json
 
@@ -65,7 +65,9 @@ def classify(summary: dict[str, Any]) -> str:
     raise ValueError(f"unexpected outcome {outcome!r}")   # modified, no_verdict: not in process
 
 
-def run_scenario(scenario: Scenario, sim_map: SimMap, max_attempts: int) -> RepairRun:
+def run_scenario(scenario: Scenario, sim_map: SimMap, max_attempts: int,
+                 on_verdict: Callable[[int, Any], None] | None = None) -> RepairRun:
+    """One scenario through the loop; on_verdict(attempt, verdict content) sees every verdict."""
     g = config.GATE
     gate = GateSession(sim_map, scenario.starts, speed=g["speed"], robot_length=g["robot_length"],
                        margin=g["margin"], people=scenario.people,
@@ -80,6 +82,8 @@ def run_scenario(scenario: Scenario, sim_map: SimMap, max_attempts: int) -> Repa
         if first is None:
             first = [f.violation.code for f in d.result.findings]
         v = d.verdict
+        if on_verdict is not None:
+            on_verdict(step.attempt, v)
         step = planner.on_verdict(GateVerdict(
             transaction_id=txn, attempt=step.attempt, verdict=v.verdict, rule_ids=v.rule_ids,
             risk_score=v.risk_score, rationale=v.rationale, constraints_json=constraints_to_json(v.constraints)))
