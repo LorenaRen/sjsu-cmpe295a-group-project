@@ -3,13 +3,14 @@ depend on the hash seed."""
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 
 import pytest
 
 from bench import config
-from bench.env import environment
+from bench.env import environment, kept_awake_by
 from bench.runner import FULL, QUICK, default_out
 from bench.scenarios import cells, people_cells
 
@@ -50,7 +51,7 @@ def test_the_report_says_what_was_run_and_where_the_numbers_are(quick):
     text = (quick / "report.md").read_text()
     for heading in ("Quick run", "## Setup", "## Method", "## 1. Checker timing", "### Where the time goes",
                     "### Rechecks against fleet size", "### S-2: the extra time of people",
-                    "### What the instruments cost", "## 2. Repairability", "## Limitations"):
+                    "### What the instruments cost", "## 2. Repairability", "## Limitations", "| Kept awake by |"):
         assert heading in text, heading
     env = json.loads((quick / "environment.json").read_text())
     assert env["python"]["hash_seed"] == "0" and env["profile"] == "quick"
@@ -97,7 +98,7 @@ print(json.dumps(out))
 
 def test_the_environment_names_the_machine_and_the_python():
     env = environment(["run.py"], "full")
-    assert {"date", "command", "git_commit", "git_dirty", "machine", "power", "load_average",
+    assert {"date", "command", "git_commit", "git_dirty", "machine", "power", "kept_awake_by", "load_average",
             "busiest_processes", "python", "profile"} <= set(env)
     assert env["python"]["version"].count(".") == 2
 
@@ -114,3 +115,40 @@ def test_a_full_run_goes_to_reports_and_git_keeps_its_summaries_not_its_samples(
 
     assert not ignored(full / "report.md") and not ignored(full / "perf_summary.csv")
     assert ignored(full / "perf_samples.csv") and ignored(quick / "report.md")
+
+
+PMSET = """\
+Listed by owning process:
+   pid 342(powerd): [0x001572da0001a4a1] 02:08:16 PreventUserIdleSystemSleep named: "Powerd - Prevent sleep while display is on"
+   pid 79480(caffeinate): [0x001590ef0001854b] 00:00:00 PreventUserIdleSystemSleep named: "caffeinate command-line tool"
+\tDetails: caffeinate asserting on behalf of '/bin/sh' (pid 79479)
+\tLocalized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.
+   pid 79499(caffeinate): [0x001591280001854d] 00:00:00 PreventUserIdleSystemSleep named: "caffeinate command-line tool"
+\tDetails: caffeinate asserting on behalf of Process ID 79498
+"""
+
+
+def test_what_keeps_the_mac_awake_is_a_caffeinate_assertion_for_this_process_or_an_ancestor():
+    by_79480 = "caffeinate (pid 79480): PreventUserIdleSystemSleep for pid 79479"
+    assert kept_awake_by(PMSET, [79479]) == by_79480                       # caffeinate -i <this command>
+    assert kept_awake_by(PMSET, [1234, 79479, 1]) == by_79480              # a process caffeinate -i started
+    assert kept_awake_by(PMSET, [79498]) == "caffeinate (pid 79499): PreventUserIdleSystemSleep for pid 79498"  # -w
+    assert kept_awake_by(PMSET, [1234, 342, 1]) is None    # someone else's, and powerd's (only while the display is on)
+    assert kept_awake_by(None, [79479]) is None            # no pmset
+
+
+@pytest.mark.skipif(not __import__("shutil").which("caffeinate"), reason="caffeinate is macOS's")
+def test_the_environment_finds_the_caffeinate_that_runs_it_or_its_parent():
+    # caffeinate -i runs the command in place, so the command's parent is the shell; only pmset shows the
+    # assertion caffeinate holds on the command's behalf. compare.py's run.py processes are its children.
+    inner = ("import json, os; from bench.env import environment; "
+             "print(json.dumps([os.getpid(), os.getppid(), environment([], 'x')['kept_awake_by']]))")
+
+    def caffeinated(code):
+        return json.loads(subprocess.run(["caffeinate", "-i", sys.executable, "-c", code], cwd=config.BENCH_DIR,
+                                         capture_output=True, text=True, check=True).stdout)
+
+    pid, _, kept = caffeinated(inner)
+    assert re.fullmatch(rf"caffeinate \(pid \d+\): PreventUserIdleSystemSleep for pid {pid}", kept)
+    _, parent, kept = caffeinated(f"import subprocess, sys; subprocess.run([sys.executable, '-c', {inner!r}], check=True)")
+    assert re.fullmatch(rf"caffeinate \(pid \d+\): PreventUserIdleSystemSleep for pid {parent}", kept)

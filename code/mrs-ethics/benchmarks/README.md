@@ -27,6 +27,10 @@ From the repository root, with the venv the checker's tests use (Python 3.10+, p
 - **Before a full run**, plug the computer in and close other programs that use the CPU. The
   report records the power source and the busiest other processes at the start, so a run that
   was not quiet says so.
+- **On macOS, wrap long runs in `caffeinate -i`**, so that the Mac does not sleep halfway. The
+  report's "Kept awake by" row shows the assertion caffeinate held for the run (from `pmset -g
+  assertions`), or that there was none. (caffeinate runs the command in place, so the run's parent
+  process is still the shell.)
 - **Where the results go.** A full run writes into `reports/<date>_<machine>/`; `--quick` writes
   into `reports/quick/`, which git ignores. (Not `results/`: the workspace's `.gitignore` leaves
   out every `results/` directory, for experiment output.) The run log, `run.log`, gives each cell's wall time.
@@ -70,7 +74,8 @@ From the repository root, with the venv the checker's tests use (Python 3.10+, p
 `compare.py` runs this benchmark on two versions of the checker. The benchmark's code is always
 this checkout's: only the checker differs. A version is a git commit, checked out into a
 temporary worktree, or a `code/mrs-ethics/src` directory. On macOS, wrap long runs in
-`caffeinate -i`, so that the Mac does not sleep halfway.
+`caffeinate -i`; `compare.md` has the same "Kept awake by" row, and the run.py processes it starts
+are kept awake with it.
 
 ```bash
 caffeinate -i .venv/bin/python code/mrs-ethics/benchmarks/compare.py verdicts --old <commit> --new <commit>

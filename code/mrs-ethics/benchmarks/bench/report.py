@@ -348,6 +348,11 @@ _LIMITS = """\
 """
 
 
+def kept_awake_row(env: Mapping[str, Any]) -> str:
+    """The setup row that says whether the Mac could sleep during the run (older environments lack the key)."""
+    return env.get("kept_awake_by") or "no caffeinate assertion found for this run (`pmset -g assertions`)"
+
+
 def write_report(path: Path, env: Mapping[str, Any], params: Mapping[str, Any], results: Mapping[str, Any]) -> None:
     out: list[str] = [f"# Checker benchmarks, {env['date'][:10]}", ""]
     if env["profile"] == "quick":
@@ -361,6 +366,7 @@ def write_report(path: Path, env: Mapping[str, Any], params: Mapping[str, Any], 
         ("Machine", f"{m['model']}, {m['cpu']}, {m['performance_cores']} performance + {m['efficiency_cores']} "
                     f"efficiency cores, {m['memory_gb']} GB memory, {m['os']}"),
         ("Power", env["power"] or "-"),
+        ("Kept awake by", kept_awake_row(env)),
         ("Load average at the start (1, 5, 15 min)", ", ".join(f"{x:g}" for x in env["load_average"])),
         ("Busiest other processes at the start (% CPU)",
          "; ".join(f"{p['command']} {p['cpu_percent']:g}" for p in env["busiest_processes"]) or "-"),

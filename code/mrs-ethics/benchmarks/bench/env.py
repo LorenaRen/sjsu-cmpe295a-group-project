@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -45,6 +46,45 @@ def _busiest(count: int = 5) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: -r["cpu_percent"])[:count]
 
 
+def _lineage() -> list[int]:
+    """This process and its ancestors, nearest first."""
+    parent = {}
+    for line in (_run("ps", "-A", "-o", "pid=,ppid=") or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            parent[int(parts[0])] = int(parts[1])
+    chain, pid = [], os.getpid()
+    while pid > 0 and pid not in chain:
+        chain.append(pid)
+        pid = parent.get(pid, 0)
+    return chain
+
+
+_HOLDER = re.compile(r"^\s*pid (\d+)\(caffeinate\): \[[^\]]*\] \S+ (\w+) named:")
+_ON_BEHALF = re.compile(r"caffeinate asserting on behalf of (?:'.*' \(pid (\d+)\)|Process ID (\d+))")
+
+
+def kept_awake_by(assertions: str | None, pids: Sequence[int]) -> str | None:
+    """macOS: the caffeinate assertion held for one of these processes (the first in `pids` that has one),
+    read from `pmset -g assertions`.
+
+    `caffeinate -i cmd` runs cmd in place and holds the assertion from a child process, on cmd's behalf
+    (`-w pid` likewise for pid). So cmd's parent is the shell that started caffeinate, and only pmset shows
+    that the Mac will not sleep. powerd's own assertion lasts only while the display is on: it does not count."""
+    held: dict[int, str] = {}
+    holder = None
+    for line in (assertions or "").splitlines():
+        if m := _HOLDER.match(line):
+            holder = m.groups()
+        elif holder and (m := _ON_BEHALF.search(line)):
+            pid = int(m[1] or m[2])
+            held.setdefault(pid, f"caffeinate (pid {holder[0]}): {holder[1]} for pid {pid}")
+            holder = None
+        elif line.lstrip().startswith("pid "):
+            holder = None
+    return next((held[p] for p in pids if p in held), None)
+
+
 def environment(argv: Sequence[str], profile: str) -> dict[str, Any]:
     memory = _int(_run("sysctl", "-n", "hw.memsize"))
     git = ("git", "-C", str(config.BENCH_DIR))
@@ -67,6 +107,7 @@ def environment(argv: Sequence[str], profile: str) -> dict[str, Any]:
                         "git_dirty": bool(_run("git", "-C", str(SRC), "status", "--porcelain", "--untracked-files=no"))},
         "parent_process": _run("ps", "-o", "comm=", "-p", str(os.getppid())),
         "power": _power(),
+        "kept_awake_by": kept_awake_by(_run("pmset", "-g", "assertions"), _lineage()),
         "load_average": [round(x, 2) for x in os.getloadavg()],
         "busiest_processes": _busiest(),
         "python": {"version": platform.python_version(), "implementation": platform.python_implementation(),

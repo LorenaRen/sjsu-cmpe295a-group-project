@@ -32,7 +32,7 @@ from typing import Any, Iterator, Sequence
 
 from . import config
 from .env import environment
-from .report import _ms, _table
+from .report import _ms, _table, kept_awake_row
 from .runner import FULL, QUICK, _Log
 from .scenarios import Cell, cells, people_cells
 from .verdicts import diff
@@ -154,7 +154,7 @@ def _compare_md(path: Path, env: dict[str, Any], profile: str, compared: list[di
                 load: list[dict[str, Any]], differing: list[str], n_scenarios: int) -> None:
     m, py, src = env["machine"], env["python"], env["sources"]
     lines = [f"# Checker comparison, {env['date'][:10]}", ""] + _table(["", ""], [
-        ("Command", f"`{env['command']}`"), ("Started from", env["parent_process"] or "-"),
+        ("Command", f"`{env['command']}`"), ("Kept awake by", kept_awake_row(env)),
         ("Old checker", f"`{src['old']['git_commit']}` ({src['old']['spec']})"),
         ("New checker", f"`{src['new']['git_commit']}` ({src['new']['spec']})"),
         ("Machine", f"{m['model']}, {m['cpu']}, {m['performance_cores']} performance + {m['efficiency_cores']} "

@@ -100,7 +100,8 @@ def test_a_timing_comparison_takes_turns_and_logs_the_load(tmp_path):
     assert [(r["map"], r["density"]) for r in compared] == [("narrow_aisle", "low"), ("narrow_aisle", "high")]
     assert all(r["counts_identical"] == "True" for r in compared)
     assert (out / "old_perf_summary.csv").exists() and (out / "new_perf_summary.csv").exists()
-    assert "every scenario's counts are the same" in (out / "compare.md").read_text()
+    text = (out / "compare.md").read_text()
+    assert "every scenario's counts are the same" in text and "| Kept awake by |" in text
 
 
 def test_a_verdict_comparison_of_one_tree_with_itself_finds_no_difference(tmp_path):
