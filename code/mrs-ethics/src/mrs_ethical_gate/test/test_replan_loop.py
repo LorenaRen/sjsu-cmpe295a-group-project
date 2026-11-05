@@ -284,6 +284,7 @@ def without_dependencies(plan: TeamPlan) -> TeamPlan:
 S1_NO_ORDER = without_dependencies(plan_from_json(load_sample("valid_two_robots.json")))
 KEEP_CLEAR_STOP = plan_from_json(load_sample("keep_clear_stop.json"))
 RESTRICTED_TARGET = plan_from_json(load_sample("restricted_target.json"))
+END_WHERE_B_STANDS = team(("robot_a", [task("a1", "hold_position", "east_n")]))   # robot_b: no task
 BOTH_HOLD_ROOM_3 = team(("robot_a", [task("a1", "hold_position", "room_3")]),
                         ("robot_b", [task("b1", "hold_position", "room_3")]))
 PARK_AFTER_PASS = team(("robot_a", [task("a1", "hold_position", "corridor_2")]),
@@ -347,8 +348,17 @@ def test_restricted_target_takes_three_rounds(run_with_gate):
     assert results(f, 2) == [("order_before", CHANGED)]
 
 
-def test_two_robots_holding_at_one_node_cannot_be_fixed(run_with_gate):
+def test_of_two_robots_holding_at_one_node_the_one_there_first_ends_somewhere_else(run_with_gate):
+    # robot_b gets to room_3 first and would stay: only it can free room_3 for a1.
     f, done = run_with_gate(BOTH_HOLD_ROOM_3)
+    assert done == Finished("approved")
+    assert results(f, 1) == [("forbid_node", CHANGED)]
+    assert f.summary()["targets_changed"] == {"b1": ["room_3", "east_n"]}
+
+
+def test_ending_where_a_robot_with_no_task_stands_cannot_be_fixed(run_with_gate):
+    # robot_b has no task, so no forbid_node can name one: the only constraint is custom.
+    f, done = run_with_gate(END_WHERE_B_STANDS)
     assert done.outcome == "stuck"
     assert results(f, 1) == [("custom", NOT_APPLIED)]
     assert f.summary()["fallback"]["hold"] == {"robot_a": "west_s", "robot_b": "east_n"}

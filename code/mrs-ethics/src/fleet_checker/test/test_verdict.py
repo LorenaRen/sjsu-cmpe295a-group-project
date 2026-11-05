@@ -308,13 +308,23 @@ def test_a_keeper_waiting_where_the_yielders_task_ends_waits_somewhere_else(park
 
 def test_a_target_held_to_the_end_cannot_be_reached_as_planned(parking):
     """Both robots end at c; robot_b gets there first and stays. R-1 picks robot_a to give way,
-    but only robot_b can free c: the custom constraint is robot_b's (it must fix the plan)."""
+    but only robot_b can free c: robot_b must end somewhere else (it must fix the plan)."""
     plan = team(("robot_a", [task("a1", "hold_position", "c")]), ("robot_b", [task("b1", "hold_position", "c")]))
     v = verdict_for(parking, plan, speed=1.0)
-    assert s4(v) == [("custom", "robot_b", "b1", "c", None,
-                      "robot_b: you stay at c until the end of your plan, but c is where task a1 of "
+    assert s4(v) == [("forbid_node", "robot_b", "b1", "c", None,
+                      "robot_b: do not end your plan at c. This changes your final stop, because c is where "
+                      "task a1 of robot_a ends, and you would stay there until the end of your plan.")]
+    assert s4_cases(v) == ["cannot_be_done"]
+
+
+def test_a_keeper_with_no_task_where_the_yielders_task_ends_gets_custom(parking):
+    """robot_b has no task: it stays at n, where it starts, and n is where a1 ends. There is no
+    task of robot_b that forbid_node could change."""
+    v = verdict_for(parking, team(("robot_a", [task("a1", "hold_position", "n")])), speed=1.0)
+    assert s4(v) == [("custom", "robot_b", None, "n", None,
+                      "robot_b: you stay at n until the end of your plan, but n is where task a1 of "
                       "robot_a ends, so that task cannot be done with the plan as it is. End somewhere "
-                      "else, so that c is free when robot_a gets there.")]
+                      "else, so that n is free when robot_a gets there.")]
     assert s4_cases(v) == ["cannot_be_done"]
 
 

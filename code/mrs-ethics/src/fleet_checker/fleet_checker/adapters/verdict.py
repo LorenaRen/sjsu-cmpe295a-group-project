@@ -461,16 +461,18 @@ def _stop_constraints(f: Finding, result: TeamCheckResult) -> list[_Proposal]:
 
 def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step: int,
                      yielder: str, y_steps: list[int]) -> _Proposal:
-    """A yielder that stands where it starts, waiting for its task, waits somewhere else; a
-    keeper that stands there waiting for the yielder's task that brings the yielder there does
-    (the yielder cannot wait for it without a cycle). Then, in order of preference: make the
-    yielder come only after the keeper has left (verified, as for S-1). If the keeper stays to the end of its plan and the yielder has to be there,
-    only the keeper can free the node: it waits for a yielder that drives through, if that
-    works, else ends somewhere else; a yielder whose task ends there gets told, through the
-    keeper, that the task cannot be done as it is. A yielder at the node on the edge it is on
-    cannot wait: the keeper is told to keep clear. Otherwise the yielder: one that drives
-    through is told why waiting does not help; one whose task ends there waits nearby first,
-    since forbidding the node would make it give the task up; else it may not wait there."""
+    """A yielder that stands where it starts, waiting for its task, waits somewhere else. A
+    yielder at the node on the edge it is on cannot wait: the keeper is told to keep clear. A
+    keeper that stands there waiting for the yielder's task that brings the yielder there
+    waits somewhere else (the yielder cannot wait for it without a cycle). Then, in order of
+    preference: make the yielder come only after the keeper has left (verified, as for S-1).
+    If the keeper stays to the end of its plan and the yielder has to be there, only the keeper
+    can free the node: it waits for a yielder that drives through, if that works, else ends
+    somewhere else; it ends somewhere else for a yielder whose task ends there, too (a keeper
+    with no task is told, in text, that the task cannot be done as it is). Otherwise the
+    yielder: one that drives through is told why waiting does not help; one whose task ends
+    there waits nearby first, since forbidding the node would make it give the task up; else
+    it may not wait there."""
     node = f.violation.resource_id
     y = presence(result.compiled, result.team_plan, yielder, min(y_steps), node)
     k = presence(result.compiled, result.team_plan, keeper, k_step, node)
@@ -518,6 +520,12 @@ def _stop_constraint(f: Finding, result: TeamCheckResult, *, keeper: str, k_step
     if only_the_keeper_can_resolve(y, k):   # the keeper must change (team_check)
         if y.passes:
             return _keeper_waits_or_ends_elsewhere(f, result, y, k)
+        if k.task is not None:   # the yielder's task ends there: the keeper ends somewhere else
+            return _Proposal(Constraint(
+                kind="forbid_node", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
+                text=f"{keeper}: do not end your plan at {node}. This changes your final stop, because {node} is "
+                     f"where task {y.task} of {yielder} ends, and you would stay there until the end of your "
+                     f"plan."), case="cannot_be_done")
         return _Proposal(Constraint(
             kind="custom", rule_id=f.reason, robot_id=keeper, task_id=k.task, node=node,
             text=f"{keeper}: you stay at {node} until the end of your plan, but {node} is where task {y.task} "

@@ -24,7 +24,8 @@ def from_fake_planner(name: str) -> Scenario:
 
 @pytest.mark.parametrize("name, outcome, rounds", [
     ("s1_passage_no_order", "kept_targets", 2),        # an order_before, nothing moved
-    ("s4_both_hold_room_3", "stuck", 1),               # only a custom constraint
+    ("s4_both_hold_room_3", "changed_targets", 2),     # robot_b, there first, ends somewhere else
+    ("s4_end_where_b_stands", "stuck", 1),             # only a custom constraint
     ("p1_keep_clear_stop", "changed_targets", 4),      # robot_b's target moved three times
 ])
 def test_the_fake_planners_own_scenarios_end_as_they_do_on_real_topics(maps, name, outcome, rounds):

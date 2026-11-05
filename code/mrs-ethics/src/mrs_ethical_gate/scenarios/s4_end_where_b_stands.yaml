@@ -1,0 +1,13 @@
+# Fake planner scenario (mrs_ethical_gate/dev_nodes/scenarios.py).
+description: >-
+  robot_a holds at east_n, where robot_b, which has no task, stands for the whole plan (S-4).
+  Only robot_b could free east_n, and it has no task a forbid_node could name: the gate's only
+  constraint is a custom one, which the fake planner cannot apply. This exercises the fallback.
+map: samples_world
+plan:
+  assignments:
+    - robot_id: robot_a
+      tasks:
+        - {task_id: a1, action: hold_position, target: east_n, priority: 1,
+           justification: "Goal for robot_a."}
+  rationale: "robot_a ends where robot_b stands."

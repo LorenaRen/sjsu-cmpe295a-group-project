@@ -100,7 +100,8 @@ def test_a_scenario_for_another_map_is_refused():
 
 SHIPPED = {   # name -> (outcome, round it passed in, rule_ids of each round)
     "s1_passage_no_order": ("approved", 2, [[R.CAPACITY_EXCEEDED], []]),
-    "s4_both_hold_room_3": ("stuck", None, [[R.NODE_OCCUPIED]]),
+    "s4_both_hold_room_3": ("approved", 2, [[R.NODE_OCCUPIED], []]),
+    "s4_end_where_b_stands": ("stuck", None, [[R.NODE_OCCUPIED]]),
     "p1_keep_clear_stop": ("approved", 4, [[R.FINAL_STOP_IN_PASSTHROUGH], [R.REGION_ACCESS_DENIED],
                                            [R.NODE_OCCUPIED], []]),
     "p2_restricted_target": ("approved", 3, [[R.REGION_ACCESS_DENIED], [R.CAPACITY_EXCEEDED], []]),

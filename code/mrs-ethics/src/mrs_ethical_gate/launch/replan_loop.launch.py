@@ -3,7 +3,7 @@ node with no LLM, mrs_ethical_gate/dev_nodes) on the same map.
 
   ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s1_passage_no_order \
       map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml
-  ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s4_both_hold_room_3 \
+  ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s4_end_where_b_stands \
       map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml summary_file:=/tmp/summary.json
   ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s1_passage_no_order team_state:=b_on_edge \
       map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml
