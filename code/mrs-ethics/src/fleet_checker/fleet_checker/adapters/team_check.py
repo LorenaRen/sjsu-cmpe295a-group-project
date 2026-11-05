@@ -89,8 +89,10 @@ class TeamCheckResult:
 
     def recheck(self, team_plan: TeamPlan) -> TeamCheckResult:
         """Run the same check (map, where the robots are, people, ledger, settings) on
-        another plan, e.g. this one with a depends_on added."""
-        return self.recheck_full(team_plan)
+        another plan, e.g. this one with a depends_on added. It reuses what such a change
+        cannot change (compile_team_plan's base), and gives what recheck_full gives."""
+        return _check(team_plan, self.sim_map, self.start_nodes, self.on_edges, self.blocked_edges,
+                      self.people, self.ledger, self.settings, base=self)
 
     def recheck_full(self, team_plan: TeamPlan) -> TeamCheckResult:
         """recheck, with everything computed again from scratch: what recheck must give."""
@@ -187,10 +189,12 @@ def check_team_plan(
 def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
            on_edges: Mapping[str, OnEdge], blocked_edges: tuple[tuple[str, str], ...],
            people: tuple[HumanObservation, ...], ledger: FairnessLedger | None,
-           s: CheckSettings) -> TeamCheckResult:
+           s: CheckSettings, base: TeamCheckResult | None = None) -> TeamCheckResult:
     compiled = compile_team_plan(team_plan, sim_map, start_nodes, speed=s.speed, t0=s.t0,
                                  task_types=s.task_types, plan_id=s.plan_id, revision=s.revision,
-                                 on_edges=on_edges, blocked_edges=blocked_edges)
+                                 on_edges=on_edges, blocked_edges=blocked_edges,
+                                 base=base.compiled if base is not None else None,
+                                 base_plan=base.team_plan if base is not None else None)
     inputs = dict(team_plan=team_plan, sim_map=sim_map, start_nodes=start_nodes, on_edges=on_edges,
                   blocked_edges=blocked_edges, people=people, ledger=ledger, settings=s)
     if compiled.violations:

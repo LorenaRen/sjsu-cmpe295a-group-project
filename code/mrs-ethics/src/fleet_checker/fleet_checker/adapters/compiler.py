@@ -16,6 +16,12 @@ stands), and every node it drives through or to, with the time it gets there
 (PlanStep.waypoints; the first step starts with the start node), so S-4 can tell
 when a robot is at a node.
 
+Recompiling (compile_team_plan's base): a recheck compiles a plan that differs from one already
+compiled only in depends_on. No route depends on depends_on, so the routes are reused; the
+schedule is computed again in full (one pass, cheap), and a robot's plan is rebuilt only if one
+of its tasks' times changed: a robot's plan is a function of its tasks, start, routes and task
+times, so for the others it would come out the same. A plan that deadlocks is compiled in full.
+
 A robot between two nodes (team_state's at "a->b", passed as OnEdge) first
 drives the rest of its edge to b, then starts its tasks at b. What is left is
 measured from where its position projects onto the edge, cut by zone the same
@@ -106,6 +112,11 @@ class CompiledTeamPlan:
     # robot_id -> how many of its first steps drive the rest of the edge it is on (OnEdge).
     # Only robots that have some edge left.
     lead_ins: dict[str, int] = field(default_factory=dict)
+    # What a recompile reuses: each task's route cut by zone, each robot's lead-in segments, and
+    # when each robot on an edge is ready for its first task.
+    routes: dict[str, list[_Segment]] = field(default_factory=dict)
+    lead_in_segments: dict[str, list[_Segment]] = field(default_factory=dict)
+    ready_at: dict[str, float] = field(default_factory=dict)
 
     def is_lead_in(self, robot: str, step: int) -> bool:
         """Whether a step of a robot's plan drives the rest of the edge it is on now: no plan
@@ -135,6 +146,8 @@ def compile_team_plan(
     revision: int = 0,
     on_edges: Mapping[str, OnEdge] | None = None,
     blocked_edges: Collection[tuple[str, str]] = (),
+    base: CompiledTeamPlan | None = None,
+    base_plan: TeamPlan | None = None,
 ) -> CompiledTeamPlan:
     """Compile every robot's tasks into a timed Plan.
 
@@ -155,12 +168,20 @@ def compile_team_plan(
             a robot first drives to the end of its edge, which must be its start node.
         blocked_edges: edges no route may use, as (node, node) pairs in either order.
             A robot cannot be on one of them.
+        base, base_plan: an earlier compile of base_plan with the same other arguments.
+            If team_plan differs from base_plan only in depends_on, its routes and the
+            plans of robots whose task times stay the same are reused (see above).
 
     Compile errors (unknown robot or target, no route, deadlock) come back as
     Violations, all of them at once, with no plans.
     """
     if speed <= 0:
         raise ValueError(f"speed must be > 0 m/s, got {speed}")
+    if base is not None and base_plan is not None and not base.violations \
+            and _same_but_depends_on(base_plan, team_plan):
+        again = _recompile(team_plan, base, sim_map, start_nodes, speed, t0, task_types, plan_id, revision)
+        if again is not None:
+            return again
     for robot, node in start_nodes.items():
         if node not in sim_map.positions:
             raise ValueError(f"start node {node!r} of {robot!r} is not on map {sim_map.name!r}")
@@ -216,16 +237,49 @@ def compile_team_plan(
         steps, step_origins = _robot_steps(team_plan.tasks_of(robot), start_nodes[robot],
                                            routes, timings, sim_map, t0, speed,
                                            lead_ins.get(robot, []))
-        plans[robot] = Plan(
-            plan_id=f"{plan_id}/{robot}",
-            revision=revision,
-            robot_id=robot,
-            task_type=(task_types or {}).get(robot, TaskType.DELIVERY),
-            steps=tuple(steps),
-        )
+        plans[robot] = _plan(robot, steps, plan_id, revision, task_types)
         origins[robot] = tuple(step_origins)
     return CompiledTeamPlan(plans, origins, timings, snapshot, (),
-                            {r: len(segments) for r, segments in sorted(lead_ins.items())})
+                            {r: len(segments) for r, segments in sorted(lead_ins.items())},
+                            routes=routes, lead_in_segments=lead_ins, ready_at=ready_at)
+
+
+def _plan(robot: str, steps: list[PlanStep], plan_id: str, revision: int,
+          task_types: Mapping[str, TaskType] | None) -> Plan:
+    return Plan(plan_id=f"{plan_id}/{robot}", revision=revision, robot_id=robot,
+                task_type=(task_types or {}).get(robot, TaskType.DELIVERY), steps=tuple(steps))
+
+
+def _same_but_depends_on(a: TeamPlan, b: TeamPlan) -> bool:
+    """Whether two plans give the same robots the same tasks, in the same order, with the same
+    actions, targets and priorities: what a recheck changes is only depends_on."""
+    def shape(p: TeamPlan) -> list:
+        return [(x.robot_id, [(t.task_id, t.action, t.target, t.priority) for t in x.tasks]) for x in p.assignments]
+    return shape(a) == shape(b)
+
+
+def _recompile(team_plan: TeamPlan, base: CompiledTeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
+               speed: float, t0: float, task_types: Mapping[str, TaskType] | None, plan_id: str,
+               revision: int) -> CompiledTeamPlan | None:
+    """Compile a plan that differs from base's only in depends_on (see the module docstring), or
+    None if it deadlocks, which the full compile reports."""
+    order, cycle = _topological_order(team_plan)
+    if cycle is not None:
+        return None
+    timings = _schedule(team_plan, order, base.routes, t0, base.ready_at, speed)
+    plans: dict[str, Plan] = {}
+    origins: dict[str, tuple[StepOrigin, ...]] = {}
+    for robot in base.plans:
+        tasks = team_plan.tasks_of(robot)
+        if all(timings[t.task_id] == base.timings[t.task_id] for t in tasks):
+            plans[robot], origins[robot] = base.plans[robot], base.origins[robot]
+            continue
+        steps, step_origins = _robot_steps(tasks, start_nodes[robot], base.routes, timings, sim_map, t0, speed,
+                                           base.lead_in_segments.get(robot, []))
+        plans[robot] = _plan(robot, steps, plan_id, revision, task_types)
+        origins[robot] = tuple(step_origins)
+    return CompiledTeamPlan(plans, origins, timings, base.snapshot, (), base.lead_ins, routes=base.routes,
+                            lead_in_segments=base.lead_in_segments, ready_at=base.ready_at)
 
 
 # --------------------------------------------------------------------------

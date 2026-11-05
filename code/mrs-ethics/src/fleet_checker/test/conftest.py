@@ -15,6 +15,9 @@ def assert_same_result(incremental: TeamCheckResult, full: TeamCheckResult) -> N
     assert list(incremental.must_replan) == list(full.must_replan)
 
 
+INCREMENTAL_RECHECK = TeamCheckResult.recheck   # the method itself, before shadow_rechecks wraps it
+
+
 @pytest.fixture(autouse=True)
 def shadow_rechecks(monkeypatch):
     """Every recheck in every test is also done in full (recheck_full), and the two results must be

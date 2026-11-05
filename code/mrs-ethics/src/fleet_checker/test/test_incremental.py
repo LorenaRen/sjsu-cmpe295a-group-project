@@ -98,3 +98,51 @@ def test_people_and_s2():
     for before, after in (("b1", "a1"), ("a1", "b1")):
         p = with_dependency(plan, before, after)
         assert_same_result(result.recheck(p), result.recheck_full(p))
+
+
+# ---------------- what a recheck reuses: routes and robots whose timeline did not change ----------------
+
+@pytest.fixture
+def dijkstra_calls(monkeypatch):
+    import fleet_checker.adapters.compiler as compiler
+    calls = {"n": 0}
+    real = compiler._shortest_path
+
+    def counted(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(compiler, "_shortest_path", counted)
+    return calls
+
+
+def test_a_recheck_finds_no_route_again(samples_map, no_order, dijkstra_calls):
+    result = check_team_plan(no_order, samples_map, spawn_starts(samples_map, ["robot_a", "robot_b"]), **SETTINGS)
+    dijkstra_calls["n"] = 0
+    TeamCheckResult_recheck(result, with_dependency(no_order, "a1", "b2"))
+    assert dijkstra_calls["n"] == 0          # a dependency changes no route
+
+
+def test_a_recheck_rebuilds_only_the_robots_whose_timeline_changed(samples_map, no_order):
+    result = check_team_plan(no_order, samples_map, spawn_starts(samples_map, ["robot_a", "robot_b"]), **SETTINGS)
+    again = TeamCheckResult_recheck(result, with_dependency(no_order, "a1", "b2"))    # b2 now waits for a1
+    assert again.compiled.plans["robot_a"] is result.compiled.plans["robot_a"]
+    assert again.compiled.plans["robot_b"] is not result.compiled.plans["robot_b"]
+    # b1 is done long before a2 starts: waiting for it changes nothing, so nothing is rebuilt.
+    same = TeamCheckResult_recheck(result, with_dependency(no_order, "b1", "a2"))
+    assert result.compiled.timings["b1"].done < result.compiled.timings["a2"].depart
+    assert all(same.compiled.plans[r] is result.compiled.plans[r] for r in ("robot_a", "robot_b"))
+
+
+def test_a_recheck_of_another_plan_compiles_it_in_full(samples_map, no_order, dijkstra_calls):
+    result = check_team_plan(no_order, samples_map, spawn_starts(samples_map, ["robot_a", "robot_b"]), **SETTINGS)
+    dijkstra_calls["n"] = 0
+    other = team(("robot_a", [task("a1", "navigate", "room_3")]), ("robot_b", [task("b1", "navigate", "room_2")]))
+    TeamCheckResult_recheck(result, other)
+    assert dijkstra_calls["n"] == 2
+
+
+def TeamCheckResult_recheck(result, plan):
+    """The recheck under test itself, not conftest's comparing wrapper (which also runs recheck_full)."""
+    from conftest import INCREMENTAL_RECHECK
+    return INCREMENTAL_RECHECK(result, plan)
