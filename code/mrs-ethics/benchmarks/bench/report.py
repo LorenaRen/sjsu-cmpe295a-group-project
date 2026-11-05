@@ -7,6 +7,7 @@ are of the summed time of all samples of a cell (or of all cells pooled), so the
 from __future__ import annotations
 
 import csv
+import json
 import math
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -236,3 +237,214 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
+
+
+# ---- report.md -------------------------------------------------------------------------------
+
+def _largest_by_fleet(rows: Sequence[Mapping[str, Any]], map_name: str) -> list[tuple[int, str, dict[str, float]]]:
+    out = []
+    for n in sorted({r["robots"] for r in rows if r["map"] == map_name and not r["people"]}):
+        shares = _pooled_shares([r for r in rows if r["map"] == map_name and r["robots"] == n and not r["people"]])
+        out.append((n, max(PARTS, key=lambda p: shares[p]), shares))
+    return out
+
+
+def bottleneck_answer(rows: Sequence[Mapping[str, Any]], map_name: str) -> str | None:
+    """One sentence: from which fleet size on one part takes the largest share, and how much."""
+    per_n = _largest_by_fleet(rows, map_name)
+    if not per_n:
+        return None
+    n_last, part, shares = per_n[-1]
+    n_from = n_last
+    for n, p, _ in reversed(per_n):
+        if p != part:
+            break
+        n_from = n
+    verb = "take" if part == "rechecks" else "takes"
+    text = (f"On {map_name}, from {n_from} robots on, {part} {verb} the largest share of the time: "
+            f"{shares[part]:.0%} at {n_last} robots.")
+    below = [(n, p) for n, p, _ in per_n if n < n_from]
+    if below:
+        text += " Below that, the largest share is " + ", ".join(f"{p} at {n} robots" for n, p in below) + "."
+    return text
+
+
+def _ms(x: Any) -> str:
+    if x == "" or x is None:
+        return "-"
+    x = float(x)
+    return f"{x:.0f}" if x >= 100 else f"{x:.1f}" if x >= 10 else f"{x:.2f}" if x >= 1 else f"{x:.3f}"
+
+
+def _num(x: Any) -> str:
+    return "-" if x == "" or x is None else f"{float(x):.3g}"
+
+
+def _pct(x: Any) -> str:
+    if x == "" or x is None:
+        return "-"
+    return f"{float(x):.0%}" if float(x) >= 0.1 else f"{float(x):.1%}"
+
+
+def _table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> list[str]:
+    return (["| " + " | ".join(headers) + " |", "|" + "|".join("---" for _ in headers) + "|"]
+            + ["| " + " | ".join(str(c) for c in row) + " |" for row in rows])
+
+
+def _share_cell(row: Mapping[str, Any], prefix: str, outcome: str) -> str:
+    count = row[f"{prefix}{outcome}_count"]
+    if row[f"{prefix}{outcome}_share"] == "":
+        return "-"
+    return (f"{_pct(row[f'{prefix}{outcome}_share'])} [{_pct(row[f'{prefix}{outcome}_lo'])}–"
+            f"{_pct(row[f'{prefix}{outcome}_hi'])}] ({count})")
+
+
+_METHOD = """\
+**Scenarios** (`bench/scenarios.py`). Every scenario has its own seed string,
+`<master_seed>/<map>/<robots>/<density>/<index>`, for Python's `random.Random`; a str seed and
+the generator are the same on every platform. Start nodes: distinct nodes of the map's open
+areas, where a robot may end its plan without breaking P-1 or P-2, so that the findings are
+conflicts between robots. Targets, robot by robot: from the other half of the map with
+probability p_cross (the density), else from the robot's own half; never another robot's target
+or its own start (a half with no node left gives way to the other). One `hold_position` task per
+robot, with no `depends_on`. The S-2 series measures the same scenarios as its cells with people
+added, each near a random open-area node. `manifest.csv` holds a digest per cell over all its
+scenarios; a run stops if the generator no longer makes them.
+
+**Timing** (`bench/perf.py`). One process, the cells one after another. Before a cell, its first
+scenarios run untimed (the warm-up) and `gc.collect()` runs; then every scenario of the cell is
+timed once per repetition, the scenarios in order within each repetition. Garbage collection
+stays on, as in the gate. A sample is `check_team_plan` then `to_verdict` on its result, with the
+gate's settings and no ledger, timed with `time.perf_counter_ns`, and split into:
+
+- **compile**: the check's own `compile_team_plan` (routes and times of every robot);
+- **detection**: the rest of `check_team_plan` (P-1, P-2, P-3, S-1, S-2 with people, S-4, R-1,
+  who must change);
+- **rechecks**: within `to_verdict`, each `order_before` it proposes is verified by adding it to
+  a copy of the plan and running the whole check again (compile and detection);
+- **other constraint work**: the rest of `to_verdict`.
+
+The split comes from wrapping `compile_team_plan` (as `team_check` calls it) and
+`TeamCheckResult.recheck` during the run; the checker's code is not changed. Percentiles are
+nearest rank, so each is a measured sample. Shares are of the summed time of the samples.
+
+**Repairability** (`bench/repair.py`). Each scenario runs through a new `GateSession` and the
+fake planner (`mrs_ethical_gate/dev_nodes`), wired as the two nodes are but in one process. It
+ends in one of: approved in round 1 (no finding); approved later with every target kept (only
+`depends_on` added, or waits inserted); approved later with a target moved; stuck (a REJECT the
+fake planner could change nothing for); attempts exhausted. Intervals are Wilson 95 %.
+"""
+
+_LIMITS = """\
+- One laptop process. Apple silicon has performance and efficiency cores, and macOS does not let
+  a process be pinned to one kind; the run log has each cell's wall time.
+- The times include the wrapping that splits them; its cost is measured above.
+- Every plan has one task per robot and no `depends_on`, and every target is in an open area:
+  the findings are S-1 and S-4 conflicts (and S-2 in its series), not P-1, P-2 or P-3.
+- The small maps take two or four robots: each has six open-area nodes.
+- S-2 is measured only in its series, with people standing still where they are drawn.
+- Repairability is that of the fake planner, which applies constraints mechanically. It is not
+  the success rate of an LLM planner.
+"""
+
+
+def write_report(path: Path, env: Mapping[str, Any], params: Mapping[str, Any], results: Mapping[str, Any]) -> None:
+    out: list[str] = [f"# Checker benchmarks, {env['date'][:10]}", ""]
+    if env["profile"] == "quick":
+        out += ["> **Quick run** (profile `quick`): a few scenarios per cell, to check that everything runs. "
+                "Its numbers are not for comparison.", ""]
+    m, py = env["machine"], env["python"]
+    out += ["## Setup", ""] + _table(["", ""], [
+        ("Command", f"`{env['command']}`"),
+        ("Date", env["date"]),
+        ("Code", f"git `{env['git_commit']}`" + (", with uncommitted changes" if env["git_dirty"] else "")),
+        ("Machine", f"{m['model']}, {m['cpu']}, {m['performance_cores']} performance + {m['efficiency_cores']} "
+                    f"efficiency cores, {m['memory_gb']} GB memory, {m['os']}"),
+        ("Power", env["power"] or "-"),
+        ("Load average at the start (1, 5, 15 min)", ", ".join(f"{x:g}" for x in env["load_average"])),
+        ("Busiest other processes at the start (% CPU)",
+         "; ".join(f"{p['command']} {p['cpu_percent']:g}" for p in env["busiest_processes"]) or "-"),
+        ("Python", f"{py['implementation']} {py['version']} (`{py['executable']}`), pydantic {py['pydantic']}, "
+                   f"PYTHONHASHSEED={py['hash_seed']}"),
+    ])
+    out += ["", "### Parameters", ""] + _table(["Parameter", "Value"], [
+        (k, f"`{json.dumps(v)}`" if not isinstance(v, str) else v) for k, v in params.items()])
+    out += ["", "## Method", "", _METHOD]
+    if "perf" in results:
+        out += _perf_section(results["perf"])
+    if "repair" in results:
+        out += _repair_section(results["repair"])
+    out += ["## Limitations", "", _LIMITS]
+    path.write_text("\n".join(out))
+
+
+def _perf_section(perf: Mapping[str, Any]) -> list[str]:
+    rows = perf["rows"]
+    main = [r for r in rows if not r["people"]]
+    out = ["## 1. Checker timing", "", "### Per cell", "",
+           "Times in ms over all samples of a cell; findings and rechecks are means per check. The shares are "
+           "of the cell's summed time.", ""]
+    out += _table(["map", "robots", "density", "samples", "findings/check", "rechecks/check", "median", "p95", "p99",
+                   "compile %", "detection %", "rechecks %", "other %"],
+                  [(r["map"], r["robots"], r["density"], r["samples"], _num(r["findings_mean"]),
+                    _num(r["rechecks_mean"]), _ms(r["total_median_ms"]), _ms(r["total_p95_ms"]),
+                    _ms(r["total_p99_ms"]), _pct(r["share_compile"]), _pct(r["share_detect"]),
+                    _pct(r["share_rechecks"]), _pct(r["share_constraints_other"])) for r in main])
+    out += ["", "Medians, p95 and p99 of each part, per cell, are in `perf_summary.csv`; each scenario's in "
+                "`perf_scenarios.csv`.", "", "### Where the time goes", ""]
+    for map_name in dict.fromkeys(r["map"] for r in main):
+        answer = bottleneck_answer(main, map_name)
+        out += [f"**{map_name}.** {answer}", ""] + [f"- {line}" for line in bottleneck_lines(main, map_name)] + [""]
+    if any(r["map"] == "bench_grid" for r in main):
+        table, lines = growth_lines(main, "bench_grid")
+        out += ["### Rechecks against fleet size", "",
+                "On bench_grid, the densities pooled: rechecks are the `order_before` verifications of one "
+                "check's verdict.", ""]
+        out += _table(["robots", "findings per check", "rechecks per check", "ms per recheck"],
+                      [(t["robots"], _num(t["findings_mean"]), _num(t["rechecks_mean"]), _ms(t["ms_per_recheck"]))
+                       for t in table])
+        out += [""] + [f"- {line}" for line in lines] + [""]
+    if perf["people"]:
+        out += ["### S-2: the extra time of people", "",
+                "The same scenarios with and without the people; the extra time is each scenario's median with "
+                "people less its median without, then over the scenarios (ms).", ""]
+        out += _table(["map", "robots", "density", "people", "scenarios", "S-2 findings per check",
+                       "median without", "median with", "extra: median", "extra: p95", "of it in detection",
+                       "in the verdict", "rechecks without / with"],
+                      [(p["map"], p["robots"], p["density"], p["people"], p["scenarios"], _num(p["s2_findings_mean"]),
+                        _ms(p["total_median_ms_without"]), _ms(p["total_median_ms_with"]), _ms(p["extra_median_ms"]),
+                        _ms(p["extra_p95_ms"]), _ms(p["detect_extra_median_ms"]),
+                        _ms(p["constraints_extra_median_ms"]),
+                        f"{_num(p['rechecks_mean_without'])} / {_num(p['rechecks_mean_with'])}") for p in perf["people"]])
+        out.append("")
+    o = perf["overhead"]
+    out += ["### What the instruments cost", "",
+            f"On {o['map']}, {o['robots']} robots, {o['density']}: {o['pairs']} pairs of the same scenario plain and "
+            f"instrumented. Instrumented less plain: median {_ms(o['diff_median_ms'])} ms "
+            f"({_pct(o['diff_share'])} of the plain median of {_ms(o['plain_median_ms'])} ms), "
+            f"p95 {_ms(o['diff_p95_ms'])} ms.", ""]
+    return out
+
+
+def _repair_section(repair: Mapping[str, Any]) -> list[str]:
+    summary = [r for r in repair["summary"] if r["density"] == "*"]
+    out = ["## 2. Repairability", "", "### Outcomes", "",
+           "Per map and fleet size, the densities together; share [Wilson 95 %] (count). Each cell's are in "
+           "`repair_summary.csv`, each scenario's in `repair_scenarios.csv`.", ""]
+    out += _table(["map", "robots", "scenarios", "first round", "kept targets", "changed targets", "stuck", "exhausted"],
+                  [(r["map"], r["robots"], r["scenarios"], *(_share_cell(r, "", o) for o in OUTCOMES)) for r in summary])
+    out += ["", "### Plans with a conflict in round 1", ""]
+    out += _table(["map", "robots", "with a conflict", "kept targets", "changed targets", "stuck", "exhausted"],
+                  [(r["map"], r["robots"], r["with_conflict"], *(_share_cell(r, "wc_", o) for o in OUTCOMES[1:]))
+                   for r in summary])
+    overall = summary[-1]
+    rounds = [k for k in overall if k.startswith("passed_round_")]
+    out += ["", "### The round approved plans passed in", ""]
+    out += _table([k.replace("passed_round_", "round ") for k in rounds], [[overall[k] for k in rounds]])
+    out += ["", "### What the fake planner did with each kind of constraint", "",
+            "Over all scenarios: changed the plan, noted it (nothing to change; kept out of the robot's tasks from "
+            "then on), or could not apply it.", ""]
+    kinds = [c for c in repair["constraints"] if c["map"] == "*"]
+    out += _table(["kind", "rule", "received", "changed", "noted", "not applied"],
+                  [(c["kind"], c["rule_id"], c["received"], c["changed"], c["noted"], c["not_applied"]) for c in kinds])
+    return out + [""]

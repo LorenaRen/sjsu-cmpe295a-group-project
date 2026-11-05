@@ -31,7 +31,7 @@ import json
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from mrs_common.plan_schema import TeamPlan
 
@@ -119,14 +119,16 @@ def _people(sim_map: SimMap, pool: list[str], seed: str, count: int) -> tuple[Hu
     return tuple(people)
 
 
-def cells() -> list[Cell]:
-    """The cells of the main matrix: every map, its fleet sizes and every density; no people."""
-    return [(m, n, d, 0) for m, ns in config.ROBOTS.items() for n in ns for d in config.DENSITIES]
+def cells(robots: Mapping[str, Sequence[int]] | None = None) -> list[Cell]:
+    """The cells of the main matrix: every map, its fleet sizes (config.ROBOTS unless given) and
+    every density; no people."""
+    robots = config.ROBOTS if robots is None else robots
+    return [(m, n, d, 0) for m, ns in robots.items() for n in ns for d in config.DENSITIES]
 
 
-def people_cells() -> list[Cell]:
+def people_cells(robots: Sequence[int] | None = None) -> list[Cell]:
     s = config.PEOPLE_SERIES
-    return [(s["map"], n, s["density"], s["people"]) for n in s["robots"]]
+    return [(s["map"], n, s["density"], s["people"]) for n in (s["robots"] if robots is None else robots)]
 
 
 def scenarios_of(maps: Mapping[str, SimMap], cell: Cell, count: int) -> list[Scenario]:

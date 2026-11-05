@@ -44,3 +44,8 @@ OVERHEAD = {"cell": ("bench_grid", 8, "medium", 0), "scenarios": 50, "repetition
 
 # ---- repair (bench/repair.py) ----------------------------------------------------------------
 REPAIR_MAX_ATTEMPTS = 5       # the fake planner's default: a placeholder until Module 4's cap is known
+
+# ---- run.py --quick: a few scenarios per cell, to see that everything runs (not for comparison)
+QUICK = {"robots": {"narrow_aisle": (2,), "samples_world": (4,), "bench_grid": (2, 8)}, "people_robots": (8,),
+         "perf_scenarios": 3, "perf_repetitions": 2, "perf_warmup": (1, 1), "repair_scenarios": 3,
+         "overhead_scenarios": 3, "overhead_repetitions": 2}

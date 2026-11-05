@@ -1,0 +1,4 @@
+# Quick runs are only to see that everything runs; every sample of a run is in perf_samples.csv,
+# which run.py writes but the repository does not keep (the summaries and per-scenario rows are kept).
+results/quick/
+results/*/perf_samples.csv
