@@ -1,0 +1,17 @@
+# Fake planner scenario (mrs_ethical_gate/dev_nodes/scenarios.py).
+description: >-
+  Both robots hold at room_3, where robot_b arrives first (S-4). Only robot_b can free room_3:
+  it is told to end somewhere else (forbid_node), the fake planner moves its target, and round
+  2 is approved.
+map: samples_world
+plan:
+  assignments:
+    - robot_id: robot_a
+      tasks:
+        - {task_id: a1, action: hold_position, target: room_3, priority: 1,
+           justification: "Goal for robot_a."}
+    - robot_id: robot_b
+      tasks:
+        - {task_id: b1, action: hold_position, target: room_3, priority: 1,
+           justification: "Goal for robot_b."}
+  rationale: "Both robots end at room_3."

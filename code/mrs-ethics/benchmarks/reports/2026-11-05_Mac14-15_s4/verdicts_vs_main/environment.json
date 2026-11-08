@@ -1,0 +1,75 @@
+{
+  "date": "2026-11-05T02:01:18-08:00",
+  "command": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/.venv/bin/python /Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/code/mrs-ethics/benchmarks/compare.py verdicts --old c93795c --new 65acde1 --out /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/s4_runs/verdicts_vs_main",
+  "profile": "verdicts (full)",
+  "git_commit": "1b6a2c04bb86dd4a1f37e01dea7b6dfa72ff85f3",
+  "git_dirty": false,
+  "machine": {
+    "model": "Mac14,15",
+    "cpu": "Apple M2",
+    "performance_cores": 4,
+    "efficiency_cores": 4,
+    "logical_cpus": 8,
+    "memory_gb": 8.0,
+    "os": "macOS-26.5.2-arm64-arm-64bit-Mach-O"
+  },
+  "checker_src": {
+    "path": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/code/mrs-ethics/src",
+    "git_commit": "1b6a2c04bb86dd4a1f37e01dea7b6dfa72ff85f3",
+    "git_dirty": false
+  },
+  "parent_process": "/bin/zsh",
+  "power": "AC Power",
+  "kept_awake_by": "caffeinate (pid 256): PreventUserIdleSystemSleep for pid 255",
+  "load_average": [
+    2.04,
+    2.15,
+    2.1
+  ],
+  "busiest_processes": [
+    {
+      "pid": 91792,
+      "cpu_percent": 17.5,
+      "command": "XprotectService"
+    },
+    {
+      "pid": 401,
+      "cpu_percent": 7.9,
+      "command": "WindowServer"
+    },
+    {
+      "pid": 78922,
+      "cpu_percent": 5.4,
+      "command": "Code Helper (Renderer)"
+    },
+    {
+      "pid": 79092,
+      "cpu_percent": 3.1,
+      "command": "claude"
+    },
+    {
+      "pid": 491,
+      "cpu_percent": 2.2,
+      "command": "syspolicyd"
+    }
+  ],
+  "python": {
+    "version": "3.14.4",
+    "implementation": "CPython",
+    "executable": "/Users/jeffreyai/Desktop/sjsu-cmpe295a-group-project/.venv/bin/python",
+    "pydantic": "2.14.1",
+    "hash_seed": "0"
+  },
+  "sources": {
+    "old": {
+      "spec": "c93795c",
+      "path": "/private/var/folders/9w/cgg3d6nj2yg9vq7pwvjfz6dm0000gn/T/bench-src-r8j8t1gr/tree/code/mrs-ethics/src",
+      "git_commit": "c93795c7af5c406aba587617a5f2a85c016a827b"
+    },
+    "new": {
+      "spec": "65acde1",
+      "path": "/private/var/folders/9w/cgg3d6nj2yg9vq7pwvjfz6dm0000gn/T/bench-src-cn4zhftc/tree/code/mrs-ethics/src",
+      "git_commit": "65acde1b1a07ef9556261079ca3a9f552fe72de8"
+    }
+  }
+}

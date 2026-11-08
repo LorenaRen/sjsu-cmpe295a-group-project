@@ -1,0 +1,9 @@
+# fake_team_state snapshot (mrs_ethical_gate/dev_nodes/snapshots.py).
+description: >-
+  robot_b is between corridor_1 and pass_e, as in b_on_edge, but that edge is blocked: whether
+  it finishes the edge, turns back or stops is not known, so the gate checks no plan.
+map: samples_world
+robots:
+  - {robot_id: robot_a, at: west_s, x: 0.0, y: -1.2}
+  - {robot_id: robot_b, at: corridor_1->pass_e, x: 8.6, y: 0.0, yaw: 3.14159}
+blocked_edges: [corridor_1--pass_e]

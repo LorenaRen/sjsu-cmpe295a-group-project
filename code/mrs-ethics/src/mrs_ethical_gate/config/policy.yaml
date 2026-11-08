@@ -1,0 +1,15 @@
+# Access policy (P-2) and task types for the Module 5 gate; read by mrs_ethical_gate.settings.
+#
+#   by_kind: zone type -> task types that may enter it
+#            (aisle, doorway, open_area, charger, elevator, keep_clear, restricted)
+#   by_id:   zone id   -> task types that may enter it
+# A zone must be allowed by both tables; a zone listed in neither is open to every task type.
+# [] means no robot may enter. Task types: delivery, service.
+#
+# The map only labels a zone "restricted"; who may enter is decided here. Default: nobody.
+by_kind:
+  restricted: []
+by_id: {}
+
+# robot_id -> task type. TeamPlan has no task type, so robots not listed are delivery.
+task_types: {}

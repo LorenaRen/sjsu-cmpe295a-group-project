@@ -1,0 +1,58 @@
+[     0.0 s] full verdicts of checker 65acde1b1a07ef9556261079ca3a9f552fe72de8, writing to /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/s4_runs/verdicts_vs_main/new
+[     0.0 s] verdicts of narrow_aisle/2/low/0: 200 timing verdicts so far
+[     0.1 s] verdicts of narrow_aisle/2/medium/0: 400 timing verdicts so far
+[     0.1 s] verdicts of narrow_aisle/2/high/0: 600 timing verdicts so far
+[     0.2 s] verdicts of narrow_aisle/4/low/0: 800 timing verdicts so far
+[     0.4 s] verdicts of narrow_aisle/4/medium/0: 1000 timing verdicts so far
+[     0.6 s] verdicts of narrow_aisle/4/high/0: 1200 timing verdicts so far
+[     0.6 s] verdicts of samples_world/2/low/0: 1400 timing verdicts so far
+[     0.7 s] verdicts of samples_world/2/medium/0: 1600 timing verdicts so far
+[     0.8 s] verdicts of samples_world/2/high/0: 1800 timing verdicts so far
+[     0.8 s] verdicts of samples_world/4/low/0: 2000 timing verdicts so far
+[     0.9 s] verdicts of samples_world/4/medium/0: 2200 timing verdicts so far
+[     1.1 s] verdicts of samples_world/4/high/0: 2400 timing verdicts so far
+[     1.2 s] verdicts of bench_grid/2/low/0: 2600 timing verdicts so far
+[     1.3 s] verdicts of bench_grid/2/medium/0: 2800 timing verdicts so far
+[     1.4 s] verdicts of bench_grid/2/high/0: 3000 timing verdicts so far
+[     1.5 s] verdicts of bench_grid/4/low/0: 3200 timing verdicts so far
+[     1.8 s] verdicts of bench_grid/4/medium/0: 3400 timing verdicts so far
+[     2.0 s] verdicts of bench_grid/4/high/0: 3600 timing verdicts so far
+[     2.5 s] verdicts of bench_grid/8/low/0: 3800 timing verdicts so far
+[     3.2 s] verdicts of bench_grid/8/medium/0: 4000 timing verdicts so far
+[     4.2 s] verdicts of bench_grid/8/high/0: 4200 timing verdicts so far
+[     6.8 s] verdicts of bench_grid/16/low/0: 4400 timing verdicts so far
+[    10.2 s] verdicts of bench_grid/16/medium/0: 4600 timing verdicts so far
+[    16.3 s] verdicts of bench_grid/16/high/0: 4800 timing verdicts so far
+[    34.4 s] verdicts of bench_grid/32/low/0: 5000 timing verdicts so far
+[    61.0 s] verdicts of bench_grid/32/medium/0: 5200 timing verdicts so far
+[   110.5 s] verdicts of bench_grid/32/high/0: 5400 timing verdicts so far
+[   111.3 s] verdicts of bench_grid/8/medium/4: 5600 timing verdicts so far
+[   115.5 s] verdicts of bench_grid/16/medium/4: 5800 timing verdicts so far
+[   115.5 s] repair verdicts of narrow_aisle/2/low/0: 66 so far
+[   115.5 s] repair verdicts of narrow_aisle/2/medium/0: 154 so far
+[   115.6 s] repair verdicts of narrow_aisle/2/high/0: 296 so far
+[   115.7 s] repair verdicts of narrow_aisle/4/low/0: 502 so far
+[   115.8 s] repair verdicts of narrow_aisle/4/medium/0: 732 so far
+[   116.1 s] repair verdicts of narrow_aisle/4/high/0: 982 so far
+[   116.1 s] repair verdicts of samples_world/2/low/0: 1049 so far
+[   116.1 s] repair verdicts of samples_world/2/medium/0: 1152 so far
+[   116.2 s] repair verdicts of samples_world/2/high/0: 1339 so far
+[   116.2 s] repair verdicts of samples_world/4/low/0: 1442 so far
+[   116.3 s] repair verdicts of samples_world/4/medium/0: 1651 so far
+[   116.5 s] repair verdicts of samples_world/4/high/0: 1896 so far
+[   116.6 s] repair verdicts of bench_grid/2/low/0: 1950 so far
+[   116.6 s] repair verdicts of bench_grid/2/medium/0: 2008 so far
+[   116.6 s] repair verdicts of bench_grid/2/high/0: 2077 so far
+[   116.7 s] repair verdicts of bench_grid/4/low/0: 2171 so far
+[   116.8 s] repair verdicts of bench_grid/4/medium/0: 2280 so far
+[   116.9 s] repair verdicts of bench_grid/4/high/0: 2392 so far
+[   117.3 s] repair verdicts of bench_grid/8/low/0: 2576 so far
+[   117.7 s] repair verdicts of bench_grid/8/medium/0: 2766 so far
+[   118.3 s] repair verdicts of bench_grid/8/high/0: 2969 so far
+[   119.8 s] repair verdicts of bench_grid/16/low/0: 3206 so far
+[   121.8 s] repair verdicts of bench_grid/16/medium/0: 3454 so far
+[   124.9 s] repair verdicts of bench_grid/16/high/0: 3700 so far
+[   135.1 s] repair verdicts of bench_grid/32/low/0: 3950 so far
+[   151.3 s] repair verdicts of bench_grid/32/medium/0: 4200 so far
+[   178.0 s] repair verdicts of bench_grid/32/high/0: 4450 so far
+[   178.0 s] 10250 verdicts, sha256 b185e10dd6f470694312c07c0fdae422d83505e884a95f754725635af6955c10

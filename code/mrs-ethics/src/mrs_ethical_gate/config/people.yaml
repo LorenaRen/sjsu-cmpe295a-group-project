@@ -1,0 +1,8 @@
+# People for S-2 (human crowding) in the Module 5 gate; read by mrs_ethical_gate.settings.
+# Each person stands still where listed for the whole episode. Positions are in the map frame
+# [m] and must be inside a zone of the map. Another file can be given with the launch argument
+# people_file:=... . Live positions are to come from /mrs/team_state (Module 3) instead.
+#
+#   people:
+#     - {id: person_1, x: 12.5, y: 0.5}
+people: []

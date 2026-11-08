@@ -1,0 +1,5 @@
+# Fake planner scenario (mrs_ethical_gate/dev_nodes/scenarios.py).
+description: >-
+  mrs_common's restricted_target: robot_a's waypoint office_1 is in the restricted office (P-2).
+map: samples_world
+sample: restricted_target.json

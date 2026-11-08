@@ -1,0 +1,9 @@
+# fake_team_state snapshot (mrs_ethical_gate/dev_nodes/snapshots.py).
+description: >-
+  Both robots stand at samples_world's spawn slots, and the one-robot passage is blocked: the
+  only way between the halls is the bypass through the restricted office.
+map: samples_world
+robots:
+  - {robot_id: robot_a, at: west_s, x: 0.0, y: -1.2}
+  - {robot_id: robot_b, at: east_n, x: 12.0, y: 1.2, yaw: 3.14159}
+blocked_edges: [pass_e--pass_w]

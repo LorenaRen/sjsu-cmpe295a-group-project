@@ -1,0 +1,5 @@
+# Fake planner scenario (mrs_ethical_gate/dev_nodes/scenarios.py).
+description: >-
+  mrs_common's keep_clear_stop: robot_b parks at door_A, in a keep-clear zone (P-1).
+map: samples_world
+sample: keep_clear_stop.json

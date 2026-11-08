@@ -1,0 +1,2 @@
+map,robots,density,people,pairs,plain_median_ms,timed_median_ms,diff_median_ms,diff_p95_ms,diff_share
+bench_grid,8,medium,0,200,8.257,8.3097,-0.0125,0.449,-0.0015

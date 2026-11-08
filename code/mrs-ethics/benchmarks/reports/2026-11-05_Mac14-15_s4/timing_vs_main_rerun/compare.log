@@ -1,0 +1,5 @@
+[    18.1 s] [1/2] old bench_grid/16/medium/0: 17.8 s, load 1.90 -> 2.06
+[    36.0 s] [1/2] new bench_grid/16/medium/0: 18.0 s, load 2.06 -> 2.05
+[   170.7 s] [2/2] new bench_grid/32/medium/0: 134.6 s, load 2.05 -> 2.02
+[   304.1 s] [2/2] old bench_grid/32/medium/0: 133.4 s, load 2.02 -> 1.81
+[   304.1 s] compare: /private/tmp/claude-501/-Users-jeffreyai-Desktop-sjsu-cmpe295a-group-project/55f8f882-f3f5-4322-90e4-81f6bc15a6f1/scratchpad/s4_runs/timing_vs_main_rerun/compare.md
