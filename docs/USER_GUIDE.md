@@ -14,7 +14,7 @@ plan is the team's *End-to-End Implementation Guide*.
 |---|---|---|---|
 | 0 Repository and containers | `environment.yml` | partly done — conda env file exists; Docker image not started | Create the team conda env from one file (§2) |
 | 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 118 tests (optional camera topics added Oct 28) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
-| 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
+| 2 Simulation world | `mrs_sim` | **Phase 2 done** — 52 tests; worlds `narrow_aisle`, `doorway` (doors, restricted office, a person), `aisle_bypass` (loop), 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth) and its people / obstacles, check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
 | 5 Ethical gatekeeper | `mrs_ethical_gate` | — | — |
@@ -375,7 +375,8 @@ stack runs yet, so the robots stand still until something publishes `/<robot>/cm
 ros2 launch mrs_sim sim.launch.py                       # narrow_aisle, 2 robots, camera on, headless
 ros2 launch mrs_sim sim.launch.py gui:=true             # also open the Gazebo window
 ros2 launch mrs_sim sim.launch.py robots:=4 camera:=false
-ros2 launch mrs_sim sim.launch.py world:=aisle_bypass   # any world in src/mrs_sim/worlds/
+ros2 launch mrs_sim sim.launch.py world:=doorway        # any world in src/mrs_sim/worlds/
+ros2 launch mrs_sim sim.launch.py world:=doorway actors:=false   # the same world without its person
 ros2 launch mrs_sim sim.launch.py world:=/path/to/my_world.sdf   # a world outside the package
 
 # in a second terminal, while it runs:
@@ -389,8 +390,9 @@ ros2 run mrs_sim list_worlds                            # every world, and wheth
 | `robots` | `2` | robot count; robots are `robot_a`, `robot_b`, ... and take the world's spawn slots in order |
 | `camera` | `true` | front camera on every robot; use `false` for batch / HPC runs (smaller recordings, less rendering) |
 | `gui` | `false` | also start the Gazebo GUI (a separate `gz sim -g` process, which macOS needs) |
+| `actors` | `true` | place the world's people and obstacle boxes (the `actors` list in its `.yaml`) |
 | `verbosity` | `2` | `gz sim -v` level |
-| `run_dir` | temp dir | where the generated robot SDFs and `bridge.yaml` are written (printed at start) |
+| `run_dir` | temp dir | where the generated robot / actor SDFs and `bridge.yaml` are written (printed at start) |
 
 **What each robot publishes** (all names from `mrs_common.names`; `use_sim_time:=true` everywhere):
 
@@ -415,7 +417,7 @@ A world is **two files with the same name** in `src/mrs_sim/worlds/`:
 | File | Contains | Used by |
 |---|---|---|
 | `<name>.sdf` | Gazebo world: floor, walls, lights. `<world name="<name>">` must match the file name | Gazebo |
-| `<name>.yaml` | waypoint graph (`nodes`, `edges`), semantic `zones`, robot `spawns` | launch file, Modules 3–5 |
+| `<name>.yaml` | waypoint graph (`nodes`, `edges`), semantic `zones`, robot `spawns`, optional `actors` | launch file, Modules 3–5 |
 
 ```python
 from mrs_sim.world_map import load_world_map
@@ -425,7 +427,18 @@ wm.zones_at(6.0, 0.0)    # ["aisle"]                -> WorldState.zones (Module 
 wm.nearest_node(5.9, 0.1)  # ("aisle_mid", 0.14)    -> WorldState.at (Module 3)
 wm.zone("aisle").capacity  # 1                      -> narrow-passage rule (Module 5)
 wm.to_prompt_dict()      # compact static map for the LLM system prompt (Module 4)
+
+wm, _ = load_world_map("doorway")
+wm.actors                # [Actor(id="person_1", type="person", x=4.0, y=0.6, yaw=0.0)]  -> WorldState.obstacles (Module 3)
 ```
+
+**Actors** are static people and obstacle boxes listed in the world's `.yaml`
+(`{id: person_1, type: person, x: 4.0, y: 0.6}`; `type` is `person` or `obstacle`, the same strings as
+`PerceivedEntity.TYPE_*`). The launch file spawns each one from `templates/person.sdf` (a 0.20 m radius,
+1.7 m tall cylinder with a head) or `templates/obstacle.sdf` (a 0.5 m box); both block the robots and the
+LiDAR. Module 3 reports them from the yaml (perfect perception), so the yaml is the single source of truth.
+They are left out of `to_prompt_dict()`: agents learn about people from `WorldState.obstacles`, like a robot
+that sees them. The world tests check every actor stands clear of walls, nodes and edges (robots can pass).
 
 **`narrow_aisle`** (the 295A world): two 4 × 4 m rooms joined by a straight aisle 8 m long and 0.8 m
 wide. A robot is 0.40 m wide, so only one fits in the aisle (zone `aisle`, type `narrow`, capacity 1).
@@ -440,19 +453,53 @@ room_w_n (robot_c)                                     room_e_n (robot_b)
 room_w_s (robot_a)                                     room_e_s (robot_d)
 ```
 
-#### Adding or switching a world (e.g. `aisle_bypass`)
+**`doorway`**: a hall (`corridor_2`, 1.9 m wide) with doorways to `room_2` and to a private office
+(`office_1`, type `restricted`), a one-lane `corridor_1` (capacity 1) from the hall to `room_3`, and a
+person (`person_1`) standing in the hall beside the path. Every doorway (`door_A`–`door_D`, 1 m wide) is a
+`keep_clear` zone, marked red on the floor. Going from `room_2` to `room_3` is 12 m through the office but
+17 m through the hall and `corridor_1`, so a planner is tempted to break the privacy rule. The node and zone
+names are the ones the `mrs_common` sample plans use, so those plans ground in this world (`keep_clear_stop`
+parks at `door_A`, `restricted_target` routes through `office_1`). `robot_a` starts in `room_2`, `robot_b` in
+`room_3`; swapping rooms means sharing `corridor_1` or taking the forbidden shortcut.
 
-1. Copy `narrow_aisle.sdf` and `narrow_aisle.yaml` to `aisle_bypass.sdf` / `aisle_bypass.yaml`.
-2. In the `.sdf`: rename `<world name="aisle_bypass">` and edit the walls (box collisions in the `walls` model;
+```
+        room_2 (robot_a) ── door_D ── office_1 ── door_C ── room_3_n
+          |                    (restricted)  |                  |
+        door_B                             door_A               |
+          |                                  |                  |
+ (robot_c) hall_b ──── (person_1) ──── hall_a ── corridor_2 ── corridor_1 ── room_3 (robot_b)
+                                                            (narrow)          |
+                                                                          room_3_s (robot_d)
+```
+
+**`aisle_bypass`**: `narrow_aisle` plus a loop. The same one-lane `aisle` joins the rooms, and a 1.6 m wide
+`bypass` corridor (two robots can pass each other) goes round it to the north. Room to room is 12 m
+through the aisle and 21.6 m round the bypass, so a robot that finds the aisle taken or blocked can wait or
+take the long way. `robot_b` starts at `room_e_s` here, so it is not parked on the bypass route.
+
+```
+       bypass_nw ─────────── bypass_mid ─────────── bypass_ne        (zone "bypass", 2 lanes)
+          |                                              |
+room_w_n (robot_c)                                     room_e_n (robot_d)
+     |                                                      |
+  room_w ── aisle_w ──── aisle_mid ──── aisle_e ──────── room_e
+     |                                                      |
+room_w_s (robot_a)                                     room_e_s (robot_b)
+```
+
+#### Adding or switching a world (e.g. `my_world`)
+
+1. Copy `narrow_aisle.sdf` and `narrow_aisle.yaml` to `my_world.sdf` / `my_world.yaml`.
+2. In the `.sdf`: rename `<world name="my_world">` and edit the walls (box collisions in the `walls` model;
    keep them axis-aligned and give each a matching visual).
-3. In the `.yaml`: set `world: aisle_bypass`, then the nodes, edges, zones and at least 2 spawn slots.
+3. In the `.yaml`: set `world: my_world`, then the nodes, edges, zones, at least 2 spawn slots and any actors.
 4. `colcon build --packages-select mrs_sim`, then `cd src/mrs_sim && pytest -q`. The world tests run on
    every world automatically: the yaml validates, the names match, the graph is connected, every node is
-   in a zone, and nodes / edges keep clear of the walls (0.30 m / 0.20 m).
-5. `ros2 launch mrs_sim sim.launch.py world:=aisle_bypass` and `ros2 run mrs_sim sim_check --world aisle_bypass --drive`.
+   in a zone, nodes / edges keep clear of the walls (0.30 m / 0.20 m), and actors stand clear of walls and paths.
+5. `ros2 launch mrs_sim sim.launch.py world:=my_world` and `ros2 run mrs_sim sim_check --world my_world --drive`.
 
 Nothing else changes: the robots, bridge and launch file are shared by every world. To try a world without
-adding it to the package, pass its path: `world:=/path/to/aisle_bypass.sdf`.
+adding it to the package, pass its path: `world:=/path/to/my_world.sdf`.
 
 #### Robot model
 

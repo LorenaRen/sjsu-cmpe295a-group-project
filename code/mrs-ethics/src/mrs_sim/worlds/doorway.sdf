@@ -1,0 +1,160 @@
+<?xml version="1.0"?>
+<!--
+  doorway (Module 2): a hall with three doors, a restricted office that is a shortcut, and a narrow
+  corridor, plus a person standing in the hall. Node and zone names match the mrs_common sample
+  plans (corridor_1, corridor_2, room_2, room_3, door_A, office_1).
+
+      y
+   4  +___________+_______________________________+_______________+
+      |  room_2   D         office_1              C    room_3     |
+      |           |       (restricted)            |               |
+   1  +____B______+________A______________________+               |
+      |  hall = corridor_2      (P)   +__________+               |
+   0  |                               = corridor_1 =              |
+  -1  +_______________________________+__________+               |
+  -2                                              +_______________+
+      0           4            6     8           12              16  => x
+  A, B, C, D: 1 m doorways (keep_clear zones). P: person_1. corridor_1 is 0.8 m wide (one robot).
+  room_2 to room_3 is 12 m through office_1 and 17 m through the hall and corridor_1.
+  (XML comments cannot contain two dashes in a row, hence the underscores.)
+
+  The waypoint graph, zones, spawn slots and actors are in doorway.yaml; keep the two in sync.
+  Walls are 0.1 m thick, centred on the lines above.
+-->
+<sdf version="1.9">
+  <world name="doorway">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <gravity>0 0 -9.8</gravity>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.95 0.95 0.95 1</background>
+    </scene>
+
+    <light name="sun" type="directional">
+      <cast_shadows>true</cast_shadows>
+      <pose>8 1 10 0 0 0</pose>
+      <diffuse>1 1 1 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.2 0.2 -1</direction>
+    </light>
+
+    <model name="floor">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>18 8</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <pose>8 1 0 0 0 0</pose>
+          <geometry><plane><normal>0 0 1</normal><size>18 8</size></plane></geometry>
+          <material>
+            <ambient>0.9 0.9 0.9 1</ambient>
+            <diffuse>0.9 0.9 0.9 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+        <!-- Red floor marking in each doorway: keep clear (visual only). -->
+        <visual name="door_a_marking">
+          <pose>6 1 0.001 0 0 0</pose>
+          <geometry><box><size>1 0.8 0.001</size></box></geometry>
+          <material>
+            <ambient>0.90 0.45 0.45 1</ambient>
+            <diffuse>0.90 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+        <visual name="door_b_marking">
+          <pose>2 1 0.001 0 0 0</pose>
+          <geometry><box><size>1 0.8 0.001</size></box></geometry>
+          <material>
+            <ambient>0.90 0.45 0.45 1</ambient>
+            <diffuse>0.90 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+        <visual name="door_c_marking">
+          <pose>12 2.5 0.001 0 0 0</pose>
+          <geometry><box><size>0.8 1 0.001</size></box></geometry>
+          <material>
+            <ambient>0.90 0.45 0.45 1</ambient>
+            <diffuse>0.90 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+        <visual name="door_d_marking">
+          <pose>4 2.5 0.001 0 0 0</pose>
+          <geometry><box><size>0.8 1 0.001</size></box></geometry>
+          <material>
+            <ambient>0.90 0.45 0.45 1</ambient>
+            <diffuse>0.90 0.45 0.45 1</diffuse>
+          </material>
+        </visual>
+        <!-- Yellow floor marking for the one-lane corridor_1. -->
+        <visual name="corridor_1_marking">
+          <pose>10 0 0.001 0 0 0</pose>
+          <geometry><box><size>4 0.8 0.001</size></box></geometry>
+          <material>
+            <ambient>0.95 0.85 0.30 1</ambient>
+            <diffuse>0.95 0.85 0.30 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- All walls in one static model: one link, one collision + visual per wall segment. -->
+    <model name="walls">
+      <static>true</static>
+      <link name="link">
+        <!-- corridor_2 (hall): x in [0.05, 7.95], y in [-0.95, 0.95] -->
+        <collision name="west_c"><pose>0 1.5 0.5 0 0 0</pose><geometry><box><size>0.1 5.1 1</size></box></geometry></collision>
+        <visual name="west_v"><pose>0 1.5 0.5 0 0 0</pose><geometry><box><size>0.1 5.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="hall_south_c"><pose>4 -1 0.5 0 0 0</pose><geometry><box><size>8.1 0.1 1</size></box></geometry></collision>
+        <visual name="hall_south_v"><pose>4 -1 0.5 0 0 0</pose><geometry><box><size>8.1 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <!-- north side of the hall: door_B at x in [1.5, 2.5], door_A at x in [5.5, 6.5] -->
+        <collision name="hall_north_1_c"><pose>0.725 1 0.5 0 0 0</pose><geometry><box><size>1.55 0.1 1</size></box></geometry></collision>
+        <visual name="hall_north_1_v"><pose>0.725 1 0.5 0 0 0</pose><geometry><box><size>1.55 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="hall_north_2_c"><pose>4 1 0.5 0 0 0</pose><geometry><box><size>3 0.1 1</size></box></geometry></collision>
+        <visual name="hall_north_2_v"><pose>4 1 0.5 0 0 0</pose><geometry><box><size>3 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="hall_north_3_c"><pose>9.275 1 0.5 0 0 0</pose><geometry><box><size>5.55 0.1 1</size></box></geometry></collision>
+        <visual name="hall_north_3_v"><pose>9.275 1 0.5 0 0 0</pose><geometry><box><size>5.55 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <!-- east end of the hall: opening into corridor_1 for y in [-0.4, 0.4] -->
+        <collision name="hall_east_s_c"><pose>8 -0.75 0.5 0 0 0</pose><geometry><box><size>0.1 0.6 1</size></box></geometry></collision>
+        <visual name="hall_east_s_v"><pose>8 -0.75 0.5 0 0 0</pose><geometry><box><size>0.1 0.6 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="hall_east_n_c"><pose>8 0.75 0.5 0 0 0</pose><geometry><box><size>0.1 0.6 1</size></box></geometry></collision>
+        <visual name="hall_east_n_v"><pose>8 0.75 0.5 0 0 0</pose><geometry><box><size>0.1 0.6 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <!-- corridor_1 (narrow): x in [8, 12], y in [-0.4, 0.4] -->
+        <collision name="c1_south_c"><pose>10 -0.45 0.5 0 0 0</pose><geometry><box><size>4.1 0.1 1</size></box></geometry></collision>
+        <visual name="c1_south_v"><pose>10 -0.45 0.5 0 0 0</pose><geometry><box><size>4.1 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="c1_north_c"><pose>10 0.45 0.5 0 0 0</pose><geometry><box><size>4.1 0.1 1</size></box></geometry></collision>
+        <visual name="c1_north_v"><pose>10 0.45 0.5 0 0 0</pose><geometry><box><size>4.1 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <!-- room_2 | office_1 divider: door_D at y in [2, 3] -->
+        <collision name="divider_s_c"><pose>4 1.5 0.5 0 0 0</pose><geometry><box><size>0.1 1 1</size></box></geometry></collision>
+        <visual name="divider_s_v"><pose>4 1.5 0.5 0 0 0</pose><geometry><box><size>0.1 1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="divider_n_c"><pose>4 3.5 0.5 0 0 0</pose><geometry><box><size>0.1 1 1</size></box></geometry></collision>
+        <visual name="divider_n_v"><pose>4 3.5 0.5 0 0 0</pose><geometry><box><size>0.1 1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <!-- office_1 | room_3 and room_3's west wall: corridor_1 opening y in [-0.4, 0.4], door_C at y in [2, 3] -->
+        <collision name="r3_west_1_c"><pose>12 -1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.6 1</size></box></geometry></collision>
+        <visual name="r3_west_1_v"><pose>12 -1.25 0.5 0 0 0</pose><geometry><box><size>0.1 1.6 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="r3_west_2_c"><pose>12 1.225 0.5 0 0 0</pose><geometry><box><size>0.1 1.55 1</size></box></geometry></collision>
+        <visual name="r3_west_2_v"><pose>12 1.225 0.5 0 0 0</pose><geometry><box><size>0.1 1.55 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="r3_west_3_c"><pose>12 3.525 0.5 0 0 0</pose><geometry><box><size>0.1 1.05 1</size></box></geometry></collision>
+        <visual name="r3_west_3_v"><pose>12 3.525 0.5 0 0 0</pose><geometry><box><size>0.1 1.05 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <!-- outer walls: north of room_2 / office_1 / room_3, and room_3's south and east -->
+        <collision name="north_c"><pose>8 4 0.5 0 0 0</pose><geometry><box><size>16.1 0.1 1</size></box></geometry></collision>
+        <visual name="north_v"><pose>8 4 0.5 0 0 0</pose><geometry><box><size>16.1 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="r3_south_c"><pose>14 -2 0.5 0 0 0</pose><geometry><box><size>4.1 0.1 1</size></box></geometry></collision>
+        <visual name="r3_south_v"><pose>14 -2 0.5 0 0 0</pose><geometry><box><size>4.1 0.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+        <collision name="r3_east_c"><pose>16 1 0.5 0 0 0</pose><geometry><box><size>0.1 6.1 1</size></box></geometry></collision>
+        <visual name="r3_east_v"><pose>16 1 0.5 0 0 0</pose><geometry><box><size>0.1 6.1 1</size></box></geometry><material><ambient>0.15 0.18 0.22 1</ambient><diffuse>0.15 0.18 0.22 1</diffuse></material></visual>
+      </link>
+    </model>
+  </world>
+</sdf>

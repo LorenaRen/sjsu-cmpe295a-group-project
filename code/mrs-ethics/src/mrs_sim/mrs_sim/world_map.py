@@ -4,7 +4,8 @@ A world is a pair of files with the same base name in mrs_sim/worlds/:
 
   <name>.sdf    the Gazebo world: walls, floor, lights. Its <world name="..."> must be <name>.
   <name>.yaml   the map the rest of the stack reasons over: waypoint-graph nodes and edges,
-                semantic zones and the robot spawn slots.
+                semantic zones, the robot spawn slots and the actors (people, obstacle boxes)
+                the launch file places in the world.
 
 Switching worlds is `world:=<name>` on the launch file; adding one is dropping a new pair into
 worlds/ (see docs/USER_GUIDE.md §4.2). Everything else (robots, bridge, launch) is shared.
@@ -15,7 +16,7 @@ import argparse
 import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -69,6 +70,19 @@ class Pose2D(_Strict):
     yaw: float
 
 
+# Actor types, the same strings as mrs_msgs/PerceivedEntity TYPE_PERSON / TYPE_OBSTACLE.
+ACTOR_TYPES = ("person", "obstacle")
+
+
+class Actor(_Strict):
+    """A static person or obstacle box. Module 3 reports it from here (perfect perception)."""
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]*$", description="unique in the world, e.g. person_1")
+    type: Literal["person", "obstacle"]
+    x: float
+    y: float
+    yaw: float = 0.0  # [rad]
+
+
 class WorldMap(_Strict):
     world: str = Field(min_length=1, description="must equal <world name> in the .sdf")
     description: str = ""
@@ -76,6 +90,7 @@ class WorldMap(_Strict):
     edges: list[tuple[str, str]]
     zones: list[Zone] = []
     spawns: list[Spawn] = Field(min_length=1, description="robot_a takes the first slot, robot_b the second, ...")
+    actors: list[Actor] = []
 
     @model_validator(mode="after")
     def _references(self) -> "WorldMap":
@@ -99,6 +114,13 @@ class WorldMap(_Strict):
                 raise ValueError(f"spawn uses unknown node '{n}'")
         if len(set(spawn_nodes)) != len(spawn_nodes):
             raise ValueError("two spawn slots share a node")
+        actor_ids = [a.id for a in self.actors]
+        if len(set(actor_ids)) != len(actor_ids):
+            raise ValueError(f"duplicate actor ids in {actor_ids}")
+        if clash := set(actor_ids) & (set(self.nodes) | set(zone_ids)):
+            raise ValueError(f"actor ids {sorted(clash)} are also node or zone names")
+        if robotlike := [a for a in actor_ids if a.startswith("robot_")]:
+            raise ValueError(f"actor ids {robotlike} would clash with robot model names in Gazebo")
         return self
 
     # ---- queries used by the launch file and later modules ------------------------------------
@@ -133,8 +155,15 @@ class WorldMap(_Strict):
             out[N.validate_robot_id(r)] = Pose2D(x=p.x, y=p.y, yaw=s.yaw)
         return out
 
+    def actor(self, actor_id: str) -> Actor:
+        for a in self.actors:
+            if a.id == actor_id:
+                return a
+        raise KeyError(actor_id)
+
     def to_prompt_dict(self) -> dict:
-        """Compact static map for an LLM system prompt (Module 4)."""
+        """Compact static map for an LLM system prompt (Module 4). Actors are left out: agents learn
+        about people and obstacles from WorldState.obstacles, like a robot that sees them."""
         return {
             "nodes": {n: [p.x, p.y] for n, p in self.nodes.items()},
             "edges": self.edge_ids(),
@@ -200,7 +229,7 @@ def list_main(argv=None) -> int:
         try:
             wm, _ = load_world_map(name)
             print(f"[ok]   {name}: {len(wm.nodes)} nodes, {len(wm.edges)} edges, "
-                  f"{len(wm.zones)} zones, {len(wm.spawns)} spawn slots")
+                  f"{len(wm.zones)} zones, {len(wm.spawns)} spawn slots, {len(wm.actors)} actors")
         except Exception as e:  # noqa: BLE001 - report every broken world, keep going
             print(f"[FAIL] {name}: {e}")
             rc = 1

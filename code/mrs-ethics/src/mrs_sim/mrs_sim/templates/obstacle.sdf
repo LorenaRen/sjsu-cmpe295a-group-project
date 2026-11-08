@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!--
+  Static obstacle box for mrs_sim (Module 2). Rendered by mrs_sim.actor_model.actor_sdf(); do not
+  spawn this file directly.
+-->
+<sdf version="1.9">
+  <model name="$name">
+    <static>true</static>
+    <link name="link">
+      <collision name="collision">
+        <pose>0 0 $half 0 0 0</pose>
+        <geometry><box><size>$size $size $size</size></box></geometry>
+      </collision>
+      <visual name="visual">
+        <pose>0 0 $half 0 0 0</pose>
+        <geometry><box><size>$size $size $size</size></box></geometry>
+        <material>
+          <ambient>0.55 0.40 0.20 1</ambient>
+          <diffuse>0.55 0.40 0.20 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

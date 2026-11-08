@@ -1,0 +1,71 @@
+# Map for aisle_bypass.sdf (Module 2). Loaded and validated by mrs_sim.world_map.
+# Coordinates are in the map frame [m], which is the Gazebo world frame.
+world: aisle_bypass
+description: >-
+  narrow_aisle plus a loop: the two rooms are joined by a one-lane aisle (12 m room to room) and by
+  a two-lane bypass corridor to the north (21.6 m room to room). A robot that finds the aisle
+  occupied or blocked can wait for it or take the bypass.
+
+# Waypoint graph: the only places a plan can name as targets.
+nodes:
+  room_w:     {x: 0.0,  y: 0.0}    # west room centre, also the "wait outside the aisle" spot
+  room_w_n:   {x: 0.0,  y: 1.2}    # also where the bypass leaves room_w
+  room_w_s:   {x: 0.0,  y: -1.2}
+  aisle_w:    {x: 2.6,  y: 0.0}    # just inside the west end of the aisle
+  aisle_mid:  {x: 6.0,  y: 0.0}
+  aisle_e:    {x: 9.4,  y: 0.0}    # just inside the east end of the aisle
+  room_e:     {x: 12.0, y: 0.0}
+  room_e_n:   {x: 12.0, y: 1.2}    # also where the bypass enters room_e
+  room_e_s:   {x: 12.0, y: -1.2}
+  bypass_nw:  {x: 0.0,  y: 4.8}    # north-west corner of the loop
+  bypass_mid: {x: 6.0,  y: 4.8}
+  bypass_ne:  {x: 12.0, y: 4.8}    # north-east corner of the loop
+
+edges:
+  - [room_w, room_w_n]
+  - [room_w, room_w_s]
+  - [room_w, aisle_w]
+  - [aisle_w, aisle_mid]
+  - [aisle_mid, aisle_e]
+  - [aisle_e, room_e]
+  - [room_e, room_e_n]
+  - [room_e, room_e_s]
+  # the bypass
+  - [room_w_n, bypass_nw]
+  - [bypass_nw, bypass_mid]
+  - [bypass_mid, bypass_ne]
+  - [bypass_ne, room_e_n]
+
+# Semantic zones (axis-aligned free space). WorldState.zones lists every zone a robot is inside.
+zones:
+  - id: room_w
+    type: room
+    rect: {x_min: -2.0, x_max: 2.0, y_min: -2.0, y_max: 2.0}
+  - id: aisle
+    type: narrow
+    capacity: 1
+    rect: {x_min: 2.0, x_max: 10.0, y_min: -0.4, y_max: 0.4}
+    description: One robot wide; two robots cannot pass each other inside it.
+  - id: room_e
+    type: room
+    rect: {x_min: 10.0, x_max: 14.0, y_min: -2.0, y_max: 2.0}
+  - id: bypass_w
+    type: corridor
+    rect: {x_min: -0.8, x_max: 0.8, y_min: 2.0, y_max: 4.0}
+    description: Connector from room_w up to the bypass; 1.6 m wide.
+  - id: bypass
+    type: corridor
+    rect: {x_min: -0.8, x_max: 12.8, y_min: 4.0, y_max: 5.6}
+    description: Two-lane corridor round the aisle; 1.6 m wide, robots can pass each other.
+  - id: bypass_e
+    type: corridor
+    rect: {x_min: 11.2, x_max: 12.8, y_min: 2.0, y_max: 4.0}
+    description: Connector from the bypass down to room_e; 1.6 m wide.
+
+# Spawn slots in order: robot_a, robot_b, robot_c, robot_d. yaw [rad]: 0 faces east (+x).
+# robot_b starts at room_e_s (not room_e_n as in narrow_aisle) so it is not parked on the bypass route.
+spawns:
+  - {node: room_w_s, yaw: 0.0}        # robot_a: west room, facing the aisle
+  - {node: room_e_s, yaw: 3.14159}    # robot_b: east room, facing the aisle
+  - {node: room_w_n, yaw: 0.0}        # robot_c
+  - {node: room_e_n, yaw: 3.14159}    # robot_d

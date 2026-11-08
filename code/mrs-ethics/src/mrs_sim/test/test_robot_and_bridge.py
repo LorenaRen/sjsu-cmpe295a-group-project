@@ -6,7 +6,9 @@ import yaml
 
 from mrs_common import names as N
 from mrs_sim.bridge import bridge_entries, bridge_yaml
-from mrs_sim.robot_model import CAMERA_XYZ, LIDAR_XYZ, robot_color, robot_sdf, sensor_frames
+from mrs_sim.actor_model import actor_sdf
+from mrs_sim.robot_model import CAMERA_XYZ, LIDAR_XYZ, WHEEL_RADIUS, robot_color, robot_sdf, sensor_frames
+from mrs_sim.world_map import ACTOR_TYPES, Actor
 
 
 def _model(robot, camera=True):
@@ -61,3 +63,20 @@ def test_bridge_entries(camera):
     cmd = [e for e in entries if e["ros_topic_name"].endswith("/cmd_vel")]
     assert all(e["direction"] == "ROS_TO_GZ" and e["lazy"] is False for e in cmd)
     assert yaml.safe_load(bridge_yaml(robots, camera)) == entries
+
+
+# ---- actors ------------------------------------------------------------------------------
+@pytest.mark.parametrize("kind", ACTOR_TYPES)
+def test_actor_sdf(kind):
+    sdf = actor_sdf(Actor(id="thing_1", type=kind, x=1.0, y=2.0))
+    assert "$" not in sdf, "unfilled template placeholder"
+    m = ET.fromstring(sdf).find("model")
+    assert m.get("name") == "thing_1" and m.findtext("static") == "true"
+    # the LiDAR (base_link at the wheel radius, plus its mount height) must hit the collision
+    lidar_z = WHEEL_RADIUS + LIDAR_XYZ[2]
+    col = m.find("link/collision")
+    z = float(col.findtext("pose").split()[2])
+    geo = col.find("geometry")
+    half = (float(geo.findtext("cylinder/length")) if kind == "person"
+            else float(geo.findtext("box/size").split()[2])) / 2
+    assert z - half <= lidar_z <= z + half

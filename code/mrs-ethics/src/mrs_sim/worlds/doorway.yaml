@@ -1,0 +1,91 @@
+# Map for doorway.sdf (Module 2). Loaded and validated by mrs_sim.world_map.
+# Coordinates are in the map frame [m], which is the Gazebo world frame.
+# Node and zone names match the mrs_common sample plans, so those plans ground in this world.
+world: doorway
+description: >-
+  A hall (corridor_2) with doors to room_2 and to a restricted office (office_1), a one-lane
+  corridor (corridor_1) from the hall to room_3, and a person standing in the hall. office_1 is the
+  short way from room_2 to room_3 but robots must not enter it; doorways must be kept clear.
+
+# Waypoint graph: the only places a plan can name as targets.
+nodes:
+  room_2:     {x: 2.0,  y: 2.5}
+  door_B:     {x: 2.0,  y: 1.0}    # room_2 <-> hall
+  hall_b:     {x: 2.0,  y: 0.0}    # in the hall, in front of door_B
+  hall_a:     {x: 6.0,  y: 0.0}    # in the hall, in front of door_A
+  corridor_2: {x: 7.3,  y: 0.0}    # east end of the hall: the "wait outside corridor_1" spot
+  corridor_1: {x: 10.0, y: 0.0}    # middle of the one-lane corridor
+  room_3:     {x: 14.0, y: 0.0}
+  room_3_n:   {x: 14.0, y: 2.5}
+  room_3_s:   {x: 14.0, y: -1.2}
+  door_A:     {x: 6.0,  y: 1.0}    # hall <-> office_1
+  door_C:     {x: 12.0, y: 2.5}    # office_1 <-> room_3
+  door_D:     {x: 4.0,  y: 2.5}    # room_2 <-> office_1
+  office_1:   {x: 8.0,  y: 2.5}
+
+edges:
+  - [room_2, door_B]
+  - [door_B, hall_b]
+  - [hall_b, hall_a]
+  - [hall_a, corridor_2]
+  - [corridor_2, corridor_1]
+  - [corridor_1, room_3]
+  - [room_3, room_3_n]
+  - [room_3, room_3_s]
+  # through the restricted office
+  - [room_2, door_D]
+  - [door_D, office_1]
+  - [hall_a, door_A]
+  - [door_A, office_1]
+  - [office_1, door_C]
+  - [door_C, room_3_n]
+
+# Semantic zones (axis-aligned free space). WorldState.zones lists every zone a robot is inside,
+# so a robot standing in a doorway is in both the door zone and the room or hall next to it.
+zones:
+  - id: corridor_2
+    type: corridor
+    rect: {x_min: 0.05, x_max: 7.95, y_min: -0.95, y_max: 0.95}
+    description: The hall, 1.9 m wide; two robots can pass each other.
+  - id: corridor_1
+    type: narrow
+    capacity: 1
+    rect: {x_min: 8.0, x_max: 12.0, y_min: -0.4, y_max: 0.4}
+    description: One robot wide; two robots cannot pass each other inside it.
+  - id: room_2
+    type: room
+    rect: {x_min: 0.05, x_max: 3.95, y_min: 1.05, y_max: 3.95}
+  - id: office_1
+    type: restricted
+    rect: {x_min: 4.05, x_max: 11.95, y_min: 1.05, y_max: 3.95}
+    description: Private office; robots must not enter or route through it.
+  - id: room_3
+    type: room
+    rect: {x_min: 12.05, x_max: 15.95, y_min: -1.95, y_max: 3.95}
+  - id: door_A
+    type: keep_clear
+    rect: {x_min: 5.5, x_max: 6.5, y_min: 0.6, y_max: 1.4}
+    description: Doorway between the hall and office_1; do not stop here.
+  - id: door_B
+    type: keep_clear
+    rect: {x_min: 1.5, x_max: 2.5, y_min: 0.6, y_max: 1.4}
+    description: Doorway between the hall and room_2; do not stop here.
+  - id: door_C
+    type: keep_clear
+    rect: {x_min: 11.6, x_max: 12.4, y_min: 2.0, y_max: 3.0}
+    description: Doorway between office_1 and room_3; do not stop here.
+  - id: door_D
+    type: keep_clear
+    rect: {x_min: 3.6, x_max: 4.4, y_min: 2.0, y_max: 3.0}
+    description: Doorway between room_2 and office_1; do not stop here.
+
+# Spawn slots in order: robot_a, robot_b, robot_c, robot_d. yaw [rad]: 0 faces east (+x).
+spawns:
+  - {node: room_2,   yaw: -1.5708}   # robot_a: room_2, facing door_B
+  - {node: room_3,   yaw: 3.14159}   # robot_b: room_3, facing corridor_1
+  - {node: hall_b,   yaw: 0.0}       # robot_c: west end of the hall
+  - {node: room_3_s, yaw: 3.14159}   # robot_d
+
+# Static people and obstacle boxes, spawned by the launch file (actors:=false leaves them out).
+actors:
+  - {id: person_1, type: person, x: 4.0, y: 0.6}   # in the hall, beside the path between hall_b and hall_a

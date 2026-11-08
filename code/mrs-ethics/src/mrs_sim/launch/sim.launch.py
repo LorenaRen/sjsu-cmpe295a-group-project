@@ -2,12 +2,14 @@
 
   ros2 launch mrs_sim sim.launch.py                                  # narrow_aisle, 2 robots, camera on, headless
   ros2 launch mrs_sim sim.launch.py world:=aisle_bypass robots:=3 camera:=false gui:=true
+  ros2 launch mrs_sim sim.launch.py world:=doorway actors:=false   # without the person
   ros2 launch mrs_sim sim.launch.py world:=/path/to/my_world.sdf    # a .yaml map must sit next to it
 
 Starts: the Gazebo server (and optionally the GUI as a separate process, which macOS requires),
-one robot per spawn slot, one ros_gz_bridge for all robots, and the static transforms
+one robot per spawn slot, the world's actors (people, obstacle boxes), one ros_gz_bridge for all
+robots, and the static transforms
 map -> <robot>/odom (spawn pose) and <robot>/base_link -> <robot>/lidar, <robot>/camera.
-The generated robot SDFs and bridge config are written to a run folder that is printed at start.
+The generated robot and actor SDFs and bridge config are written to a run folder that is printed at start.
 """
 import tempfile
 from pathlib import Path
@@ -18,6 +20,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from mrs_common import names as N
+from mrs_sim.actor_model import actor_sdf
 from mrs_sim.bridge import bridge_yaml
 from mrs_sim.robot_model import robot_sdf, sensor_frames
 from mrs_sim.world_map import load_world_map
@@ -29,6 +32,7 @@ def _setup(context):
     arg = lambda name: LaunchConfiguration(name).perform(context)  # noqa: E731
     camera = arg("camera").lower() in _TRUE
     gui = arg("gui").lower() in _TRUE
+    with_actors = arg("actors").lower() in _TRUE
     wm, sdf_path = load_world_map(arg("world"))
     robots = N.robot_ids(int(arg("robots")))
     poses = wm.spawn_poses(robots)
@@ -40,7 +44,8 @@ def _setup(context):
 
     sim_time = {"use_sim_time": True}
     actions = [
-        LogInfo(msg=f"[mrs_sim] world={wm.world} robots={robots} camera={camera} gui={gui} run_dir={run_dir}"),
+        LogInfo(msg=f"[mrs_sim] world={wm.world} robots={robots} camera={camera} gui={gui} "
+                    f"actors={[a.id for a in wm.actors] if with_actors else []} run_dir={run_dir}"),
         ExecuteProcess(cmd=["gz", "sim", "-s", "-r", "-v", arg("verbosity"), str(sdf_path)],
                        output="screen", name="gz_server"),
         Node(package="ros_gz_bridge", executable="parameter_bridge", name="mrs_bridge", output="screen",
@@ -71,6 +76,14 @@ def _setup(context):
                 arguments=["--x", str(x), "--y", str(y), "--z", str(z),
                            "--frame-id", parent, "--child-frame-id", child],
                 parameters=[sim_time]))
+
+    for a in wm.actors if with_actors else []:
+        actor_file = run_dir / f"{a.id}.sdf"
+        actor_file.write_text(actor_sdf(a))
+        actions.append(Node(
+            package="ros_gz_sim", executable="create", name=f"spawn_{a.id}", output="screen",
+            arguments=["-world", wm.world, "-file", str(actor_file), "-name", a.id,
+                       "-x", str(a.x), "-y", str(a.y), "-z", "0.0", "-Y", str(a.yaw)]))
     return actions
 
 
@@ -81,8 +94,10 @@ def generate_launch_description():
         DeclareLaunchArgument("robots", default_value="2", description="number of robots (robot_a, robot_b, ...)"),
         DeclareLaunchArgument("camera", default_value="true", description="front camera on every robot"),
         DeclareLaunchArgument("gui", default_value="false", description="also open the Gazebo GUI"),
+        DeclareLaunchArgument("actors", default_value="true",
+                              description="place the world's people and obstacle boxes (from its .yaml)"),
         DeclareLaunchArgument("verbosity", default_value="2", description="gz sim -v level (0-4)"),
         DeclareLaunchArgument("run_dir", default_value="",
-                              description="where to write generated robot SDFs + bridge.yaml (default: a temp dir)"),
+                              description="where to write generated robot / actor SDFs + bridge.yaml (default: a temp dir)"),
         OpaqueFunction(function=_setup),
     ])
