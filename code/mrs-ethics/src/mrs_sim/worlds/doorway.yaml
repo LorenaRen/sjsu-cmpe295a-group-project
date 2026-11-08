@@ -40,8 +40,10 @@ edges:
   - [office_1, door_C]
   - [door_C, room_3_n]
 
-# Semantic zones (axis-aligned free space). WorldState.zones lists every zone a robot is inside,
-# so a robot standing in a doorway is in both the door zone and the room or hall next to it.
+# Semantic zones (axis-aligned free space). Zones must not overlap (the gate's checker,
+# fleet_checker/adapters/sim_map.py, rejects overlapping zones), so each door's keep_clear zone is
+# just the gap in the 0.1 m wall; its door node sits in the middle of it. The red floor marking in
+# doorway.sdf is wider, to show the doorway, and is visual only.
 zones:
   - id: corridor_2
     type: corridor
@@ -50,7 +52,7 @@ zones:
   - id: corridor_1
     type: narrow
     capacity: 1
-    rect: {x_min: 8.0, x_max: 12.0, y_min: -0.4, y_max: 0.4}
+    rect: {x_min: 7.95, x_max: 12.05, y_min: -0.4, y_max: 0.4}   # through both wall openings
     description: One robot wide; two robots cannot pass each other inside it.
   - id: room_2
     type: room
@@ -64,19 +66,19 @@ zones:
     rect: {x_min: 12.05, x_max: 15.95, y_min: -1.95, y_max: 3.95}
   - id: door_A
     type: keep_clear
-    rect: {x_min: 5.5, x_max: 6.5, y_min: 0.6, y_max: 1.4}
+    rect: {x_min: 5.5, x_max: 6.5, y_min: 0.95, y_max: 1.05}
     description: Doorway between the hall and office_1; do not stop here.
   - id: door_B
     type: keep_clear
-    rect: {x_min: 1.5, x_max: 2.5, y_min: 0.6, y_max: 1.4}
+    rect: {x_min: 1.5, x_max: 2.5, y_min: 0.95, y_max: 1.05}
     description: Doorway between the hall and room_2; do not stop here.
   - id: door_C
     type: keep_clear
-    rect: {x_min: 11.6, x_max: 12.4, y_min: 2.0, y_max: 3.0}
+    rect: {x_min: 11.95, x_max: 12.05, y_min: 2.0, y_max: 3.0}
     description: Doorway between office_1 and room_3; do not stop here.
   - id: door_D
     type: keep_clear
-    rect: {x_min: 3.6, x_max: 4.4, y_min: 2.0, y_max: 3.0}
+    rect: {x_min: 3.95, x_max: 4.05, y_min: 2.0, y_max: 3.0}
     description: Doorway between room_2 and office_1; do not stop here.
 
 # Spawn slots in order: robot_a, robot_b, robot_c, robot_d. yaw [rad]: 0 faces east (+x).

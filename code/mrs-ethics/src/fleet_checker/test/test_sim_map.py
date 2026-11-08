@@ -14,6 +14,15 @@ SAMPLES_WORLD = Path(__file__).parent / "fixtures" / "samples_world.yaml"
 NARROW_AISLE = Path(__file__).resolve().parents[2] / "mrs_sim/worlds/narrow_aisle.yaml"  # parents[2] = src/
 
 
+MRS_SIM_WORLDS = sorted(NARROW_AISLE.parent.glob("*.yaml"))
+
+
+@pytest.mark.parametrize("path", MRS_SIM_WORLDS, ids=lambda p: p.stem)
+def test_every_mrs_sim_world_loads(path):
+    """The gate must accept every world mrs_sim can launch (zone types, actors, no overlaps)."""
+    load_sim_map(path)
+
+
 @pytest.fixture(scope="module")
 def aisle_map():
     return load_sim_map(NARROW_AISLE)
@@ -128,7 +137,7 @@ def test_tiny_map_loads():
     ({"nodes": {"a": {"x": 0.0, "y": 0.0}, "b": {"x": 2.0, "y": 0.0}}}, "boundary"),
     ({"nodes": {"a": {"x": 0.0, "y": 0.0}, "b": {"x": 4.0, "y": 0.0}, "c": {"x": 9.0, "y": 9.0}}},
      "outside every zone"),
-    ({"zones": [{"id": "left", "type": "corridor", "rect": {"x_min": -1, "x_max": 5, "y_min": -1, "y_max": 1}}]},
+    ({"zones": [{"id": "left", "type": "garden", "rect": {"x_min": -1, "x_max": 5, "y_min": -1, "y_max": 1}}]},
      "unknown zone type"),
     ({"zones": [{"id": "z", "type": "room", "rect": {"x_min": -1, "x_max": 2, "y_min": -1, "y_max": 1}},
                 {"id": "z", "type": "room", "rect": {"x_min": 2, "x_max": 5, "y_min": -1, "y_max": 1}}]},

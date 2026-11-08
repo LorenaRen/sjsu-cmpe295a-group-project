@@ -40,6 +40,9 @@ from ..plan import Region, RegionKind, WorldMap
 # how a new kind of zone should be checked is a decision, not a default.
 ZONE_KINDS: dict[str, RegionKind] = {
     "room": RegionKind.OPEN_AREA,
+    # A corridor wide enough for two robots to pass (mrs_sim's aisle_bypass and doorway halls):
+    # checked like a room. A one-lane corridor is "narrow" instead.
+    "corridor": RegionKind.OPEN_AREA,
     "narrow": RegionKind.AISLE,
     "keep_clear": RegionKind.KEEP_CLEAR,
     "restricted": RegionKind.RESTRICTED,
@@ -99,6 +102,16 @@ class _Spawn(_Strict):
     yaw: float = 0.0
 
 
+class _Actor(_Strict):
+    """A static person or obstacle box mrs_sim places in the world. The checker does not read
+    them: the people S-2 checks come from the gate's people file and /mrs/team_state."""
+    id: str = Field(min_length=1)
+    type: str = Field(min_length=1)
+    x: float
+    y: float
+    yaw: float = 0.0
+
+
 class _MapFile(_Strict):
     world: str = Field(min_length=1)
     description: str = ""
@@ -106,6 +119,7 @@ class _MapFile(_Strict):
     edges: list[tuple[str, str]]
     zones: list[_Zone] = []
     spawns: list[_Spawn] = Field(min_length=1)
+    actors: list[_Actor] = []
 
 
 # --------------------------------------------------------------------------
