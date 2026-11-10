@@ -34,8 +34,8 @@ from typing import Any, Mapping, Sequence
 from mrs_common.plan_schema import TeamPlan, plan_from_json
 
 from fleet_checker.adapters.sim_map import SimMap, load_sim_map
-from fleet_checker.adapters.team_check import (NO_ENTRY_TO_RESTRICTED, Conflict, TeamCheckResult,
-                                               check_team_plan, conflicts)
+from fleet_checker.adapters.team_check import (ALL_RULES, NO_ENTRY_TO_RESTRICTED, Conflict, Rules,
+                                               TeamCheckResult, check_team_plan, conflicts)
 from fleet_checker.adapters.verdict import APPROVE, VerdictContent, to_verdict, unreadable_plan_verdict
 from fleet_checker.cross_plan import FairnessLedger
 from fleet_checker.crowding import CrowdingLimit
@@ -79,7 +79,8 @@ class GateSession:
                  robot_length: float, margin: float = 0.5, max_duration: float = DEFAULT_MAX_DURATION,
                  access_policy: AccessPolicy = NO_ENTRY_TO_RESTRICTED,
                  task_types: Mapping[str, TaskType] | None = None, starvation_threshold: int = 2,
-                 people: Sequence[HumanObservation] = (), crowding: CrowdingLimit | None = None):
+                 people: Sequence[HumanObservation] = (), crowding: CrowdingLimit | None = None,
+                 rules: Rules = ALL_RULES, fairness_ledger: bool = True):
         if people and crowding is None:
             raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
         if isinstance(starts, TeamStateStarts) and crowding is None:
@@ -89,7 +90,10 @@ class GateSession:
         self.people = tuple(people)    # the people file's
         self._check_args = dict(speed=speed, robot_length=robot_length, margin=margin,
                                 max_duration=max_duration,
-                                access_policy=access_policy, task_types=task_types, crowding=crowding)
+                                access_policy=access_policy, task_types=task_types, crowding=crowding,
+                                rules=rules)
+        self.rules = rules
+        self.fairness_ledger = fairness_ledger   # off: no ledger is read or written
         self.starvation_threshold = starvation_threshold
         self._start_episode(None)
 
@@ -112,7 +116,8 @@ class GateSession:
                    max_duration=settings.max_duration,
                    access_policy=settings.access_policy, task_types=settings.task_types,
                    starvation_threshold=settings.starvation_threshold,
-                   people=settings.people, crowding=settings.crowding)
+                   people=settings.people, crowding=settings.crowding,
+                   rules=settings.rules, fairness_ledger=settings.fairness_ledger)
 
     def decide(self, plan_json: str, *, transaction_id: str, episode_id: str, attempt: int,
                now: float) -> Decision:
@@ -144,10 +149,11 @@ class GateSession:
         people = self._people(starts)
         result = check_team_plan(plan, self.sim_map, starts.start_nodes, on_edges=starts.on_edges,
                                  blocked_edges=starts.blocked_edges, people=[p for p, _ in people],
-                                 ledger=self.ledger, plan_id=transaction_id, revision=attempt,
-                                 **self._check_args)
+                                 ledger=self.ledger if self.fairness_ledger else None,
+                                 plan_id=transaction_id, revision=attempt, **self._check_args)
         verdict = to_verdict(result)
-        self._update_ledger(result, verdict, now)
+        if self.fairness_ledger:
+            self._update_ledger(result, verdict, now)
         result = replace(result, memo=None)   # what the verdict's rechecks shared; kept decisions need none
         return Decision(verdict, plan if verdict.verdict == APPROVE else None, result, self.ledger_summary(),
                         new_episode=new_episode, starts=starts, people=people)
@@ -160,6 +166,8 @@ class GateSession:
         return tuple(people[i] for i in sorted(people))
 
     def ledger_summary(self) -> dict[str, dict[str, int]]:
+        if not self.fairness_ledger:
+            return {}
         return {robot: {"yields": self.ledger.yield_count(robot),
                         "rejections_in_a_row": self.ledger.consecutive_rejections.get(robot, 0)}
                 for robot in self.starts.fleet}

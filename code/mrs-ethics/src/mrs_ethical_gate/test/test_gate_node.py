@@ -85,13 +85,20 @@ def _wired(*more):
     _stop(executor, probe, gate)
 
 
-def _start(*more):
-    """The gate on samples_world, required parameters as in config/gate.yaml, and a probe."""
+# Every rule and the fairness ledger on, as config/rules_all.yaml: these tests are about what the
+# rules do (the node's defaults, the implementation guide's, run fewer).
+ALL_RULES_ON = ("rule_s1", "rule_s2", "rule_s4", "rule_p1", "rule_p2", "rule_p3", "fairness_ledger")
+
+
+def _start(*more, rules=ALL_RULES_ON):
+    """The gate on samples_world, required parameters as in config/gate.yaml (speed 0.5, as these tests
+    were written for), every rule on unless rules says otherwise, and a probe."""
     gate = GateNode(parameter_overrides=[Parameter("speed", value=0.5), Parameter("robot_length", value=0.45),
                                          Parameter("crowding_radius", value=1.5),
                                          Parameter("crowding_max_robots", value=1),
                                          Parameter("map_file", value=str(SAMPLES_WORLD)),
-                                         Parameter("policy_file", value=str(POLICY)), *more])
+                                         Parameter("policy_file", value=str(POLICY)),
+                                         *[Parameter(name, value=True) for name in rules], *more])
     probe = Probe()
     executor = SingleThreadedExecutor()
     executor.add_node(gate)
@@ -233,3 +240,18 @@ def test_the_gate_does_not_start_without_a_robot_length(ros):
     with pytest.raises(SettingsError, match="robot_length is not set"):
         GateNode(parameter_overrides=[Parameter("speed", value=0.5),
                                       Parameter("map_file", value=str(SAMPLES_WORLD))])
+
+
+def test_with_no_rule_parameters_the_node_runs_the_guides_rules(ros):
+    from fleet_checker.adapters.team_check import Rules
+    executor, probe, gate = _start(rules=())
+    try:
+        assert gate.session.rules == Rules(s1=True, s2=False, s4=False, p1=True, p2=True, p3=False)
+        assert gate.session.fairness_ledger is False
+        both_at_room_3 = json.dumps({"assignments": [
+            {"robot_id": r, "tasks": [{"task_id": t, "action": "hold_position", "target": "room_3", "priority": 1}]}
+            for r, t in (("robot_a", "a1"), ("robot_b", "b1"))]})
+        _, v = send(executor, probe, both_at_room_3)
+        assert v.verdict == "APPROVE"   # S-4 is off
+    finally:
+        _stop(executor, probe, gate)

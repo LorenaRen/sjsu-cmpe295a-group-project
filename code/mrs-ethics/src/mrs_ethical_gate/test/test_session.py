@@ -12,6 +12,7 @@ from fleet_checker.adapters.sim_map import load_sim_map
 from fleet_checker.adapters.verdict import APPROVE, REJECT
 from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation
+from fleet_checker.adapters.team_check import ALL_RULES, Rules
 from mrs_ethical_gate.session import GateSession
 from mrs_ethical_gate.settings import PARAMETERS, REQUIRED, SettingsError, load_settings
 from mrs_ethical_gate.starts import PersonSeen, RobotState, TeamSnapshot, TeamStateStarts
@@ -332,11 +333,19 @@ def test_from_settings_reads_positions_from_team_state():
 
 # ---------------- from the node's settings ----------------
 
-def settings(**changes):
-    """The node's settings on samples_world, the required parameters set as in config/gate.yaml."""
+# Every rule and the fairness ledger on, as the tests of what each rule does need (the gate's
+# defaults, in PARAMETERS and config/gate.yaml, run fewer).
+ALL_ON = {"rule_s1": True, "rule_s2": True, "rule_s4": True, "rule_p1": True, "rule_p2": True, "rule_p3": True,
+          "fairness_ledger": True}
+
+
+def settings(rules=ALL_ON, **changes):
+    """The node's settings on samples_world, the required parameters set as in config/gate.yaml, every
+    rule on (rules={}: the gate's default rules)."""
     values = {name: (None if default is REQUIRED else default) for name, (_, default, _) in PARAMETERS.items()}
     values.update(speed=0.5, robot_length=0.45, crowding_radius=1.5, crowding_max_robots=1,
                   map_file=str(SAMPLES_WORLD))
+    values.update(rules)
     values.update(changes)
     return load_settings(values, default_policy_file=POLICY, default_people_file=NOBODY)
 
@@ -381,3 +390,32 @@ def test_a_decision_keeps_no_recheck_memo(session):
 
 def test_a_session_counts_two_rejects_in_a_row_as_starving_by_default(session):
     assert session.starvation_threshold == 2 == session.ledger.starvation_threshold
+
+
+# ---------------- which rules the session runs ----------------
+
+BOTH_AT_ROOM_3 = json.dumps({"assignments": [
+    {"robot_id": r, "tasks": [{"task_id": t, "action": "hold_position", "target": "room_3", "priority": 1}]}
+    for r, t in (("robot_a", "a1"), ("robot_b", "b1"))]})
+
+
+def test_a_session_runs_every_rule_and_keeps_the_ledger_unless_told_otherwise(session):
+    assert (session.rules, session.fairness_ledger) == (ALL_RULES, True)
+    assert decide(session, BOTH_AT_ROOM_3).verdict.rule_ids == (R.NODE_OCCUPIED,)
+
+
+def test_from_the_default_settings_the_gate_runs_the_guides_rules():
+    session = GateSession.from_settings(settings(rules={}, people_file=str(SAMPLES_PEOPLE)))
+    assert session.rules == Rules(s1=True, s2=False, s4=False, p1=True, p2=True, p3=False)
+    assert decide(session, BOTH_AT_ROOM_3).verdict.verdict == APPROVE   # S-4 off
+    assert decide(session, VALID, attempt=1).verdict.verdict == APPROVE  # S-2 off: the person is not checked
+    assert decide(session, CONFLICT, attempt=2).verdict.rule_ids == (R.CAPACITY_EXCEEDED,)   # S-1 on
+
+
+def test_without_the_fairness_ledger_r1_ranks_by_its_tie_breaks_and_nothing_is_recorded(samples_map):
+    session = GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5, robot_length=0.45,
+                          fairness_ledger=False)
+    rounds = [decide(session, CONFLICT, attempt=i) for i in range(4)]
+    assert [list(d.result.must_replan) for d in rounds] == [["robot_b"]] * 4   # no F-2 hand-over
+    assert all(d.ledger == {} for d in rounds)
+    assert decide(session, VALID, attempt=4).ledger == {}

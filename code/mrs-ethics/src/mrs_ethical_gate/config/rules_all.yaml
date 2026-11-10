@@ -1,0 +1,12 @@
+# Every rule and the fairness ledger on, on top of gate.yaml: what the benchmarks and the fake
+# planner's scenarios (replan_loop.launch.py) use.
+#   ros2 launch mrs_ethical_gate gate.launch.py rules_file:=$(ros2 pkg prefix mrs_ethical_gate)/share/mrs_ethical_gate/config/rules_all.yaml
+mrs_ethical_gate:
+  ros__parameters:
+    rule_s1: true
+    rule_s2: true
+    rule_s4: true
+    rule_p1: true
+    rule_p2: true
+    rule_p3: true
+    fairness_ledger: true

@@ -3,9 +3,9 @@
 mrs_ethical_gate:
   ros__parameters:
     # Nominal driving speed [m/s], used to estimate when each robot enters and leaves a zone.
-    # PLACEHOLDER: 0.5 is mrs_sim's cmd_vel limit, not a measured cruise speed. Set it to Module 6's
-    # speed once that exists, and check it against simulation (times in and out of each zone).
-    speed: 0.5
+    # PLACEHOLDER: 0.25 is Module 6's starting u_max in the team's implementation guide, not a
+    # measured cruise speed. Check it against simulation (times in and out of each zone).
+    speed: 0.25
     # S-4 (rules_v1.md): the robot's length along its direction of travel [m]. A robot is at a
     # node while any part of it is over the node: driving over it takes robot_length / speed.
     # PLACEHOLDER: 0.45 is the chassis box of mrs_sim's mrs_bot.sdf (0.45 x 0.30 m), not a
@@ -15,14 +15,27 @@ mrs_ethical_gate:
     # Initial value, to be tuned by experiment.
     # With start_source team_state, the start positions bring an error of their own that the margin
     # has to cover (rules_v1.md, "Module 5 gate"): a robot counts as at a node up to 0.5 m from it
-    # (0.5 m / speed = 1 s), and its position can be up to team_state_max_age (1 s) old, so about
-    # 2 s in the worst case at these placeholder values, more than this 0.5 s. Until that is
-    # measured, use a margin of at least 2 s with team_state.
+    # (0.5 m / speed = 2 s), and its position can be up to team_state_max_age (1 s) old, so about
+    # 3 s in the worst case at these placeholder values, more than this 0.5 s. Until that is
+    # measured, use a margin of at least 3 s with team_state.
     margin: 0.5
     max_duration: 3600.0      # P-3: longest plan allowed [s]
     # F-2: REJECTs in a row before a robot gets priority. Below Module 4's attempt cap of 3: with 3, the
     # third REJECT ends the planning cycle before F-2 can act (rules_v1.md, F-2).
     starvation_threshold: 2
+    # Which rules run (rules_v1.md); grounding and compile errors are always checked. These are the
+    # team implementation guide's defaults. gate.launch.py's rules_file:=... applies another set on
+    # top: config/rules_all.yaml (every rule and the ledger, as the benchmarks and the fake planner's
+    # scenarios use) or config/rules_per_robot_baseline.yaml (these, without the cross-robot rules).
+    rule_s1: true             # zone capacity, with head-on swaps; R-1 picks who gives way
+    rule_s2: false            # robots crowding a person
+    rule_s4: false            # node occupancy
+    rule_p1: true             # no final stop in a passthrough zone
+    rule_p2: true             # region access (policy.yaml)
+    rule_p3: false            # longest plan (max_duration)
+    # The fairness ledger: R-1's yield counts and F-2. Off: R-1 ranks robots by task type, then first
+    # arrival, then robot id, and nothing is recorded.
+    fairness_ledger: false
     # S-2 (rules_v1.md): at most crowding_max_robots robots within crowding_radius [m] of one person
     # at once. PLACEHOLDERS: neither value is measured, and neither comes from a standard. N = 1
     # because with two robots a larger N could never be exceeded. R should be at least Module 6's

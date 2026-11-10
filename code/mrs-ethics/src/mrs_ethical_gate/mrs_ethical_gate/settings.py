@@ -18,6 +18,7 @@ from mrs_common import names as N
 from mrs_sim.world_map import resolve_world
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, ValidationError
 
+from fleet_checker.adapters.team_check import Rules
 from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation, RegionKind, TaskType
 from fleet_checker.policy import DEFAULT_MAX_DURATION, AccessPolicy
@@ -48,6 +49,16 @@ PARAMETERS: dict[str, tuple[type, Any, str]] = {
     "starvation_threshold": (int, 2, "REJECTs in a row that make a robot starving (F-2's M)"),
     "crowding_radius": (float, REQUIRED, "S-2's R: a robot this close to a person [m] is near them"),
     "crowding_max_robots": (int, REQUIRED, "S-2's N: most robots allowed near one person at once"),
+    # Which rules run (rules_v1.md). Grounding and compile errors are always checked. The defaults
+    # are the team implementation guide's; config/rules_all.yaml turns everything on.
+    "rule_s1": (bool, True, "S-1: zone capacity, with head-on swaps; R-1 picks who gives way"),
+    "rule_s2": (bool, False, "S-2: robots crowding a person"),
+    "rule_s4": (bool, False, "S-4: node occupancy"),
+    "rule_p1": (bool, True, "P-1: no final stop in a passthrough zone"),
+    "rule_p2": (bool, True, "P-2: region access"),
+    "rule_p3": (bool, False, "P-3: longest plan (max_duration)"),
+    "fairness_ledger": (bool, False, "keep the fairness ledger (R-1's yield counts, F-2); off: R-1 ranks by "
+                                     "task type, then first arrival, then robot id"),
     "policy_file": (str, "", "access policy and task types (YAML); empty: the package's config/policy.yaml"),
     "people_file": (str, "", "people for S-2 (YAML); empty: the package's config/people.yaml (nobody)"),
 }
@@ -94,12 +105,22 @@ class GateSettings:
     margin: float
     max_duration: float
     starvation_threshold: int
+    rules: Rules
+    fairness_ledger: bool
     crowding: CrowdingLimit
     policy_file: Path
     access_policy: AccessPolicy
     task_types: Mapping[str, TaskType]
     people_file: Path
     people: tuple[HumanObservation, ...]
+
+    def rules_line(self) -> str:
+        """Which rules run, for the node's start-up log."""
+        ledger = ("on" if self.fairness_ledger
+                  else "off (R-1 ranks by task type, then first arrival, then robot id)")
+        return (f"rules on: {', '.join(self.rules.enabled()) or 'none'}; "
+                f"off: {', '.join(self.rules.disabled()) or 'none'}; fairness ledger {ledger}; "
+                "grounding and compile errors are always checked")
 
     def describe(self) -> dict[str, Any]:
         """Plain JSON values, for the node's start-up log line."""
@@ -109,6 +130,8 @@ class GateSettings:
             "speed": self.speed, "robot_length": self.robot_length, "margin": self.margin,
             "max_duration": self.max_duration,
             "starvation_threshold": self.starvation_threshold,
+            "rules": {"on": self.rules.enabled(), "off": self.rules.disabled(),
+                      "fairness_ledger": self.fairness_ledger},
             "crowding": {"radius": self.crowding.radius, "max_robots": self.crowding.max_robots},
             "policy_file": str(self.policy_file),
             "access_policy": {
@@ -150,6 +173,8 @@ def load_settings(values: Mapping[str, Any], *, default_policy_file: Path,
     _require(v["max_duration"] > 0, f"max_duration must be > 0 s, got {v['max_duration']}")
     _require(v["starvation_threshold"] >= 1,
              f"starvation_threshold must be at least 1, got {v['starvation_threshold']}")
+    for name in _RULE_SWITCHES:
+        _require(isinstance(v[name], bool), f"{name} must be true or false, got {v[name]!r}")
     _require(1 <= v["robots"] <= 26, f"robots must be between 1 and 26, got {v['robots']}")
     robots = tuple(N.robot_ids(v["robots"]))
 
@@ -181,6 +206,8 @@ def load_settings(values: Mapping[str, Any], *, default_policy_file: Path,
         margin=float(v["margin"]),
         max_duration=float(v["max_duration"]),
         starvation_threshold=int(v["starvation_threshold"]),
+        rules=Rules(**{field: v[name] for name, field in _RULE_SWITCHES.items() if field}),
+        fairness_ledger=v["fairness_ledger"],
         crowding=CrowdingLimit(radius=float(v["crowding_radius"]), max_robots=int(v["crowding_max_robots"])),
         policy_file=policy_file,
         access_policy=AccessPolicy(by_kind={k: frozenset(t) for k, t in policy.by_kind.items()},
@@ -189,6 +216,11 @@ def load_settings(values: Mapping[str, Any], *, default_policy_file: Path,
         people_file=people_file,
         people=_read_people(people_file),
     )
+
+
+# parameter -> Rules field (None: not a rule of Rules)
+_RULE_SWITCHES = {"rule_s1": "s1", "rule_s2": "s2", "rule_s4": "s4", "rule_p1": "p1", "rule_p2": "p2",
+                  "rule_p3": "p3", "fairness_ledger": None}
 
 
 def _require(ok: bool, message: str) -> None:

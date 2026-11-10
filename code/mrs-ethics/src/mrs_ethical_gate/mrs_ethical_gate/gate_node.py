@@ -45,7 +45,8 @@ from .session import GateSession
 from .settings import PARAMETERS, REQUIRED, SettingsError, load_settings
 from .starts import TeamStateStarts, team_snapshot
 
-_ROS_TYPES = {str: Parameter.Type.STRING, int: Parameter.Type.INTEGER, float: Parameter.Type.DOUBLE}
+_ROS_TYPES = {str: Parameter.Type.STRING, int: Parameter.Type.INTEGER, float: Parameter.Type.DOUBLE,
+              bool: Parameter.Type.BOOL}
 
 
 class GateNode(Node):
@@ -55,6 +56,7 @@ class GateNode(Node):
                                  default_people_file=_config("people.yaml"))
         self.session = GateSession.from_settings(settings)
         self.get_logger().info("settings " + json.dumps(settings.describe()))
+        self.get_logger().info(settings.rules_line())
         self.verdict_pub = self.create_publisher(EthicalVerdict, N.VERDICT, qos_for(N.VERDICT))
         self.validated_pub = self.create_publisher(ValidatedPlan, N.VALIDATED_PLAN, qos_for(N.VALIDATED_PLAN))
         self.create_subscription(ProposedPlan, N.PROPOSED_PLAN, self.on_plan, qos_for(N.PROPOSED_PLAN))
