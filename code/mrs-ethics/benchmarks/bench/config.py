@@ -36,6 +36,8 @@ MANIFEST = BENCH_DIR / "manifest.csv"   # one digest per cell over all its scena
 
 # ---- the gate's settings, as config/gate.yaml ships them (a test checks) -------------------
 GATE = {"speed": 0.5, "robot_length": 0.45, "margin": 0.5, "crowding_radius": 1.5, "crowding_max_robots": 1}
+# F-2's M in the repair runs: 3, as in every report so far. The gate's default is now 2 (gate.yaml).
+STARVATION_THRESHOLD = 3
 
 # ---- timing (bench/perf.py) ------------------------------------------------------------------
 PERF_REPETITIONS = 5          # every scenario of a cell is timed this often: 200 x 5 = 1000 samples

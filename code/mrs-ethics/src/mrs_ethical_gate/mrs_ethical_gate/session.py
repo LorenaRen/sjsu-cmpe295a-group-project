@@ -78,7 +78,7 @@ class GateSession:
                  speed: float,
                  robot_length: float, margin: float = 0.5, max_duration: float = DEFAULT_MAX_DURATION,
                  access_policy: AccessPolicy = NO_ENTRY_TO_RESTRICTED,
-                 task_types: Mapping[str, TaskType] | None = None, starvation_threshold: int = 3,
+                 task_types: Mapping[str, TaskType] | None = None, starvation_threshold: int = 2,
                  people: Sequence[HumanObservation] = (), crowding: CrowdingLimit | None = None):
         if people and crowding is None:
             raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")

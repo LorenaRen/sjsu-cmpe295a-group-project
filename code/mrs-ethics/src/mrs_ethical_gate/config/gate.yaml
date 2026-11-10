@@ -20,7 +20,9 @@ mrs_ethical_gate:
     # measured, use a margin of at least 2 s with team_state.
     margin: 0.5
     max_duration: 3600.0      # P-3: longest plan allowed [s]
-    starvation_threshold: 3   # F-2: REJECTs in a row before a robot gets priority
+    # F-2: REJECTs in a row before a robot gets priority. Below Module 4's attempt cap of 3: with 3, the
+    # third REJECT ends the planning cycle before F-2 can act (rules_v1.md, F-2).
+    starvation_threshold: 2
     # S-2 (rules_v1.md): at most crowding_max_robots robots within crowding_radius [m] of one person
     # at once. PLACEHOLDERS: neither value is measured, and neither comes from a standard. N = 1
     # because with two robots a larger N could never be exceeded. R should be at least Module 6's

@@ -45,7 +45,7 @@ PARAMETERS: dict[str, tuple[type, Any, str]] = {
                                       "at a node while any part of it is over the node"),
     "margin": (float, 0.5, "each occupancy interval is widened by this much at both ends [s] (S-1, S-2)"),
     "max_duration": (float, DEFAULT_MAX_DURATION, "longest plan allowed [s] (P-3)"),
-    "starvation_threshold": (int, 3, "REJECTs in a row that make a robot starving (F-2's M)"),
+    "starvation_threshold": (int, 2, "REJECTs in a row that make a robot starving (F-2's M)"),
     "crowding_radius": (float, REQUIRED, "S-2's R: a robot this close to a person [m] is near them"),
     "crowding_max_robots": (int, REQUIRED, "S-2's N: most robots allowed near one person at once"),
     "policy_file": (str, "", "access policy and task types (YAML); empty: the package's config/policy.yaml"),

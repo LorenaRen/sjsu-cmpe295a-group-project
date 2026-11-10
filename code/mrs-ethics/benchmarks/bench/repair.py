@@ -75,7 +75,7 @@ def run_scenario(scenario: Scenario, sim_map: SimMap, max_attempts: int,
     """One scenario through the loop; on_verdict(attempt, verdict content) sees every verdict."""
     g = config.GATE
     gate = GateSession(sim_map, scenario.starts, speed=g["speed"], robot_length=g["robot_length"],
-                       margin=g["margin"], people=scenario.people,
+                       margin=g["margin"], people=scenario.people, starvation_threshold=config.STARVATION_THRESHOLD,
                        crowding=CrowdingLimit(radius=g["crowding_radius"], max_robots=g["crowding_max_robots"]))
     txn, episode = f"bench/{scenario.scenario_id}", "bench"
     planner = FakePlanner(scenario.plan, graph=sim_map.neighbors, start_nodes=scenario.starts,

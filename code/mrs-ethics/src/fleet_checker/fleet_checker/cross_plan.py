@@ -432,7 +432,7 @@ class FairnessLedger:
     """
     yields: dict[str, list[YieldRecord]] = field(default_factory=lambda: defaultdict(list))
     consecutive_rejections: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    starvation_threshold: int = 3   # F-2's M
+    starvation_threshold: int = 2   # F-2's M: below Module 4's attempt cap of 3 (rules_v1.md, F-2)
 
     def __post_init__(self):
         if self.starvation_threshold < 1:

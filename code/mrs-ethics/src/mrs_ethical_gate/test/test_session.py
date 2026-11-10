@@ -123,10 +123,18 @@ def test_approval_records_one_yield_per_resolved_conflict_and_resets_rejections(
     assert decide(session, VALID, attempt=3).ledger == ledger(0, 0, 1, 0)
 
 
-def test_six_rounds_of_the_same_conflict(session):
+def test_six_rounds_of_the_same_conflict(samples_map):
     """The run in rules_v1.md: robot_b yields until F-2 (M = 3) hands the yield to robot_a."""
+    session = GateSession(samples_map, {"robot_a": "west_s", "robot_b": "east_n"}, speed=0.5, robot_length=0.45,
+                          starvation_threshold=3)
     rounds = [list(decide(session, CONFLICT, attempt=i).result.must_replan) for i in range(6)]
     assert rounds == [["robot_b"]] * 3 + [["robot_a"]] * 3
+
+
+def test_with_the_default_threshold_f2_acts_within_three_attempts(session):
+    # M = 2: after two REJECTs in a row robot_b has priority, in attempt 3, the last of Module 4's.
+    rounds = [list(decide(session, CONFLICT, attempt=i).result.must_replan) for i in range(3)]
+    assert rounds == [["robot_b"], ["robot_b"], ["robot_a"]]
 
 
 def test_policy_rejections_do_not_count_toward_starvation(session):
@@ -369,3 +377,7 @@ def test_a_decision_keeps_no_recheck_memo(session):
     # would keep every claim and sweep of every decision of the episode alive.
     d = decide(session, CONFLICT)
     assert d.result.findings and d.result.memo is None
+
+
+def test_a_session_counts_two_rejects_in_a_row_as_starving_by_default(session):
+    assert session.starvation_threshold == 2 == session.ledger.starvation_threshold

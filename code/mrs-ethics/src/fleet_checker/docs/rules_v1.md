@@ -521,7 +521,11 @@ the starvation branch can never order robots in the opposite direction
 from R-1.
 
 - **Data:** `FairnessLedger.consecutive_rejections` (see "Updating the
-  ledger" below); M is `FairnessLedger.starvation_threshold`, default 3
+  ledger" below); M is `FairnessLedger.starvation_threshold`, default 2
+  (the gate's `starvation_threshold`, also 2).  Module 4 gives a plan 3
+  attempts (the team's implementation guide).  With M = 3 the third
+  REJECT would end the planning cycle before F-2 could act; with M = 2 a
+  robot rejected twice in a row has priority in attempt 3.
 - **Source:** project-defined (task-completion guarantee)
 
 ### Updating the ledger
@@ -564,10 +568,12 @@ Under the old rule the planner was told "robot_b: start b2 only after
 robot_a has finished a1" and "robot_a: start a1 only after robot_b has
 finished b2" in alternate rounds; a planner that keeps earlier constraints
 would end up holding both, which is a deadlock.  Under the new rule the
-yielder changes only where F-2 is meant to change it, after M = 3
-rejections in a row.  `mrs_ethical_gate/test/test_session.py`
-(`test_six_rounds_of_the_same_conflict`) runs the new column through the
-gate's session.
+yielder changes only where F-2 is meant to change it, after M rejections
+in a row (the table has M = 3; the default is now 2, which hands the
+yield over in round 3).  `mrs_ethical_gate/test/test_session.py` runs the
+new column through the gate's session with M = 3
+(`test_six_rounds_of_the_same_conflict`), and the first three rounds with
+the default M = 2 (`test_with_the_default_threshold_f2_acts_within_three_attempts`).
 
 **Known limitation.**  The yield is credited to the robot R-1 told to
 yield; the approved plan is not examined.  If the planner resolved the
@@ -963,8 +969,9 @@ tested in a plain venv.
   - *To align with Module 4:* whether Module 4 publishes the FALLBACK and
     the `planning_exhausted` event; which attempt the FALLBACK carries;
     what Module 4 does when the gate does not answer; and the attempt cap.
-    **If the cap is 3 or less, F-2 (M = 3) never acts within one planning
-    cycle**: a robot rejected 3 times in a row is put first only at the 4th
+    The team's implementation guide sets the cap at 3, so M is 2 (F-2):
+    with M = 3, F-2 would never act within one planning cycle, since a
+    robot rejected 3 times in a row would be put first only at the 4th
     check.  The count carries over to the episode's next planning cycle,
     since only an APPROVE resets it and the gate never sees the fallback.
   - *To align with Module 6:* whether its routes leave out the same

@@ -46,7 +46,7 @@ def test_defaults_check_narrow_aisle_with_two_robots():
     assert s.map_path == NARROW_AISLE
     assert s.robots == ("robot_a", "robot_b")
     assert s.start_source == "spawns"
-    assert (s.speed, s.margin, s.max_duration, s.starvation_threshold) == (0.5, 0.5, DEFAULT_MAX_DURATION, 3)
+    assert (s.speed, s.margin, s.max_duration, s.starvation_threshold) == (0.5, 0.5, DEFAULT_MAX_DURATION, 2)
 
 
 def test_speed_has_no_default():
@@ -193,3 +193,8 @@ def test_people_file_with_two_people_of_one_id_is_refused(tmp_path):
 def test_people_file_with_an_unknown_key_is_refused(tmp_path):
     with pytest.raises(SettingsError, match="name"):
         load(people_file=people_file(tmp_path, "people:\n  - {name: person_1, x: 0, y: 0}\n"))
+
+
+def test_shipped_config_sets_the_starvation_threshold_below_module_4s_attempt_cap():
+    params = yaml.safe_load(GATE_YAML.read_text())["mrs_ethical_gate"]["ros__parameters"]
+    assert params["starvation_threshold"] == 2 == PARAMETERS["starvation_threshold"][1]
