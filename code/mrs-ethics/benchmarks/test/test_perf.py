@@ -9,7 +9,7 @@ from bench.perf import Instruments, check_kwargs, measure, overhead, run_cell
 from bench.scenarios import generate
 from bench.stats import percentile, wilson
 
-from fleet_checker.adapters.team_check import check_team_plan
+from fleet_checker.adapters.team_check import ALL_RULES, check_team_plan
 from fleet_checker.adapters.verdict import to_verdict
 
 
@@ -33,10 +33,24 @@ def test_wilson_intervals():
     assert (round(lo, 4), round(hi, 4)) == (0.2366, 0.7634)
 
 
-def test_the_gate_settings_are_the_shipped_config():
+def test_the_gate_settings_are_the_shipped_config_but_for_the_speed():
+    # The benchmark keeps the speed its reports were measured at, 0.5 m/s; gate.yaml now ships
+    # 0.25 (Module 6's starting u_max). Every rule runs, with the fairness ledger at M = 3.
     shipped = yaml.safe_load((config.SRC / "mrs_ethical_gate/config/gate.yaml").read_text())
     p = shipped["mrs_ethical_gate"]["ros__parameters"]
-    assert config.GATE == {name: p[name] for name in config.GATE}
+    assert config.GATE["speed"] == 0.5
+    assert {n: v for n, v in config.GATE.items() if n != "speed"} == {n: p[n] for n in config.GATE if n != "speed"}
+
+
+def test_every_check_names_every_rule(maps, monkeypatch):
+    import functools
+    import bench.perf as perf
+    seen = []
+    monkeypatch.setattr(perf, "check_team_plan", functools.wraps(check_team_plan)(
+        lambda *a, **kw: seen.append(kw) or check_team_plan(*a, **kw)))   # keeps the signature every_rule reads
+    s = generate(maps, "narrow_aisle", 2, "high", 0)
+    measure(s, maps["narrow_aisle"], Instruments(), rep=0)
+    assert seen and all(kw["rules"] == ALL_RULES for kw in seen)
 
 
 def first(maps, map_name, n, density, *, conflict):

@@ -62,11 +62,12 @@ class OverheadPair:
 
 
 def check_kwargs(scenario: Scenario) -> dict[str, Any]:
-    """check_team_plan's settings: the gate's, and the scenario's people for S-2."""
+    """check_team_plan's settings: the gate's, every rule, and the scenario's people for S-2."""
     g = config.GATE
     return {"speed": g["speed"], "robot_length": g["robot_length"], "margin": g["margin"],
             "people": scenario.people,
-            "crowding": CrowdingLimit(radius=g["crowding_radius"], max_robots=g["crowding_max_robots"])}
+            "crowding": CrowdingLimit(radius=g["crowding_radius"], max_robots=g["crowding_max_robots"]),
+            **config.every_rule(check_team_plan)}
 
 
 class Instruments:

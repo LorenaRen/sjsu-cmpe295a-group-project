@@ -76,6 +76,7 @@ def run_scenario(scenario: Scenario, sim_map: SimMap, max_attempts: int,
     g = config.GATE
     gate = GateSession(sim_map, scenario.starts, speed=g["speed"], robot_length=g["robot_length"],
                        margin=g["margin"], people=scenario.people, starvation_threshold=config.STARVATION_THRESHOLD,
+                       **config.every_rule(GateSession, fairness_ledger=True),
                        crowding=CrowdingLimit(radius=g["crowding_radius"], max_robots=g["crowding_max_robots"]))
     txn, episode = f"bench/{scenario.scenario_id}", "bench"
     planner = FakePlanner(scenario.plan, graph=sim_map.neighbors, start_nodes=scenario.starts,
