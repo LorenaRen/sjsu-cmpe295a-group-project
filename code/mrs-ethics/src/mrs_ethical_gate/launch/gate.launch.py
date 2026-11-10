@@ -4,13 +4,17 @@
   ros2 launch mrs_ethical_gate gate.launch.py world:=aisle_bypass robots:=3   # same values as sim.launch.py
   ros2 launch mrs_ethical_gate gate.launch.py map_file:=/path/to/map.yaml use_sim_time:=false
   ros2 launch mrs_ethical_gate gate.launch.py people_file:=/path/to/people.yaml   # people for S-2
-  ros2 launch mrs_ethical_gate gate.launch.py start_source:=team_state margin:=2.0   # Module 3's positions
+  ros2 launch mrs_ethical_gate gate.launch.py start_source:=team_state margin:=3.0   # Module 3's positions
+  ros2 launch mrs_ethical_gate gate.launch.py rules_file:=<share>/config/rules_per_robot_baseline.yaml
 
 speed, margin and the other check settings are in config/gate.yaml (params_file:=... for
 another file); the access policy and task types are in config/policy.yaml. people_file is a
 launch argument, like map_file, because it belongs to the scenario; put it in no params file,
 since this argument would override it. start_source and margin, when given, replace the params
-file's: with team_state the margin should be at least 2 s until it is measured (gate.yaml).
+file's: with team_state the margin should be at least 3 s until it is measured (gate.yaml).
+rules_file, when given, is a second params file applied on top, for which rules run: config/
+rules_all.yaml (every rule and the fairness ledger) or config/rules_per_robot_baseline.yaml (the
+defaults without the cross-robot rules). The node logs the rules it runs when it starts.
 """
 from pathlib import Path
 
@@ -29,8 +33,11 @@ def _gate(context):
         replaced["start_source"] = start_source
     if margin := arg("margin").perform(context):
         replaced["margin"] = float(margin)
+    files = [arg("params_file")]
+    if rules_file := arg("rules_file").perform(context):
+        files.append(rules_file)   # after the params file: its rule switches win
     return [Node(package="mrs_ethical_gate", executable="gate", name="mrs_ethical_gate", output="screen",
-                 parameters=[arg("params_file"), {
+                 parameters=[*files, {
                      # Strings stay strings (a world called "on" or "null" would not survive YAML).
                      "world": ParameterValue(arg("world"), value_type=str),
                      "map_file": ParameterValue(arg("map_file"), value_type=str),
@@ -51,6 +58,9 @@ def generate_launch_description():
                               description="people for S-2 (YAML); empty: the package's config/people.yaml (nobody)"),
         DeclareLaunchArgument("params_file", default_value=str(config / "gate.yaml"),
                               description="speed, margin and the other check settings"),
+        DeclareLaunchArgument("rules_file", default_value="",
+                              description="which rules run, on top of params_file (config/rules_*.yaml); "
+                                          "empty: the params file's"),
         DeclareLaunchArgument("use_sim_time", default_value="true",
                               description="stamp messages with simulation time (false without a simulation)"),
         DeclareLaunchArgument("start_source", default_value="",

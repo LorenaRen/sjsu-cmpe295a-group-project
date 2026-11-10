@@ -14,10 +14,14 @@ planner has finished; its summary is the last thing it logs. No simulation is ne
 use_sim_time defaults to false here.
 
 team_state names a snapshot (dev_nodes/snapshots.py) for fake_team_state to publish; the gate
-then takes the robots' positions from /mrs/team_state, with a margin of 2 s unless margin is
+then takes the robots' positions from /mrs/team_state, with a margin of 3 s unless margin is
 given (config/gate.yaml says why). The fake planner starts 2 s later, so that the gate has a
 TeamState by then: the topic is volatile, so one published before the gate subscribed is lost.
 The fake planner's FALLBACK still holds the robots at their spawn nodes.
+
+The gate runs every rule and the fairness ledger here (rules_file defaults to config/
+rules_all.yaml), since the scenarios are there to exercise them; rules_file:= another file to run
+fewer, e.g. the gate's defaults with rules_file:=<share>/config/gate.yaml.
 """
 from pathlib import Path
 
@@ -32,7 +36,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
-TEAM_STATE_MARGIN = "2.0"   # [s] the error budget of team_state positions (config/gate.yaml)
+TEAM_STATE_MARGIN = "3.0"   # [s] the error budget of team_state positions (config/gate.yaml)
 PLANNER_DELAY_S = 2.0       # with team_state: time for the gate to get a TeamState first
 
 
@@ -42,7 +46,8 @@ def _nodes(context):
     text = {name: ParameterValue(arg(name), value_type=str) for name in ("world", "map_file", "scenario",
                                                                           "summary_file")}
     snapshot = arg("team_state").perform(context)
-    gate_args = {name: arg(name) for name in ("world", "map_file", "robots", "people_file", "use_sim_time")}
+    gate_args = {name: arg(name) for name in ("world", "map_file", "robots", "people_file", "use_sim_time",
+                                              "rules_file")}
     if snapshot:
         gate_args.update(start_source="team_state", margin=arg("margin").perform(context) or TEAM_STATE_MARGIN)
     elif margin := arg("margin").perform(context):
@@ -78,6 +83,9 @@ def generate_launch_description():
         DeclareLaunchArgument("summary_file", default_value="", description="where to write the summary (JSON)"),
         DeclareLaunchArgument("use_sim_time", default_value="false",
                               description="stamp messages with simulation time"),
+        DeclareLaunchArgument("rules_file", default_value=str(Path(get_package_share_directory("mrs_ethical_gate"))
+                                                              / "config" / "rules_all.yaml"),
+                              description="which rules the gate runs (as for gate.launch.py); default: all"),
         DeclareLaunchArgument("team_state", default_value="",
                               description="a snapshot for fake_team_state (a file, or a name in this package's "
                                           "snapshots/); empty: the gate starts robots at the spawn slots"),

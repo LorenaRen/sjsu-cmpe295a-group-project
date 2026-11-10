@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from fleet_checker.adapters.team_check import NO_ENTRY_TO_RESTRICTED
+from fleet_checker.adapters.team_check import NO_ENTRY_TO_RESTRICTED, Rules
 from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation, RegionKind, TaskType
 from fleet_checker.policy import DEFAULT_MAX_DURATION, AccessPolicy
@@ -46,7 +46,7 @@ def test_defaults_check_narrow_aisle_with_two_robots():
     assert s.map_path == NARROW_AISLE
     assert s.robots == ("robot_a", "robot_b")
     assert s.start_source == "spawns"
-    assert (s.speed, s.margin, s.max_duration, s.starvation_threshold) == (0.5, 0.5, DEFAULT_MAX_DURATION, 3)
+    assert (s.speed, s.margin, s.max_duration, s.starvation_threshold) == (0.5, 0.5, DEFAULT_MAX_DURATION, 2)
 
 
 def test_speed_has_no_default():
@@ -106,7 +106,7 @@ def test_shipped_config_sets_the_age_limit_and_the_margin_it_needs():
     assert (params["start_source"], params["team_state_max_age"]) == ("spawns", 1.0)
     assert "PLACEHOLDER" in text[text.index("# start_source team_state"):text.index("team_state_max_age:")]
     # The error budget of team_state positions, next to the margin it is for.
-    assert "at least 2 s" in text[text.index("# Each occupancy interval"):text.index("margin:")]
+    assert "at least 3 s" in text[text.index("# Each occupancy interval"):text.index("margin:")]
 
 
 def test_unknown_start_source_is_refused():
@@ -193,3 +193,67 @@ def test_people_file_with_two_people_of_one_id_is_refused(tmp_path):
 def test_people_file_with_an_unknown_key_is_refused(tmp_path):
     with pytest.raises(SettingsError, match="name"):
         load(people_file=people_file(tmp_path, "people:\n  - {name: person_1, x: 0, y: 0}\n"))
+
+
+def test_shipped_config_sets_the_starvation_threshold_below_module_4s_attempt_cap():
+    params = yaml.safe_load(GATE_YAML.read_text())["mrs_ethical_gate"]["ros__parameters"]
+    assert params["starvation_threshold"] == 2 == PARAMETERS["starvation_threshold"][1]
+
+
+# ---------------- which rules the gate runs ----------------
+
+# Every rule and the fairness ledger on, as the tests of what each rule does need (the gate's
+# defaults, in PARAMETERS and config/gate.yaml, run fewer).
+ALL_ON = {"rule_s1": True, "rule_s2": True, "rule_s4": True, "rule_p1": True, "rule_p2": True, "rule_p3": True,
+          "fairness_ledger": True}
+RULE_PARAMETERS = tuple(ALL_ON)
+
+
+def shipped(name="gate.yaml"):
+    return yaml.safe_load((PKG / "config" / name).read_text())["mrs_ethical_gate"]["ros__parameters"]
+
+
+def test_by_default_the_gate_runs_the_implementation_guides_rules():
+    # On: P-1, P-2, S-1 (R-1 by its tie-breaks). Off: S-2, S-4, P-3 and the fairness ledger.
+    s = load()
+    assert s.rules == Rules(s1=True, s2=False, s4=False, p1=True, p2=True, p3=False)
+    assert s.fairness_ledger is False
+    assert {n: shipped()[n] for n in RULE_PARAMETERS} == {n: PARAMETERS[n][1] for n in RULE_PARAMETERS}
+
+
+def test_a_rule_switch_is_true_or_false():
+    assert all(PARAMETERS[n][0] is bool for n in RULE_PARAMETERS)
+    with pytest.raises(SettingsError, match="rule_s4 must be true or false"):
+        load(rule_s4="yes")
+    assert load(**ALL_ON).rules == Rules() and load(**ALL_ON).fairness_ledger
+
+
+def test_the_settings_say_which_rules_run():
+    s = load()
+    assert s.describe()["rules"] == {"on": ["S-1", "P-1", "P-2"], "off": ["S-2", "S-4", "P-3"],
+                                     "fairness_ledger": False}
+    assert s.rules_line() == ("rules on: S-1, P-1, P-2; off: S-2, S-4, P-3; fairness ledger off (R-1 ranks by "
+                              "task type, then first arrival, then robot id); grounding and compile errors are "
+                              "always checked")
+    assert load(**ALL_ON).rules_line().startswith("rules on: S-1, S-2, S-4, P-1, P-2, P-3; off: none; fairness "
+                                                  "ledger on;")
+
+
+def test_rules_all_turns_every_rule_and_the_ledger_on():
+    assert shipped("rules_all.yaml") == ALL_ON
+
+
+def test_the_per_robot_baseline_is_the_default_without_the_cross_robot_rules():
+    baseline, cross_robot = shipped("rules_per_robot_baseline.yaml"), ("rule_s1", "rule_s2", "rule_s4")
+    assert set(baseline) == set(RULE_PARAMETERS)
+    assert all(baseline[n] is False for n in cross_robot)
+    assert {n: baseline[n] for n in RULE_PARAMETERS if n not in cross_robot} == \
+        {n: PARAMETERS[n][1] for n in RULE_PARAMETERS if n not in cross_robot}
+    assert load(**baseline).rules == Rules(s1=False, s2=False, s4=False, p1=True, p2=True, p3=False)
+
+
+def test_shipped_speed_is_module_6s_starting_u_max_as_a_placeholder():
+    text = (PKG / "config" / "gate.yaml").read_text()
+    assert shipped()["speed"] == 0.25
+    about = text[text.index("# Nominal driving speed"):text.index("speed:")]
+    assert "PLACEHOLDER" in about and "u_max" in about

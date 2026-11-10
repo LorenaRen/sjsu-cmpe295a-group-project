@@ -1,0 +1,14 @@
+# The per-robot baseline (Workbook 1's RoboGuard-style per-robot guardrail): gate.yaml's default
+# rules without the cross-robot ones. Each robot's plan is checked on its own (P-1, P-2; P-3 off,
+# as by default), and no plan is checked against another robot's (S-1, S-2, S-4 off; no ledger).
+# It differs from the default only in the cross-robot checks, so the two compare cleanly.
+#   ros2 launch mrs_ethical_gate gate.launch.py rules_file:=$(ros2 pkg prefix mrs_ethical_gate)/share/mrs_ethical_gate/config/rules_per_robot_baseline.yaml
+mrs_ethical_gate:
+  ros__parameters:
+    rule_s1: false
+    rule_s2: false
+    rule_s4: false
+    rule_p1: true
+    rule_p2: true
+    rule_p3: false
+    fairness_ledger: false

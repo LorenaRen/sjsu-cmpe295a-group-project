@@ -344,6 +344,11 @@ class TestYieldAssignment:
         # r1 is starving, so r2 must yield even though it's DELIVERY
         assert yielders == ["r2"]
 
+    def test_starvation_threshold_defaults_to_two(self):
+        """Module 4 gives a plan 3 attempts: with M = 3 the third REJECT would end the planning
+        cycle before F-2 could act on it. With M = 2 it protects the robot in attempt 3."""
+        assert FairnessLedger().starvation_threshold == 2
+
     def test_starvation_threshold_comes_from_the_ledger(self):
         """With M = 1, a single rejection is enough for F-2."""
         r1 = make_plan("r1", [("wait", "aisle_1")], task_type="service")
@@ -439,7 +444,7 @@ class TestFairnessLedger:
 
     def test_starvation_detection(self):
         """Starvation is detected after threshold rejections."""
-        ledger = FairnessLedger()
+        ledger = FairnessLedger(starvation_threshold=3)
         assert not ledger.is_starving("r1")
 
         ledger.record_rejection("r1")

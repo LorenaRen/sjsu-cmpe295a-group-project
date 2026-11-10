@@ -432,7 +432,7 @@ class FairnessLedger:
     """
     yields: dict[str, list[YieldRecord]] = field(default_factory=lambda: defaultdict(list))
     consecutive_rejections: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    starvation_threshold: int = 3   # F-2's M
+    starvation_threshold: int = 2   # F-2's M: below Module 4's attempt cap of 3 (rules_v1.md, F-2)
 
     def __post_init__(self):
         if self.starvation_threshold < 1:
@@ -558,6 +558,8 @@ def check_cross_plan_conflicts(
     crowding: CrowdingLimit | None = None,
     pass_time: float = 0.0,
     memo: ConflictMemo | None = None,
+    capacity: bool = True,
+    node_occupancy: bool = True,
 ) -> tuple[list[Violation], dict[str, list[Violation]]]:
     """Check multiple plans for cross-plan conflicts and assign yields.
 
@@ -578,6 +580,7 @@ def check_cross_plan_conflicts(
         crowding: S-2's R and N; needed when there are people
         pass_time: How long a robot takes to drive over a point (S-4): its length / speed
         memo: what a check and its rechecks share (ConflictMemo); None computes everything
+        capacity, node_occupancy: run S-1 (with edge swaps) and S-4; both by default
 
     Returns:
         Tuple of:
@@ -592,14 +595,15 @@ def check_cross_plan_conflicts(
     plans_dict = {p.robot_id: p for p in plans}
 
     # Detect capacity violations (S-1) and crowding around people (S-2)
-    conflicts = check_capacity_violations(plans, world, margin=margin, hold_final=hold_final, memo=memo)
+    conflicts = (check_capacity_violations(plans, world, margin=margin, hold_final=hold_final, memo=memo)
+                 if capacity else [])
     all_violations = capacity_conflicts_to_violations(conflicts)
     if people:
         crowded = check_crowding(plans, people, crowding, margin=margin, hold_final=hold_final, memo=memo)
         conflicts += crowded
         all_violations += crowding_conflicts_to_violations(crowded, crowding)
-    stopped = check_node_occupancy(plans, world, margin=margin, hold_final=hold_final, pass_time=pass_time,
-                                   memo=memo)
+    stopped = (check_node_occupancy(plans, world, margin=margin, hold_final=hold_final, pass_time=pass_time,
+                                    memo=memo) if node_occupancy else [])
     conflicts += stopped
     all_violations += node_conflicts_to_violations(stopped)
 

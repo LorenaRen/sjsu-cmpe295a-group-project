@@ -493,7 +493,7 @@ ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false \
 ros2 run mrs_common sample_plan_pub                               # now REJECT human_crowding
 
 # robots where /mrs/team_state says, with fake_team_state standing in for Module 3 (below)
-ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false start_source:=team_state margin:=2.0 \
+ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false start_source:=team_state margin:=3.0 \
     map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml
 ros2 run mrs_ethical_gate fake_team_state --ros-args -p snapshot:=b_in_passage \
     -p map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml    # second terminal
@@ -511,19 +511,30 @@ map `samples_world.yaml`, not in `narrow_aisle`; on `narrow_aisle` every sample 
 | `robots` | `2` | robot count; robot *i* starts at the map's spawn slot *i*, as in `sim.launch.py` |
 | `people_file` | empty | people for S-2: a YAML list of `{id, x, y}` in the map frame, each inside a zone; empty: `config/people.yaml`, which lists nobody |
 | `params_file` | `config/gate.yaml` | the check settings below |
+| `rules_file` | empty | which rules run, as a second params file on top: `config/rules_all.yaml` (every rule and the fairness ledger) or `config/rules_per_robot_baseline.yaml` (the defaults without the cross-robot rules); empty: the params file's |
 | `use_sim_time` | `true` | stamp messages with simulation time; `false` when no simulation runs |
 | `start_source` | empty | `spawns` or `team_state`; empty: the params file's (`spawns`) |
 | `margin` | empty | seconds; empty: the params file's (0.5) |
 
 `config/gate.yaml` holds `speed` (nominal driving speed in m/s, used to time each robot's plan; no
-default in the code, and the file's value is a placeholder until Module 6's speed is measured),
+default in the code; the file's 0.25 is a placeholder, Module 6's starting u_max in the team's
+implementation guide, until the speed is measured),
 `robot_length` (for S-4, two robots at one node: a robot is at a node while any part of it is over
 it, so driving over a node takes `robot_length / speed`; no default in the code either, and the file's
 0.45 m, the chassis of mrs_sim's robot model, is a placeholder), `margin`, `max_duration`, `starvation_threshold`,
 `start_source` and `team_state_max_age` (below), and S-2's `crowding_radius` (R) and
 `crowding_max_robots` (N): at most N robots within R metres of one person at once. Like `speed`, R and N
 have no default in the code, and the file's values (1.5 m, 1) are placeholders, neither measured nor
-taken from a standard. `config/policy.yaml` says which
+taken from a standard. `starvation_threshold` is 2, below Module 4's 3 attempts, so that F-2 can act
+within one planning cycle.
+
+**Which rules run**: `rule_s1`, `rule_s2`, `rule_s4`, `rule_p1`, `rule_p2`, `rule_p3` and
+`fairness_ledger`, one boolean each. The defaults are the implementation guide's: S-1, P-1 and P-2 on;
+S-2, S-4, P-3 and the fairness ledger off (without the ledger, R-1 ranks by task type, then first
+arrival, then robot id). Grounding and compile errors are always checked. `rules_file:=` applies
+another set: `config/rules_all.yaml` turns everything on, and `config/rules_per_robot_baseline.yaml` is
+the per-robot baseline, the defaults without the cross-robot rules (P-1 and P-2 only). The node logs the
+rules it runs at start-up. `config/policy.yaml` says which
 task types may enter which zones; by default no robot may enter a `restricted` zone. Parameters are
 read once at start-up: restart the node to change them. The node logs its settings as one JSON line at
 start-up and one JSON line per decision (verdict, rule ids, who must replan, fairness ledger,
@@ -574,9 +585,9 @@ is left out and logged. S-2 checks around the people the robots see (`WorldState
 person) as well as the people file's; a person in both is where the robots see them. The decision log
 lists the blocked edges and every person checked, with where the position came from.
 
-**Use a margin of at least 2 s with `team_state`** until it is measured: a robot counts as at a node up to
-0.5 m from it (1 s of driving at 0.5 m/s) and its position can be up to 1 s old, so the start times can be
-about 2 s off (`config/gate.yaml`). The decision log gives each check's snapshot age and each robot's,
+**Use a margin of at least 3 s with `team_state`** until it is measured: a robot counts as at a node up to
+0.5 m from it (2 s of driving at 0.25 m/s) and its position can be up to 1 s old, so the start times can be
+about 3 s off (`config/gate.yaml`). The decision log gives each check's snapshot age and each robot's,
 for measuring that later.
 
 `fake_team_state` is a **development node** standing in for Module 3: it publishes one snapshot file as a
@@ -595,7 +606,7 @@ never; then it exits, so that the gate's last snapshot grows too old), `episode_
 | `person_by_corridor_2` | at the spawn slots; robot_b sees the person of `test/fixtures/samples_world_people.yaml`: the same S-2 verdict as that people file gives |
 
 ```bash
-# the replan loop with positions from fake_team_state: the gate gets start_source team_state and margin 2.0
+# the replan loop with positions from fake_team_state: the gate gets start_source team_state and margin 3.0
 ros2 launch mrs_ethical_gate replan_loop.launch.py scenario:=s1_passage_no_order team_state:=at_spawns \
     map_file:=$PWD/src/fleet_checker/test/fixtures/samples_world.yaml
 ```
@@ -649,8 +660,13 @@ Scenarios (`scenarios/`; give a name or a path), all on samples_world:
 | `p2_restricted_target` | approved in round 3: robot_a's waypoint moved out of the office, then an `order_before` |
 | `s4_park_after_pass` | REJECT `node_occupied`: robot_b would park at corridor_1, which robot_a drives through; robot_b gets an `order_before` to wait until robot_a has gone by, and round 2 is approved with both targets kept |
 
-These rounds are with the gate's default margin of 0.5 s. With `team_state:=at_spawns` (margin 2.0),
-`s1_passage_no_order` takes one round more: approved in round 3, after an `order_before` at corridor_1 (S-4).
+`replan_loop.launch.py` runs the gate with every rule and the fairness ledger (`rules_file` defaults to
+`config/rules_all.yaml`), since these scenarios exercise them. With the gate's default rules S-4 is off:
+the `s4_*` scenarios are approved in round 1, and `p1_keep_clear_stop` in round 3 with robot_b parked at
+corridor_1, which robot_a has to drive through (the meeting S-4 exists to catch). These rounds are with gate.yaml's speed of 0.25 m/s and
+default margin of 0.5 s; they are the same at 0.5 m/s, the speed the tests use. With
+`team_state:=at_spawns` (margin 3.0), `s1_passage_no_order` takes one round more: approved in round 3,
+after an `order_before` at corridor_1 (S-4).
 
 It logs one JSON line per round and a summary: the outcome; for each kind of constraint and rule, how many
 it changed the plan for, noted (nothing to change, the node is kept out of that robot's tasks from then

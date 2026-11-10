@@ -1,7 +1,9 @@
 """Every parameter of the benchmarks, in one place; the report lists them all."""
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
+from typing import Any
 
 from . import SRC   # the checker's source tree: this repository's, or BENCH_SRC's
 
@@ -36,6 +38,21 @@ MANIFEST = BENCH_DIR / "manifest.csv"   # one digest per cell over all its scena
 
 # ---- the gate's settings, as config/gate.yaml ships them (a test checks) -------------------
 GATE = {"speed": 0.5, "robot_length": 0.45, "margin": 0.5, "crowding_radius": 1.5, "crowding_max_robots": 1}
+# F-2's M in the repair runs: 3, as in every report so far. The gate's default is now 2 (gate.yaml).
+STARVATION_THRESHOLD = 3
+
+
+def every_rule(fn: Any, **session: Any) -> dict[str, Any]:
+    """Arguments that make fn (check_team_plan or GateSession) run every rule, and for a session keep
+    the fairness ledger: the gate's defaults run fewer, and every report so far ran them all. A
+    checker from before the rule switches (compare.py runs old ones too) takes none and runs every
+    rule anyway, so it gets only what it accepts."""
+    accepted = inspect.signature(fn).parameters
+    out = {name: value for name, value in session.items() if name in accepted}
+    if "rules" in accepted:
+        from fleet_checker.adapters.team_check import ALL_RULES   # not in older checkers
+        out["rules"] = ALL_RULES
+    return out
 
 # ---- timing (bench/perf.py) ------------------------------------------------------------------
 PERF_REPETITIONS = 5          # every scenario of a cell is timed this often: 200 x 5 = 1000 samples

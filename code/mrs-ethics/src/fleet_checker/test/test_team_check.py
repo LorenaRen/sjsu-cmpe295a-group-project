@@ -9,7 +9,7 @@ from mrs_common.plan_schema import TeamPlan
 
 from fleet_checker.adapters.compiler import OnEdge
 from fleet_checker.adapters.sim_map import load_sim_map, spawn_starts
-from fleet_checker.adapters.team_check import check_team_plan, conflicts, reason_of
+from fleet_checker.adapters.team_check import ALL_RULES, Rules, check_team_plan, conflicts, reason_of
 from fleet_checker.cross_plan import FairnessLedger, check_cross_plan_conflicts
 from fleet_checker.crowding import CrowdingLimit
 from fleet_checker.plan import HumanObservation, Violation
@@ -443,3 +443,55 @@ def test_an_s4_conflict_whose_keeper_waits_in_the_way_is_the_keepers_to_fix(park
     result = check_team_plan(plan, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0, robot_length=ROBOT_LENGTH)
     [f] = result.findings
     assert (f.reason, f.r1_yielders, f.must_fix) == (R.NODE_OCCUPIED, ("robot_a",), ("robot_b",))
+
+
+# ---------------- which rules run (Rules) ----------------
+
+BOTH_AT_C = team(("robot_a", [task("a1", "hold_position", "c")]), ("robot_b", [task("b1", "hold_position", "c")]))
+
+
+def test_every_rule_runs_unless_the_caller_says_otherwise():
+    # The checker is a library: a call that names no rules gets the full check (fail closed).
+    assert Rules() == ALL_RULES
+    assert ALL_RULES.enabled() == ["S-1", "S-2", "S-4", "P-1", "P-2", "P-3"] and ALL_RULES.disabled() == []
+    assert Rules(s2=False, s4=False, p3=False).disabled() == ["S-2", "S-4", "P-3"]
+
+
+@pytest.mark.parametrize("rule, codes_of_it", [
+    ("s1", {"CAPACITY_EXCEEDED", "EDGE_SWAP"}), ("s2", {"HUMAN_CROWDING"}), ("s4", {"NODE_OCCUPIED"}),
+    ("p1", {"FINAL_STOP_IN_PASSTHROUGH"}), ("p2", {"REGION_ACCESS_DENIED"}), ("p3", {"MAX_DURATION_EXCEEDED"}),
+])
+def test_a_rule_switched_off_reports_nothing_and_leaves_the_others(samples_map, aisle_map, parking, rule, codes_of_it):
+    cases = {   # a plan each rule rejects
+        "s1": lambda **kw: check(aisle_map, swap_rooms(robot_b_waits=False), **kw),
+        "s2": lambda **kw: check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E], crowding=LIMIT, **kw),
+        "s4": lambda **kw: check_team_plan(BOTH_AT_C, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0,
+                                           robot_length=ROBOT_LENGTH, **kw),
+        "p1": lambda **kw: check(samples_map, sample("keep_clear_stop.json"), **kw),
+        "p2": lambda **kw: check(samples_map, sample("restricted_target.json"), **kw),
+        "p3": lambda **kw: check(samples_map, sample("valid_two_robots.json"), max_duration=30.0, **kw),
+    }
+    assert codes_of_it & set(codes(cases[rule]()))
+    off = Rules(**{rule: False})
+    for name, run in cases.items():
+        found = set(codes(run(rules=off)))
+        assert not (codes_of_it & found)
+        if name != rule:   # every other rule still finds what it finds with all of them on
+            assert found == set(codes(run())) - codes_of_it, name
+
+
+def test_compile_errors_are_reported_with_every_rule_off(samples_map):
+    plan = edited(sample("valid_two_robots.json"), lambda t: t.update(target="room_9") if t["task_id"] == "a2" else None)
+    nothing = Rules(s1=False, s2=False, s4=False, p1=False, p2=False, p3=False)
+    assert codes(check(samples_map, plan, rules=nothing)) == ["UNKNOWN_TARGET"]
+
+
+def test_a_recheck_runs_the_same_rules(parking):
+    result = check_team_plan(BOTH_AT_C, parking, {"robot_a": "w", "robot_b": "n"}, speed=1.0, robot_length=ROBOT_LENGTH,
+                             rules=Rules(s4=False))
+    assert result.approved and result.recheck(BOTH_AT_C).approved
+
+
+def test_people_need_no_limit_when_s2_is_off(aisle_map):
+    assert check(aisle_map, swap_rooms(robot_b_waits=True), people=[BY_ROOM_E], rules=Rules(s2=False)).approved
+

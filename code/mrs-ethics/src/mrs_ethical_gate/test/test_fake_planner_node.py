@@ -89,7 +89,11 @@ def loop_with(ros):
                                              Parameter("crowding_radius", value=1.5),
                                              Parameter("crowding_max_robots", value=1),
                                              Parameter("map_file", value=str(SAMPLES_WORLD)),
-                                             Parameter("policy_file", value=str(POLICY))])
+                                             Parameter("policy_file", value=str(POLICY)),
+                                             # every rule and the ledger, as replan_loop.launch.py runs them
+                                             *[Parameter(name, value=True) for name in (
+                                                 "rule_s1", "rule_s2", "rule_s4", "rule_p1", "rule_p2", "rule_p3",
+                                                 "fairness_ledger")]])
         probe = Probe()
         fake = fake_planner(scenario, **parameters)
         nodes.extend([gate, probe.node, fake])

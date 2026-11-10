@@ -43,6 +43,32 @@ from .sim_map import SimMap
 NO_ENTRY_TO_RESTRICTED = AccessPolicy(by_kind={RegionKind.RESTRICTED: frozenset()})
 
 
+_RULE_NAMES = {"s1": "S-1", "s2": "S-2", "s4": "S-4", "p1": "P-1", "p2": "P-2", "p3": "P-3"}
+
+
+@dataclass(frozen=True)
+class Rules:
+    """Which rules check_team_plan runs (rules_v1.md). Compile errors (an unknown robot or
+    target, no route, a deadlock) are always reported: without a compiled plan nothing else
+    can be checked. The default is every rule: a caller that names no rules gets the full
+    check, which fails closed. The gate chooses its own set (mrs_ethical_gate settings)."""
+    s1: bool = True   # zone capacity, with head-on swaps (EDGE_SWAP)
+    s2: bool = True   # robots crowding a person (when there are people)
+    s4: bool = True   # node occupancy
+    p1: bool = True   # final stop in a passthrough zone
+    p2: bool = True   # region access
+    p3: bool = True   # longest plan
+
+    def enabled(self) -> list[str]:
+        return [_RULE_NAMES[f] for f in _RULE_NAMES if getattr(self, f)]
+
+    def disabled(self) -> list[str]:
+        return [_RULE_NAMES[f] for f in _RULE_NAMES if not getattr(self, f)]
+
+
+ALL_RULES = Rules()
+
+
 @dataclass(frozen=True)
 class CheckSettings:
     """What check_team_plan was called with, besides the plan, map, start nodes and ledger."""
@@ -56,6 +82,7 @@ class CheckSettings:
     revision: int
     crowding: CrowdingLimit | None   # S-2's R and N; None when no people are given
     robot_length: float              # [m] along the direction of travel (S-4)
+    rules: Rules = ALL_RULES
 
 
 class Finding(NamedTuple):
@@ -165,6 +192,7 @@ def check_team_plan(
     crowding: CrowdingLimit | None = None,
     on_edges: Mapping[str, OnEdge] | None = None,
     blocked_edges: Collection[tuple[str, str]] = (),
+    rules: Rules = ALL_RULES,
 ) -> TeamCheckResult:
     """Compile a TeamPlan and run the policy and cross-plan checks on it.
 
@@ -173,18 +201,19 @@ def check_team_plan(
     route may use) go to compile_team_plan;
     margin to S-1, S-2 and S-4; access_policy and max_duration to P-2 and P-3;
     people (where they stand now) and crowding (R and N) to S-2, which runs
-    only when there are people. robot_length [m] has no default, like speed: S-4
+    only when there are people; rules, which of them run (every one by default).
+    robot_length [m] has no default, like speed: S-4
     counts a robot at a node while any part of it is over the node, for
     robot_length / speed seconds as it drives over.
     """
-    if people and crowding is None:
+    if people and crowding is None and rules.s2:
         raise ValueError("people were given without a CrowdingLimit: S-2 needs R and N")
     if not (math.isfinite(robot_length) and robot_length > 0):
         raise ValueError(f"robot_length must be a length > 0 m, got {robot_length}")
     settings = CheckSettings(speed=speed, t0=t0, margin=margin, max_duration=max_duration,
                              access_policy=access_policy, task_types=task_types,
                              plan_id=plan_id, revision=revision, crowding=crowding,
-                             robot_length=robot_length)
+                             robot_length=robot_length, rules=rules)
     blocked = tuple(sorted({tuple(sorted(e)) for e in blocked_edges}))
     return _check(team_plan, sim_map, start_nodes, dict(on_edges or {}), blocked, tuple(people), ledger,
                   settings, memo=ConflictMemo())
@@ -209,9 +238,10 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
     # (violation, robots that must fix it, the robots R-1 chose to give way)
     found: list[tuple[Violation, tuple[str, ...], tuple[str, ...]]] = []
     for robot, plan in compiled.plans.items():
-        policy = (validate_policy(plan, sim_map.world, s.access_policy, s.max_duration) if memo is None else
-                  memo.per_plan("policy", plan,
-                                lambda: validate_policy(plan, sim_map.world, s.access_policy, s.max_duration)))
+        def run_policy(plan=plan):
+            return validate_policy(plan, sim_map.world, s.access_policy, s.max_duration,
+                                   p1=s.rules.p1, p2=s.rules.p2, p3=s.rules.p3)
+        policy = run_policy() if memo is None else memo.per_plan("policy", plan, run_policy)
         for v in policy:
             if v.code == "REGION_ACCESS_DENIED" and all(compiled.is_lead_in(robot, r.step_index)
                                                         for r in v.refs):
@@ -220,7 +250,8 @@ def _check(team_plan: TeamPlan, sim_map: SimMap, start_nodes: Mapping[str, str],
 
     conflicts, yielders = check_cross_plan_conflicts(
         list(compiled.plans.values()), sim_map.world, ledger, margin=s.margin,
-        people=people, crowding=s.crowding, pass_time=s.robot_length / s.speed, memo=memo)
+        people=people if s.rules.s2 else (), crowding=s.crowding, pass_time=s.robot_length / s.speed, memo=memo,
+        capacity=s.rules.s1, node_occupancy=s.rules.s4)
     # The robots R-1 chose for each conflict, by the violation object R-1 listed (equal violations of
     # two conflicts would still be two conflicts): one pass over yielders, not one per conflict.
     chosen: dict[int, set[str]] = {}

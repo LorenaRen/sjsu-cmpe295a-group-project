@@ -1,6 +1,6 @@
 # Shared Checker — Rules v1 (Sprint 1)
 
-Status: draft v0.13, 2026-11-05
+Status: draft v0.14, 2026-11-09
 
 ---
 
@@ -157,8 +157,8 @@ edge conflict.
 Counting only `wait` and `hold_position` by name would miss the second and
 third rows.  The compiled times are the robot's middle.  Its front gets to
 a node half of `robot_length / speed` earlier, and its back leaves half of
-it later.  So driving through takes `robot_length / speed` (0.9 s at the
-gate's placeholder values, 0.45 m and 0.5 m/s), and every stop is that
+it later.  So driving through takes `robot_length / speed` (1.8 s at the
+gate's placeholder values, 0.45 m and 0.25 m/s), and every stop is that
 much longer too: a handover at a node needs the first robot's back to be
 off the node when the second one's front gets there.  `margin` widens each
 of these on both sides, as in S-1, for the error in the compiled times.
@@ -324,10 +324,11 @@ check the whole plan again.
    modelled.
 3. **Following and head-on traffic in open rooms.**  Two robots driving
    the same way through a node less than `robot_length / speed +
-   2 × margin` apart (1.9 s, a 0.95 m gap between their middles, at the
-   gate's values) are reported: conservative, as the margin is.  Two
-   robots meeting head-on in a room are reported only if they meet within
-   `robot_length / 2 + margin × speed` (0.475 m) of a node.  A meeting
+   2 × margin` apart (2.8 s, a 0.7 m gap between their middles, at the
+   gate's placeholder values: 0.45 m, 0.25 m/s, margin 0.5 s) are reported:
+   conservative, as the margin is.  Two robots meeting head-on in a room
+   are reported only if they meet within `robot_length / 2 + margin ×
+   speed` (0.35 m) of a node.  A meeting
    between two nodes of a room, which has no capacity, is the CBF's.
 4. **"Wait at another node" is not verified.**  Where the robot will
    wait is the planner's choice; the next round checks it.
@@ -521,7 +522,11 @@ the starvation branch can never order robots in the opposite direction
 from R-1.
 
 - **Data:** `FairnessLedger.consecutive_rejections` (see "Updating the
-  ledger" below); M is `FairnessLedger.starvation_threshold`, default 3
+  ledger" below); M is `FairnessLedger.starvation_threshold`, default 2
+  (the gate's `starvation_threshold`, also 2).  Module 4 gives a plan 3
+  attempts (the team's implementation guide).  With M = 3 the third
+  REJECT would end the planning cycle before F-2 could act; with M = 2 a
+  robot rejected twice in a row has priority in attempt 3.
 - **Source:** project-defined (task-completion guarantee)
 
 ### Updating the ledger
@@ -564,10 +569,12 @@ Under the old rule the planner was told "robot_b: start b2 only after
 robot_a has finished a1" and "robot_a: start a1 only after robot_b has
 finished b2" in alternate rounds; a planner that keeps earlier constraints
 would end up holding both, which is a deadlock.  Under the new rule the
-yielder changes only where F-2 is meant to change it, after M = 3
-rejections in a row.  `mrs_ethical_gate/test/test_session.py`
-(`test_six_rounds_of_the_same_conflict`) runs the new column through the
-gate's session.
+yielder changes only where F-2 is meant to change it, after M rejections
+in a row (the table has M = 3; the default is now 2, which hands the
+yield over in round 3).  `mrs_ethical_gate/test/test_session.py` runs the
+new column through the gate's session with M = 3
+(`test_six_rounds_of_the_same_conflict`), and the first three rounds with
+the default M = 2 (`test_with_the_default_threshold_f2_acts_within_three_attempts`).
 
 **Known limitation.**  The yield is credited to the robot R-1 told to
 yield; the approved plan is not examined.  If the planner resolved the
@@ -883,16 +890,18 @@ tested in a plain venv.
 - **No extrapolation.**  A robot is where the snapshot says, however old
   that is (up to `team_state_max_age`).
 - **Error budget of team_state positions.**  Two errors add to the
-  compiler's: a robot is "at" a node up to 0.5 m from it, 1 s of driving at
-  the placeholder speed of 0.5 m/s, and its position can be up to
+  compiler's: a robot is "at" a node up to 0.5 m from it, 2 s of driving at
+  the placeholder speed of 0.25 m/s, and its position can be up to
   `team_state_max_age` old, 1 s at the placeholder, during which it may
-  have moved on.  About **2 s in the worst case, more than the default
+  have moved on.  About **3 s in the worst case, more than the default
   margin of 0.5 s**.  So with `team_state`, **the margin should be at least
-  2 s until it is measured**; `replan_loop.launch.py team_state:=...` uses
-  2.0.  The price is approvals: at a 2 s margin, mrs_common's
-  `valid_two_robots`, approved at 0.5 s from the spawn slots, is rejected:
-  its robots drive through corridor_1 3 s apart, and each occupies it for
-  4.9 s (S-4).  The decision log gives the
+  3 s until it is measured**; `replan_loop.launch.py team_state:=...` uses
+  3.0.  The price is approvals: with every rule on, mrs_common's
+  `valid_two_robots`, approved at a 0.5 s margin from the spawn slots, is
+  rejected at 3 s (S-4, corridor_1; at 0.5 m/s it already was at 2 s: its
+  robots drive through corridor_1 3 s apart, and each occupies it for
+  4.9 s).  With the gate's default rules, S-4 is off and it is approved.
+  The decision log gives the
   snapshot's age and each robot's for every check, for measuring this
   later.
 - **Times.**  Plans are compiled from t0 = 0, i.e. relative to the
@@ -912,7 +921,7 @@ tested in a plain venv.
   (no default; `config/gate.yaml` holds a placeholder until Module 6's
   speed is measured), `robot_length` (for S-4; no default either, and the
   file's 0.45 m is a placeholder), `margin`, `max_duration`, `starvation_threshold`,
-  `policy_file`, and for S-2 `crowding_radius` (R) and
+  the rule switches (below), `policy_file`, and for S-2 `crowding_radius` (R) and
   `crowding_max_robots` (N), which have no default either
   (`config/gate.yaml` holds placeholders) and `people_file`.  The access
   policy and task types are a YAML file (`config/policy.yaml`) because ROS
@@ -927,6 +936,29 @@ tested in a plain venv.
   where that came from, "file" or the robot whose report counted).
   `gate.launch.py` takes `start_source` and `margin` too, which replace the
   params file's when given.
+- **Which rules run.**  One boolean parameter per rule, `rule_s1`,
+  `rule_s2`, `rule_s4`, `rule_p1`, `rule_p2`, `rule_p3`, and
+  `fairness_ledger`.  Grounding and compile errors are always checked.
+  - *The gate's defaults* (the parameter table and `config/gate.yaml`) are
+    the team implementation guide's: S-1 (with R-1 choosing who gives
+    way), P-1 and P-2 on; S-2, S-4, P-3 and the fairness ledger off.
+  - *Without the ledger*, R-1 ranks robots by task type, then first
+    arrival, then robot id (what an empty ledger gives), and nothing is
+    recorded; the decision log's ledger is empty.
+  - *The checker library* (`check_team_plan(rules=...)`, and
+    `GateSession` when built directly) runs every rule by default: a
+    caller that names none gets the full check, which fails closed.  The
+    benchmarks and the rule tests run every rule explicitly.
+  - *Other sets* come as a second params file, `gate.launch.py
+    rules_file:=...`: `config/rules_all.yaml` (every rule and the ledger;
+    `replan_loop.launch.py` uses it by default, since the fake planner's
+    scenarios exercise them) and `config/rules_per_robot_baseline.yaml`
+    (the per-robot baseline: the defaults without the cross-robot rules,
+    so only P-1 and P-2; it differs from the default in the cross-robot
+    checks alone, so the two compare cleanly).
+  - The node logs the rules it runs at start-up, e.g. "rules on: S-1, P-1,
+    P-2; off: S-2, S-4, P-3; fairness ledger off (...); grounding and
+    compile errors are always checked".
 - **fake_team_state** (`mrs_ethical_gate/dev_nodes`, a development node,
   not Module 3) publishes one snapshot file (`snapshots/`) as a TeamState
   at 2 Hz, every stamp the node clock now, with the file's blocked edges
@@ -963,8 +995,9 @@ tested in a plain venv.
   - *To align with Module 4:* whether Module 4 publishes the FALLBACK and
     the `planning_exhausted` event; which attempt the FALLBACK carries;
     what Module 4 does when the gate does not answer; and the attempt cap.
-    **If the cap is 3 or less, F-2 (M = 3) never acts within one planning
-    cycle**: a robot rejected 3 times in a row is put first only at the 4th
+    The team's implementation guide sets the cap at 3, so M is 2 (F-2):
+    with M = 3, F-2 would never act within one planning cycle, since a
+    robot rejected 3 times in a row would be put first only at the 4th
     check.  The count carries over to the episode's next planning cycle,
     since only an APPROVE resets it and the gate never sees the fallback.
   - *To align with Module 6:* whether its routes leave out the same

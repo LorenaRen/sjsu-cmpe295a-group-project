@@ -103,3 +103,18 @@ def test_situations_are_paired_with_what_the_fake_planner_did_round_by_round():
          "changed": 1, "noted": 0, "not_applied": 0})
     # a checker from before VerdictContent.cases (compare.py runs old ones too): no situation
     assert {c["case"] for c in case_counts(rounds, [None, None])} == {"-"}
+
+
+def test_the_repair_runs_keep_every_rule_and_f2_at_three_as_in_the_reports(maps, monkeypatch):
+    # The gate's defaults run fewer rules and M = 2 now (gate.yaml); the benchmark keeps every rule,
+    # the fairness ledger and M = 3, comparable with its reports.
+    from fleet_checker.adapters.team_check import ALL_RULES
+    import functools
+    import bench.repair as repair
+    seen = []
+    real = repair.GateSession
+    monkeypatch.setattr(repair, "GateSession", functools.wraps(real)(
+        lambda *a, **kw: seen.append(kw) or real(*a, **kw)))   # keeps the signature every_rule reads
+    run_scenario(generate(maps, "narrow_aisle", 2, "high", 0), maps["narrow_aisle"], max_attempts=5)
+    assert config.STARVATION_THRESHOLD == 3 and [kw["starvation_threshold"] for kw in seen] == [3]
+    assert [(kw["rules"], kw["fairness_ledger"]) for kw in seen] == [(ALL_RULES, True)]
