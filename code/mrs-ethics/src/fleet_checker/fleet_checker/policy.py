@@ -164,10 +164,17 @@ def validate_policy(
     world: WorldMap,
     access_policy: AccessPolicy | None = None,
     max_duration: float = DEFAULT_MAX_DURATION,
+    *,
+    p1: bool = True,
+    p2: bool = True,
+    p3: bool = True,
 ) -> list[Violation]:
-    """Run all policy checks on a single plan."""
+    """Run the policy checks on a single plan: all of them, unless some are switched off."""
     violations: list[Violation] = []
-    violations.extend(check_final_stop_in_passthrough(plan, world))
-    violations.extend(check_region_access(plan, world, access_policy))
-    violations.extend(check_max_duration(plan, max_duration))
+    if p1:
+        violations.extend(check_final_stop_in_passthrough(plan, world))
+    if p2:
+        violations.extend(check_region_access(plan, world, access_policy))
+    if p3:
+        violations.extend(check_max_duration(plan, max_duration))
     return violations
