@@ -13,7 +13,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | Module | Package(s) | Status | What you can do with it |
 |---|---|---|---|
 | 0 Repository and containers | `environment.yml` | partly done — conda env file exists; Docker image not started | Create the team conda env from one file (§2) |
-| 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 118 tests (optional camera topics added Oct 28) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
+| 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 122 tests (optional camera topics Oct 28; DialogueTurn agreement protocol Nov 4) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
 | 4 LLM planner | `mrs_llm_planner` | — | — |
@@ -141,7 +141,7 @@ path that `colcon test` needs; details in Troubleshooting). `colcon test` is for
 
 ```bash
 cd src/mrs_common
-pytest -q            # all tests: expect 115 passed
+pytest -q            # all tests: expect 122 passed
 pytest -q -rs        # also print why anything was skipped
 pytest -q test/test_plan_schema.py          # one file
 pytest -q -k round_trip                     # tests whose name matches
@@ -263,7 +263,7 @@ so Module 11 can count them:
 ```python
 from mrs_common import reasons as R
 
-R.LLM_TIMEOUT, R.LLM_ERROR, R.LLM_MALFORMED, R.PLANNING_EXHAUSTED        # planner (Module 4)
+R.LLM_TIMEOUT, R.LLM_ERROR, R.LLM_MALFORMED, R.NO_AGREEMENT, R.PLANNING_EXHAUSTED   # planner (Module 4)
 R.CAPACITY_EXCEEDED, R.EDGE_SWAP, R.HUMAN_CROWDING, R.NODE_OCCUPIED, R.FINAL_STOP_IN_PASSTHROUGH,
 R.REGION_ACCESS_DENIED, R.MAX_DURATION_EXCEEDED, R.UNKNOWN_ROBOT, R.UNKNOWN_TARGET, R.DEPENDENCY_DEADLOCK    # shared checker (Module 5)
 R.EDGE_BLOCKED, R.NO_ROUTE, R.ROBOT_STUCK, R.TASK_TIMEOUT               # executor (Module 6)
@@ -273,6 +273,9 @@ R.EPISODE_TIMEOUT                                                       # runner
 R.detail(R.EDGE_BLOCKED, edge="corridor_1--room_3")   # {"reason": "edge_blocked", "edge": ...}
 ```
 
+`R.NO_AGREEMENT`: a dialogue ended after 3 rounds without every agent accepting one plan; the attempt is
+used up and nothing goes to the gatekeeper.
+
 Use `R.detail(...)` as an EpisodeEvent's `detail`, the bare code as `TaskStatus.detail` for failed or
 timed-out tasks, and as `hold_all_plan(reason=...)`. Need a new code? Add it to `reasons.py` and this list.
 
@@ -281,7 +284,8 @@ timed-out tasks, and as `hold_all_plan(reason=...)`. Need a new code? Add it to 
 ```python
 from mrs_common.convert import (make_proposed_plan, plan_from_msg, make_verdict,
                                 constraints_from_verdict, make_validated_plan,
-                                make_dialogue_turn, make_task_status, make_episode_event,
+                                make_turn_prompt, make_proposal, make_agreement, make_discussion,
+                                make_task_status, make_episode_event,
                                 world_state_to_summary)
 from mrs_common.ids import new_episode_id
 from mrs_common import reasons as R
@@ -301,7 +305,7 @@ ok = make_validated_plan(plan, transaction_id=msg.transaction_id, episode_id=ep,
 
 # planner, on receiving the verdict
 constraints = constraints_from_verdict(v)
-plan_again  = plan_from_msg(ok)                 # works for ProposedPlan, ValidatedPlan, DialogueTurn
+plan_again  = plan_from_msg(ok)                 # works for ProposedPlan, ValidatedPlan, DialogueTurn (proposals)
 
 # executor / runner
 make_task_status(transaction_id=msg.transaction_id, episode_id=ep, robot_id="robot_a",
@@ -323,14 +327,42 @@ kinds (`restricted`, `keep_clear`, `narrow`) come from the semantic map, not fro
 Pass `node=self` so stamps use the node clock (simulation time when `use_sim_time:=true`).
 Builders reject unknown verdicts, task states and event kinds.
 
+#### Dialogue turns (Module 4)
+
+All negotiation travels on `/mrs/dialogue` as `DialogueTurn`s; every agent and the coordinator receive
+every turn. Each turn has a `kind`:
+
+| kind | Sent by | Carries |
+|---|---|---|
+| `prompt` | the coordinator (`speaker_id` "coordinator") | `next_speaker`: the agent whose turn it is; the prompt that opens an attempt also carries the mission and, after a REJECT, the constraints in `text` |
+| `proposal` | an agent, when named | `plan_json`: the plan it proposes; a new proposal replaces the previous one |
+| `agreement` | an agent, when named | nothing but optional `text`: it accepts the latest proposal of this attempt unchanged |
+| `discussion` | an agent, when named | `text` only |
+
+The dialogue succeeds when every agent has accepted the same proposal (the proposer counts as accepting
+its own). The coordinator mints `transaction_id` when a planning cycle starts and keeps it for every attempt.
+
+```python
+ids = dict(episode_id=ep, transaction_id=tx, attempt=0)
+
+make_turn_prompt(**ids, round=1, next_speaker="robot_a", text="Mission: ...", node=self)   # coordinator
+make_proposal(**ids, round=1, speaker_id="robot_a", plan=plan, text="I go first.", node=self)
+make_agreement(**ids, round=1, speaker_id="robot_b", node=self)
+make_discussion(**ids, round=2, speaker_id="robot_b", text="corridor_2 looks busy", node=self)
+```
+
+The helpers (and the general `make_dialogue_turn`) raise `ValueError` for a turn that breaks the protocol:
+an unknown kind, a proposal without a plan, an agreement with a plan, a prompt not from the coordinator or
+without `next_speaker`, or an agent turn that names a next speaker. The old `agree` field is gone.
+
 #### Messages and topics
 
 | Message | Topic | Published by |
 |---|---|---|
 | `WorldState` (+ `PerceivedEntity`) | `/<robot>/world_state` | world state node (Module 3) |
 | `TeamState` | `/mrs/team_state` | world state node |
-| `DialogueTurn` | `/mrs/dialogue` | each LLM agent (Module 4) |
-| `ProposedPlan` | `/mrs/proposed_plan` | planner |
+| `DialogueTurn` | `/mrs/dialogue` | each LLM agent and the coordinator (Module 4) |
+| `ProposedPlan` | `/mrs/proposed_plan` | coordinator (Module 4) |
 | `EthicalVerdict` | `/mrs/verdict` | gatekeeper (Module 5) |
 | `ValidatedPlan` | `/mrs/validated_plan` | gatekeeper |
 | `TaskStatus` | `/mrs/task_status` | executor (Module 6) |
@@ -741,6 +773,14 @@ Interfaces are agreed in week 1 and frozen in week 3 (tag `interfaces-v1`).
 - In `.msg` files, never put a comment after a string constant and never use `=` in a comment:
   both are read as part of a constant.
 
+Change log:
+
+- **Nov 4 — `DialogueTurn`** (PR #14). `agree` is replaced by `kind` (`prompt` / `proposal` / `agreement` /
+  `discussion`) and `next_speaker` is added, so an agent can propose without agreeing and the coordinator
+  can name the next speaker (Module 4 agreement protocol). `make_dialogue_turn` changed accordingly and
+  gained the helpers `make_turn_prompt`, `make_proposal`, `make_agreement`, `make_discussion`;
+  `R.NO_AGREEMENT` was added. No node used the message yet. After pulling: `colcon build`, then `pytest`.
+
 ---
 
 ## 7. Troubleshooting
@@ -764,5 +804,6 @@ Interfaces are agreed in week 1 and frozen in week 3 (tag `interfaces-v1`).
 | Gazebo or bridge processes left over after Ctrl-C | a launch was killed hard | `pkill -f "gz sim"; pkill -f parameter_bridge; pkill -f static_transform_publisher` |
 | `gz sdf -k` warns `gz_frame_id ... not defined in SDF` | Gazebo-specific tag, read by the sensors | ignore |
 | A new world fails `test_nodes_and_edges_clear_of_walls` | a node or edge is too close to a wall | move the node, or widen the gap in the `.sdf` |
+| `AttributeError: ... DialogueTurn ... 'kind'` or `unexpected keyword 'agree'` | built against the old `DialogueTurn` | `colcon build --packages-up-to mrs_common`, then `source install/setup.zsh` |
 
 Still stuck: run `ros2 run mrs_common check_interfaces` and `pytest -q -rs`, and paste both outputs.
