@@ -1,0 +1,53 @@
+{
+  "_comment": "backend fake: Mission: 'robot_a: go to room_e. robot_b: go to room_w.' robot_b's part does not wait for robot_a: both robots drive into the one-lane aisle at once; the gate rejects it (S-1) and every robot holds.",
+  "robot_a": [
+    {
+      "kind": "proposal",
+      "text": "I cross the aisle",
+      "plan": {
+        "schema_version": "1.1",
+        "rationale": "my part",
+        "assignments": [
+          {
+            "robot_id": "robot_a",
+            "tasks": [
+              {
+                "task_id": "a1",
+                "action": "navigate",
+                "target": "room_e",
+                "priority": 1,
+                "justification": "mission",
+                "depends_on": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "robot_b": [
+    {
+      "kind": "proposal",
+      "text": "I cross the aisle too",
+      "plan": {
+        "schema_version": "1.1",
+        "rationale": "my part",
+        "assignments": [
+          {
+            "robot_id": "robot_b",
+            "tasks": [
+              {
+                "task_id": "b1",
+                "action": "navigate",
+                "target": "room_w",
+                "priority": 1,
+                "justification": "mission",
+                "depends_on": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

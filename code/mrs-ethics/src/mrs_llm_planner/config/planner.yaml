@@ -1,0 +1,52 @@
+# Module 4 planner settings (mrs_llm_planner.settings lists every parameter with its description).
+# planner.launch.py passes world, robots, use_sim_time and robot_id; anything here can be overridden
+# by launch arguments or the scenario runner.
+#
+# "/**" applies to every node: the coordinator and the agents (one per robot, each in its robot's
+# namespace, e.g. /robot_a/mrs_agent). The coordinator reads backend and model for
+# ProposedPlan.model_name; only the agents call the LLM.
+/**:
+  ros__parameters:
+    # The rules the agents are told. Keep them the rules the gate runs (mrs_ethical_gate
+    # config/gate.yaml: rule_s1, rule_p1, rule_p2 by default), or "gate vs. prompting alone" is unfair.
+    rules: "S-1,P-1,P-2"
+    max_rounds: 3
+    # LLM backend: ollama (a local model; the team's choice: phi3.5), fake (scripted, no network),
+    # openai, anthropic, or openai_compatible (e.g. a vLLM server on the HPC cluster; set base_url).
+    # Cloud API keys come from the environment or secrets_file, never from this file.
+    # Ollama: `ollama pull phi3.5`, and the Ollama app (or `ollama serve`) running.
+    backend: ollama
+    model: phi3.5
+    run_id: dev
+    log_file: llm_log.sqlite        # LLM calls (agents) and one row per planning cycle (coordinator)
+    # A turn is at most (1 + max_repairs) LLM calls; the coordinator checks turn_timeout_s against it.
+    llm_timeout_s: 60.0
+    max_repairs: 1                  # repair calls when a reply cannot be used
+
+/**/mrs_agent:
+  ros__parameters:
+    base_url: ""                    # empty: the backend's default (ollama: http://localhost:11434)
+    api_key_env: ""
+    secrets_file: ""                # empty: $MRS_SECRETS, else .env in the working directory
+    temperature: 0.7                # fixed for an experiment
+    constrained_output: true        # the model must follow the reply schema while generating
+    repair_temperature: 0.2         # repairs are careful, not creative
+    # Tell the agents where two robots' routes cross a capacity-1 zone with no order between them.
+    # This is rule S-1 checked for the agents in advance, so the gate catches less: record whether it
+    # was on in every experiment, and turn it off to compare prompting alone with the gate.
+    conflict_hints: true
+    llm_max_retries: 3
+    max_tokens: 2000
+    num_ctx: 8192                   # ollama: context window; the system prompt alone is ~1,500 tokens
+    fake_script_file: ""            # backend fake: e.g. this package's config/fake_narrow_aisle.json
+
+mrs_coordinator:
+  ros__parameters:
+    # Wall-clock deadlines (not sim time): LLM calls do not slow down with the simulation.
+    # turn_timeout_s must exceed a whole turn: (1 + max_repairs) x llm_timeout_s.
+    turn_timeout_s: 150.0           # only a crashed agent hits this: failed turns are reported at once
+    cycle_timeout_s: 300.0          # hard limit for a whole planning cycle, verdict included
+    verdict_timeout_s: 30.0
+    pause_world: false              # true needs the ros_gz ControlWorld service bridged (user guide)
+    world_control_service: ""       # empty: /world/<world>/control
+    episode_id: ""                  # empty: a new one at start-up

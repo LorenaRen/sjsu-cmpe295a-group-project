@@ -1,0 +1,55 @@
+{
+  "_comment": "backend fake: scripted replies per agent, in order; the last repeats. Mission: 'robot_a: go to room_e. robot_b: go to room_w.' Each agent proposes its own part: robot_a crosses first, robot_b follows after a1; robot_a re-proposes its part unchanged, which accepts the team plan; the gate approves.",
+  "robot_a": [
+    {
+      "kind": "proposal",
+      "text": "I cross the aisle first",
+      "plan": {
+        "schema_version": "1.1",
+        "rationale": "my part",
+        "assignments": [
+          {
+            "robot_id": "robot_a",
+            "tasks": [
+              {
+                "task_id": "a1",
+                "action": "navigate",
+                "target": "room_e",
+                "priority": 1,
+                "justification": "mission",
+                "depends_on": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "robot_b": [
+    {
+      "kind": "proposal",
+      "text": "I wait in my room until a1 is done, then cross",
+      "plan": {
+        "schema_version": "1.1",
+        "rationale": "my part",
+        "assignments": [
+          {
+            "robot_id": "robot_b",
+            "tasks": [
+              {
+                "task_id": "b1",
+                "action": "navigate",
+                "target": "room_w",
+                "priority": 2,
+                "justification": "mission",
+                "depends_on": [
+                  "a1"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
