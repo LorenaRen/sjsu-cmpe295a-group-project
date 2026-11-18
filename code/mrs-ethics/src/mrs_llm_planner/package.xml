@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mrs_llm_planner</name>
+  <version>0.1.0</version>
+  <description>Module 4: one LLM agent per robot and a coordinator that runs their dialogue and hands the agreed plan to the gate.</description>
+  <maintainer email="team@example.com">MRS Ethics Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>mrs_msgs</exec_depend>
+  <exec_depend>mrs_common</exec_depend>
+  <exec_depend>mrs_sim</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-pydantic</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- pause_world only; the node runs without it -->
+  <exec_depend>ros_gz_interfaces</exec_depend>
+
+  <!-- the end-to-end test runs the real gate -->
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>mrs_ethical_gate</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
