@@ -16,7 +16,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 122 tests (optional camera topics Oct 28; DialogueTurn agreement protocol Nov 4) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
-| 4 LLM planner | `mrs_llm_planner` | — | — |
+| 4 LLM planner | `mrs_llm_planner` | **first version** — 134 tests (Nov 17); one LLM agent per robot (default: phi3.5 on a local Ollama; OpenAI, Anthropic and vLLM also supported) and a coordinator without an LLM; one dialogue per mission, no replanning; tested live with phi3.5 and the gate | Send a mission, watch the robots' agents agree on a team plan on `/mrs/dialogue`, hand it to the gate; every robot holds when no plan is approved; summarize runs (§4.4) |
 | 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 211 gate + 342 checker tests (Nov 4); APPROVE / REJECT; robots start at the spawn slots, or where `/mrs/team_state` says, with its blocked edges and the people the robots see (tested with a stand-in for Module 3); people (S-2) also from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
 | 7 Recording | `mrs_telemetry` | — | — |
@@ -334,13 +334,13 @@ every turn. Each turn has a `kind`:
 
 | kind | Sent by | Carries |
 |---|---|---|
-| `prompt` | the coordinator (`speaker_id` "coordinator") | `next_speaker`: the agent whose turn it is; the prompt that opens an attempt also carries the mission and, after a REJECT, the constraints in `text` |
-| `proposal` | an agent, when named | `plan_json`: the plan it proposes; a new proposal replaces the previous one |
-| `agreement` | an agent, when named | nothing but optional `text`: it accepts the latest proposal of this attempt unchanged |
-| `discussion` | an agent, when named | `text` only |
+| `prompt` | the coordinator (`speaker_id` "coordinator") | `next_speaker`: the agent whose turn it is; the first prompt also carries the mission, each robot's goal and where the robots are in `text` |
+| `proposal` | an agent, when named | `plan_json`: the team plan with the agent's own part (its robot's tasks) merged in; only the speaker's own assignment counts |
+| `agreement` | an agent, when named | nothing but optional `text`: it accepts the current team plan |
+| `discussion` | an agent, when named | `text` only; also how an agent says it skips its turn ("I skip this turn: ...") |
 
-The dialogue succeeds when every agent has accepted the same proposal (the proposer counts as accepting
-its own). The coordinator mints `transaction_id` when a planning cycle starts and keeps it for every attempt.
+How Module 4 uses these (parts, versions, acceptance) is in §4.4. The coordinator mints `transaction_id`
+when a mission arrives; `attempt` is always 0 for now (one dialogue per mission).
 
 ```python
 ids = dict(episode_id=ep, transaction_id=tx, attempt=0)
@@ -557,8 +557,8 @@ it, so driving over a node takes `robot_length / speed`; no default in the code 
 `start_source` and `team_state_max_age` (below), and S-2's `crowding_radius` (R) and
 `crowding_max_robots` (N): at most N robots within R metres of one person at once. Like `speed`, R and N
 have no default in the code, and the file's values (1.5 m, 1) are placeholders, neither measured nor
-taken from a standard. `starvation_threshold` is 2, below Module 4's 3 attempts, so that F-2 can act
-within one planning cycle.
+taken from a standard. `starvation_threshold` is 2, so that F-2 can act within one planning cycle once
+Module 4 replans; for now Module 4 makes one plan per mission (§4.4), so F-2 does not come into play.
 
 **Which rules run**: `rule_s1`, `rule_s2`, `rule_s4`, `rule_p1`, `rule_p2`, `rule_p3` and
 `fairness_ledger`, one boolean each. The defaults are the implementation guide's: S-1, P-1 and P-2 on;
@@ -590,8 +590,8 @@ start-up and one JSON line per decision (verdict, rule ids, who must replan, fai
 - People come from a file and, with `team_state`, from what the robots see; everyone is taken to stand
   still. S-2 measures straight-line distance, through walls.
 - No MODIFY: the gate never repairs a plan itself.
-- Assumed, to confirm with Module 4: FALLBACK plans (`hold_all_plan`) go to `/mrs/validated_plan`
-  directly, not through the gate. The fake planner (below) does it that way.
+- FALLBACK plans (`hold_all_plan`) go to `/mrs/validated_plan` directly, not through the gate:
+  confirmed, Module 4's coordinator does it that way (§4.4), and so does the fake planner (below).
 
 Tests: `cd src/fleet_checker && pytest -q` and `cd src/mrs_ethical_gate && pytest -q`. Both run without
 ROS, for example in a plain venv; the 23 tests in `test_gate_node.py`, `test_fake_planner_node.py` and
@@ -677,7 +677,7 @@ far the constraints alone guide a replan:
 | `custom` | not applied: it is text for an LLM |
 
 A REJECT it can act on gives the next attempt (same `transaction_id`, `attempt` + 1). When it can change
-nothing (stuck), or after `max_attempts` plans (exhausted; 5, a placeholder until Module 4's cap is known),
+nothing (stuck), or after `max_attempts` plans (exhausted; 5; Module 4 itself makes one plan per mission for now),
 it publishes `hold_all_plan` on `/mrs/validated_plan` itself, as `FALLBACK`, with a `planning_exhausted`
 EpisodeEvent: the way Module 4 is assumed to, not through the gate (`rules_v1.md`, "Module 5 gate").
 
@@ -723,6 +723,135 @@ planner. One command reruns everything, from the repository root:
 Scenarios come from committed seeds and are checked against `benchmarks/manifest.csv`.
 `benchmarks/compare.py` compares two versions of the checker: whether their verdicts are identical,
 and how long each takes, cell by cell, in turns. See `benchmarks/README.md`.
+
+### 4.4 Module 4 — LLM planner (`mrs_llm_planner`)
+
+One LLM agent per robot and a coordinator with no LLM. Each agent proposes only its own robot's part;
+the parts together form one `TeamPlan`. When every agent has accepted it, the coordinator sends it to
+the gate on `/mrs/proposed_plan`. There is one dialogue per mission and no replanning: if no plan is
+approved, the coordinator publishes `hold_all_plan` as a `FALLBACK` ValidatedPlan (every robot holds)
+and a `planning_exhausted` EpisodeEvent. No interface changed for this module.
+
+#### Running it
+
+The default LLM is phi3.5 on a local [Ollama](https://ollama.com) server. Once:
+
+```bash
+ollama pull phi3.5          # keep the Ollama app running (or `ollama serve`)
+colcon build --packages-up-to mrs_llm_planner    # also builds mrs_sim, fleet_checker, mrs_ethical_gate
+```
+
+Then, in four sourced terminals (without Gazebo, pass `use_sim_time:=false` to the gate and the planner:
+nothing publishes `/clock`, and the deadlines would never run):
+
+```bash
+ros2 launch mrs_ethical_gate gate.launch.py use_sim_time:=false                 # 1: the gate
+ros2 launch mrs_llm_planner planner.launch.py use_sim_time:=false               # 2: coordinator + one agent per robot
+ros2 topic echo /mrs/dialogue --full-length --field text                        # 3: the dialogue (words only)
+ros2 topic pub --once /mrs/mission std_msgs/msg/String \
+  "{data: 'robot_a: go to room_e. robot_b: go to room_w. (run 1)'}" \
+  --qos-durability transient_local --qos-reliability reliable                   # 4: a mission
+```
+
+- `world` and `robots` must be the same for the simulation, the gate and the planner (nothing checks it).
+- A mission text the planner has already planned is ignored: change it, e.g. `(run 2)`.
+- Result: terminal 2 logs `submitted`, then `cycle_done {"outcome": "approved", ...}` or a fallback with
+  its cause. The plan the robots get: `ros2 topic echo /mrs/validated_plan mrs_msgs/msg/ValidatedPlan
+  --qos-durability transient_local --qos-reliability reliable`. `/mrs/verdict` is not latched: start
+  `ros2 topic echo /mrs/verdict` before sending the mission.
+- Other backends: `backend:=openai|anthropic model:=<name>` (key in `OPENAI_API_KEY` /
+  `ANTHROPIC_API_KEY`, from the environment or a `.env` file in the working directory, never in a
+  config file), or `backend:=openai_compatible` with `base_url` in a params file (e.g. vLLM on the HPC
+  cluster). Ollama on another machine: set `base_url`, e.g. `http://gpu-node:11434`.
+- No LLM at all: `backend:=fake` (agents only discuss), `fake_script:=narrow_aisle` (scripted, APPROVE)
+  or `fake_script:=narrow_aisle_reject` (scripted, the gate rejects, every robot holds).
+
+#### Missions and goals
+
+`/mrs/mission` is a `std_msgs/String`: `robot_a: go to room_e. robot_b: go to room_w.`, or JSON
+`{"text": "...", "goals": {"robot_a": "room_e", "robot_b": "room_w"}}`. A goal names a room (the robot
+must end at any node in it: `room_e`, `room_e_n` or `room_e_s`) or a single node (exactly there). A
+robot or place that does not exist refuses the mission (`mission refused, not planning` in the log);
+use node names, not phrases like "the east room". Text without any `go to` plans with no goals checked.
+
+#### How the dialogue works
+
+1. The coordinator opens with the mission, the `Goals:` line and `Robots now:` (from `/mrs/team_state`;
+   the spawn positions until Module 3 publishes it). Then it names the speakers in a fixed order:
+   robot_a, robot_b, ... per round, at most `max_rounds` (3) rounds.
+2. In its turn an agent sends one reply: a **proposal** of its own robot's tasks (task ids start with
+   its letter: `a1`, `a2`), an **agreement** with the current team plan, or a **discussion**.
+3. The team plan is every robot's latest part. A changed part makes a new version that everyone must
+   accept again; proposing a part counts as accepting the plan with it; re-proposing an unchanged part
+   counts as accepting. The plan is agreed when every robot has a part, the merged plan is valid, and
+   everyone has accepted it. It goes to the gate at once.
+4. Every turn shows the agent the current team plan, each robot's tasks with their timing
+   (`b1 navigate room_w (starts after a1)`, `a1 wait room_e_n (drives there now, then waits for b1)`),
+   each task's route (the shortest path) and, with `conflict_hints`, any two robots crossing a
+   capacity-1 zone at the same time (`CONFLICT: ...`). Only tasks count, not what an agent writes.
+
+To let a teammate go first, a robot's **navigate** task gets a `depends_on` on the teammate's task: the
+robot stays where it is until that task is done. A **wait** task drives to its target first and only
+then waits, so it does not keep a robot out of a zone (this is how the gate times it too).
+
+**Each agent checks its own reply** before publishing it: the format, its own robot, places on the
+map, task ids and dependencies that fit the teammates' parts, and that its last task ends at its goal.
+A reply that fails gets `max_repairs` (1) repair calls with the exact problem. If it still fails, or the
+LLM times out or errors, the agent says so instead of going silent ("I skip this turn: ...") and the
+next robot speaks.
+
+**Planning ends** approved, or with every robot holding when: the gate rejects (`rejected`), no
+agreement after 3 rounds (`no_agreement`), no verdict within 30 s (`no_verdict`), an agent node crashed
+(nothing within `turn_timeout_s`, `llm_timeout`), or the cycle took longer than `cycle_timeout_s`
+(`cycle_timeout`). As a safety net, an agreed plan that misses a goal never reaches the gate
+(`mission_mismatch`).
+
+#### Settings (`config/planner.yaml`)
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `backend`, `model` | `ollama`, `phi3.5` | LLM; also `openai`, `anthropic`, `openai_compatible`, `fake` |
+| `rules` | `S-1,P-1,P-2` | rules the agents are told; keep them the rules the gate runs |
+| `temperature`, `repair_temperature` | 0.7, 0.2 | sampling; repairs are careful, not creative |
+| `constrained_output` | true | the LLM must follow this turn's reply schema while generating (Ollama, OpenAI, vLLM); a backend that refuses it is used in plain JSON mode, with a warning in the log |
+| `conflict_hints` | true | tell the agents where routes collide (see below) |
+| `max_rounds`, `max_repairs` | 3, 1 | dialogue length; repair calls per turn |
+| `llm_timeout_s`, `turn_timeout_s`, `cycle_timeout_s`, `verdict_timeout_s` | 60, 150, 300, 30 | wall-clock limits [s]; checked against each other at start-up |
+| `num_ctx` | 8192 | Ollama context window (its own default is shorter than the prompts) |
+| `log_file`, `run_id` | `llm_log.sqlite`, `dev` | where every LLM call and every planning cycle is recorded |
+
+Launch arguments override the file: `world`, `robots`, `backend`, `model`, `run_id`, `log_file`,
+`fake_script`, `use_sim_time`, `params_file`.
+
+**`conflict_hints` and experiments.** A `CONFLICT:` line is rule S-1 checked for the agents in advance,
+so the agents make fewer unsafe plans and the gate catches less. Record the setting in every experiment;
+set it to `false` to compare prompting alone with the gate. The routes are shown either way.
+
+#### What is recorded
+
+`llm_log.sqlite` holds every LLM request and reply (agent, transaction, round, latency, tokens, error)
+and one row per planning cycle (outcome, cause, rounds, turns, skipped turns, plan versions, duration).
+After a batch of missions:
+
+```bash
+ros2 run mrs_llm_planner summary                       # every run in ./llm_log.sqlite
+ros2 run mrs_llm_planner summary --run exp1_s01 --json
+```
+
+It prints, per run, the cycles approved and the fallback causes, time and turns per cycle, and LLM
+calls, repairs, failures and tokens: the numbers for comparing models.
+
+Tests: `cd src/mrs_llm_planner && pytest -q` (134 tests; no ROS or LLM needed, they use a scripted LLM
+and the real gate code). `test_nodes.py` runs the nodes and the gate node together and needs the built
+and sourced workspace: under `colcon test` on the Macs it skips (Troubleshooting).
+
+**Not done yet / known limits:**
+- No replanning: no new dialogue after a REJECT, none on blocked edges or failed tasks.
+- Robot positions are the spawn positions until Module 3 publishes `/mrs/team_state`.
+- `pause_world` needs a ros_gz bridge entry for the world's ControlWorld service.
+- phi3.5 is small: its words often do not match its tasks, and it rarely coordinates without the
+  conflict hints. Agreement rates are a property of the model; the process stays bounded either way.
+- Anthropic does not enforce the reply schema here (prompt and checks only).
 
 ---
 
@@ -805,5 +934,14 @@ Change log:
 | `gz sdf -k` warns `gz_frame_id ... not defined in SDF` | Gazebo-specific tag, read by the sensors | ignore |
 | A new world fails `test_nodes_and_edges_clear_of_walls` | a node or edge is too close to a wall | move the node, or widen the gap in the `.sdf` |
 | `AttributeError: ... DialogueTurn ... 'kind'` or `unexpected keyword 'agree'` | built against the old `DialogueTurn` | `colcon build --packages-up-to mrs_common`, then `source install/setup.zsh` |
+| `colcon build --packages-select mrs_llm_planner`: `Failed to find ... package.sh` | its dependencies are not built yet | `colcon build --packages-up-to mrs_llm_planner` once |
+| Planner: nothing happens after `ros2 topic pub /mrs/mission` | the same mission text as before (ignored), or the mission was refused | change the text; look for `mission refused` in the planner log (robot or node name wrong) |
+| Planner: every turn `I skip this turn: my language model did not answer in time` / `failed` | Ollama not running, model not pulled, or too slow | `ollama serve` / the Ollama app, `ollama pull phi3.5`; raise `llm_timeout_s` (and `turn_timeout_s` above (1 + `max_repairs`) x it) |
+| Planner log: `the LLM backend refused the reply schema` | an older Ollama without structured outputs | update Ollama; meanwhile it runs in plain JSON mode |
+| Planner: `HTTP 500 ... token repeat limit reached` | the model looped and Ollama stopped it | the turn is skipped and the dialogue goes on; frequent: try another model |
+| Planner or gate never time out without Gazebo | `use_sim_time` is true but nothing publishes `/clock` | add `use_sim_time:=false` |
+| `ros2 topic echo /mrs/verdict --once` waits forever | the verdict came before echo started (not latched) | start the echo before sending the mission |
+| `topic ... does not appear to be published yet` | the CLI cannot see the publisher or its type | give the type and skip the cached graph: `ros2 topic echo <topic> <type> --no-daemon`; same `ROS_DOMAIN_ID` in every terminal |
+| `ros2 topic echo /mrs/dialogue` shows cut-off text | echo truncates strings to 128 characters | add `--full-length` (and `--field text` for the words only) |
 
 Still stuck: run `ros2 run mrs_common check_interfaces` and `pytest -q -rs`, and paste both outputs.
