@@ -52,6 +52,8 @@ PARAMETERS: dict[str, tuple[type, Any, str]] = {
     "verdict_timeout_s": (float, 30.0, "coordinator: deadline for the gate's verdict [s], wall clock"),
     "pause_world": (bool, False, "coordinator: pause the Gazebo world while planning"),
     "world_control_service": (str, "", "coordinator: ros_gz ControlWorld service; empty: /world/<world>/control"),
+    "max_replan_attempts": (int, 3, "coordinator: max replan attempts after REJECT (0 = no replan, fallback immediately)"),
+    "replan_timeout_s": (float, 60.0, "coordinator: timeout for each replan LLM call [s]"),
 }
 
 
@@ -79,6 +81,8 @@ class PlannerSettings:
     verdict_timeout_s: float
     pause_world: bool
     world_control_service: str
+    max_replan_attempts: int
+    replan_timeout_s: float
 
     def describe(self) -> dict[str, Any]:
         return {"robot_id": self.robot_id, "team": list(self.team), "world": self.map_file or self.world,
@@ -126,6 +130,8 @@ def load_settings(values: Mapping[str, Any], *, agent: bool) -> PlannerSettings:
         _require(v["backend"] == "fake", "fake_script_file is only for backend fake")
         fake_script = _read_fake_script(Path(v["fake_script_file"]).expanduser(),
                                         v["robot_id"] if agent else None, team)
+    _require(v["max_replan_attempts"] >= 0, "max_replan_attempts must be >= 0")
+    _require(v["replan_timeout_s"] > 0, "replan_timeout_s must be > 0")
     return PlannerSettings(
         robot_id=v["robot_id"] if agent else "", team=team, world=v["world"], map_file=v["map_file"],
         rules=rules, llm=llm, secrets_file=v["secrets_file"], temperature=float(v["temperature"]),
@@ -136,7 +142,8 @@ def load_settings(values: Mapping[str, Any], *, agent: bool) -> PlannerSettings:
         max_rounds=v["max_rounds"], turn_timeout_s=float(v["turn_timeout_s"]),
         cycle_timeout_s=float(v["cycle_timeout_s"]),
         verdict_timeout_s=float(v["verdict_timeout_s"]), pause_world=bool(v["pause_world"]),
-        world_control_service=v["world_control_service"])
+        world_control_service=v["world_control_service"],
+        max_replan_attempts=int(v["max_replan_attempts"]), replan_timeout_s=float(v["replan_timeout_s"]))
 
 
 def _read_fake_script(path: Path, robot_id: Optional[str], team: tuple[str, ...]) -> Optional[list]:

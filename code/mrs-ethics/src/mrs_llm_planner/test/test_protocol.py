@@ -8,7 +8,7 @@ from mrs_common import reasons as R
 from mrs_common.plan_schema import plan_from_json
 from mrs_llm_planner.mission import Goal, Mission
 from mrs_llm_planner.protocol import (CycleDone, Coordinator, Fallback, PauseWorld, ProtocolConfig, ResumeWorld,
-                                      Turn, Verdict, fallback_plan, hold_targets)
+                                      StartReplan, Turn, Verdict, fallback_plan, hold_targets)
 from plans import A_GOES, B_AFTER_A, B_NOW, HEAD_ON, TAKE_TURNS, part
 
 TP = lambda d: plan_from_json(json.dumps(d))
@@ -106,13 +106,51 @@ def test_no_agreement_falls_back():
     assert out[0].cause == R.NO_AGREEMENT and out[1].outcome == "fallback" and c.state == "done"
 
 
-def test_reject_falls_back():
-    c = make()
+def test_reject_triggers_replan():
+    """REJECT with max_replan_attempts > 0 triggers replan instead of fallback."""
+    c = make(max_replan_attempts=3)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+    out = c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "robots meet in the aisle",
+                               constraints_json='[{"kind": "order_before"}]'), 2)
+    assert kinds(out) == ["StartReplan"]
+    assert out[0].attempt == 1
+    assert c.state == "replanning"
+
+
+def test_reject_falls_back_when_no_replan():
+    """REJECT with max_replan_attempts=0 falls back immediately."""
+    c = make(max_replan_attempts=0)
     c.start_cycle("m", "ep", 0)
     agree_on_take_turns(c)
     out = c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "robots meet in the aisle"), 2)
     assert kinds(out) == ["Fallback", "CycleDone"]
     assert out[0].cause == "rejected" and out[0].detail == "capacity_exceeded: robots meet in the aisle"
+
+
+def test_replan_success_submits_new_plan():
+    """Successful replan submits a new plan to the gate."""
+    c = make(max_replan_attempts=3)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+    c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "robots meet in the aisle"), 2)
+    # Simulate successful replan
+    out = c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=3)
+    assert kinds(out) == ["SubmitPlan"]
+    assert out[0].attempt == 1
+    assert c.state == "waiting_for_verdict"
+
+
+def test_replan_failure_falls_back():
+    """Failed replan (LLM error) falls back."""
+    c = make(max_replan_attempts=3)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+    c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "robots meet in the aisle"), 2)
+    # Simulate failed replan
+    out = c.on_replan_result(success=False, plan=None, error_reason=R.LLM_TIMEOUT, error_detail="timeout", now=3)
+    assert kinds(out) == ["Fallback", "CycleDone"]
+    assert out[0].cause == R.LLM_TIMEOUT
 
 
 def test_failed_turn_falls_back():
@@ -256,7 +294,7 @@ def test_cycle_timeout_caps_the_whole_cycle():
 
 
 def test_stats():
-    c = make()
+    c = make(max_replan_attempts=0)   # disable replan so REJECT falls back immediately
     c.start_cycle("m", "ep", 0)
     c.on_turn(turn(c, "discussion", text="I skip this turn: my language model failed. Problem: x"), 1)
     c.on_turn(turn(c, "proposal", TP(part(B_NOW))), 2)
@@ -268,3 +306,128 @@ def test_stats():
     c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "aisle"), 5)
     s = c.stats()
     assert s["outcome"] == "fallback" and s["cause"] == "rejected" and s["rounds"] == 2
+
+
+# ---- Replan edge cases ----
+
+def test_replan_timeout_falls_back():
+    """Replan timeout triggers fallback."""
+    c = make(max_replan_attempts=3, replan_timeout_s=10)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+    c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "aisle"), 2)
+    assert c.state == "replanning"
+    # Time passes without replan result
+    assert c.tick(11) == []  # just before deadline (started at 2, deadline at 12)
+    out = c.tick(12)
+    assert kinds(out) == ["Fallback", "CycleDone"]
+    assert out[0].cause == R.LLM_TIMEOUT  # replan timeout uses same cause as turn timeout
+
+
+def test_multiple_replan_attempts_then_fallback():
+    """Multiple replan attempts, all rejected, eventually falls back."""
+    c = make(max_replan_attempts=2)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+
+    # First REJECT -> replan attempt 1
+    out = c.on_verdict(Verdict("tx-1", "REJECT", ("r1",), "reason1", constraints_json="[]"), 2)
+    assert kinds(out) == ["StartReplan"] and out[0].attempt == 1
+
+    # Replan succeeds, submit new plan
+    out = c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=3)
+    assert kinds(out) == ["SubmitPlan"] and out[0].attempt == 1
+
+    # Second REJECT -> replan attempt 2
+    out = c.on_verdict(Verdict("tx-1", "REJECT", ("r2",), "reason2", constraints_json="[]", attempt=1), 4)
+    assert kinds(out) == ["StartReplan"] and out[0].attempt == 2
+
+    # Replan succeeds again
+    out = c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=5)
+    assert kinds(out) == ["SubmitPlan"] and out[0].attempt == 2
+
+    # Third REJECT -> no more attempts, fallback
+    out = c.on_verdict(Verdict("tx-1", "REJECT", ("r3",), "reason3", constraints_json="[]", attempt=2), 6)
+    assert kinds(out) == ["Fallback", "CycleDone"]
+    assert out[0].cause == "rejected"
+
+
+def test_replan_ignores_wrong_state():
+    """on_replan_result is ignored if not in replanning state."""
+    c = make()
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+    # Still in waiting_for_verdict, not replanning
+    out = c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=3)
+    assert out == []
+    assert c.state == "waiting_for_verdict"
+
+
+def test_approve_after_replan():
+    """Plan is approved after a replan attempt."""
+    c = make(max_replan_attempts=3)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+
+    # First REJECT
+    c.on_verdict(Verdict("tx-1", "REJECT", ("r1",), "reason"), 2)
+
+    # Replan succeeds
+    c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=3)
+
+    # This time APPROVE
+    out = c.on_verdict(Verdict("tx-1", "APPROVE", attempt=1), 4)
+    assert out == [CycleDone("tx-1", "approved")]
+    assert c.state == "done"
+
+
+def test_modify_after_replan():
+    """Plan is modified (accepted with changes) after a replan attempt."""
+    c = make(max_replan_attempts=3)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+
+    # First REJECT
+    c.on_verdict(Verdict("tx-1", "REJECT", ("r1",), "reason"), 2)
+
+    # Replan succeeds
+    c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=3)
+
+    # MODIFY
+    out = c.on_verdict(Verdict("tx-1", "MODIFY", attempt=1), 4)
+    assert out == [CycleDone("tx-1", "approved")]
+    assert c.state == "done"
+
+
+def test_replan_preserves_transaction_id():
+    """Transaction ID stays consistent across replan attempts."""
+    c = make(max_replan_attempts=3)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c)
+
+    original_tx = c.transaction_id
+
+    # REJECT -> replan
+    out = c.on_verdict(Verdict("tx-1", "REJECT", ("r1",), "reason"), 2)
+    assert out[0].transaction_id == original_tx
+
+    # Replan succeeds
+    out = c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=3)
+    assert out[0].transaction_id == original_tx
+    assert c.transaction_id == original_tx
+
+
+def test_cycle_timeout_during_replan():
+    """Cycle timeout fires even during replan."""
+    c = make(max_replan_attempts=3, cycle_timeout_s=50, replan_timeout_s=100)
+    c.start_cycle("m", "ep", 0)
+    agree_on_take_turns(c, now=10)
+
+    # REJECT at t=20
+    c.on_verdict(Verdict("tx-1", "REJECT", ("r1",), "reason"), 20)
+    assert c.state == "replanning"
+
+    # Cycle timeout at t=50 (before replan timeout at t=120)
+    out = c.tick(50)
+    assert kinds(out) == ["Fallback", "CycleDone"]
+    assert out[0].cause == "cycle_timeout"
