@@ -39,6 +39,7 @@ rosbag2_*/
 gz_log/
 *.tlog
 llm_cache.sqlite
+llm_log.sqlite
 *.sqlite-journal
 events.jsonl
  

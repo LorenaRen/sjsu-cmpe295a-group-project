@@ -19,7 +19,7 @@ plan is the team's *End-to-End Implementation Guide*.
 | 4 LLM planner | `mrs_llm_planner` | **first version** — 134 tests (Nov 17); one LLM agent per robot (default: phi3.5 on a local Ollama; OpenAI, Anthropic and vLLM also supported) and a coordinator without an LLM; one dialogue per mission, no replanning; tested live with phi3.5 and the gate | Send a mission, watch the robots' agents agree on a team plan on `/mrs/dialogue`, hand it to the gate; every robot holds when no plan is approved; summarize runs (§4.4) |
 | 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 211 gate + 342 checker tests (Nov 4); APPROVE / REJECT; robots start at the spawn slots, or where `/mrs/team_state` says, with its blocked edges and the people the robots see (tested with a stand-in for Module 3); people (S-2) also from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
-| 7 Recording | `mrs_telemetry` | — | — |
+| 7 Recording | `mrs_telemetry` | **first version** — 26 tests (Nov 17); MCAP bag of every canonical topic in sim time, Gazebo state log, `events.jsonl` of every decision, `run.json`, the planner's LLM log, all in one run folder; not yet run under ROS | Record one episode (`episode.launch.py`: sim, gate, planner, recorder, optional scripted mission and duration), check the run folder with `check_run` (§4.5) |
 
 ### How the modules fit together
 
@@ -425,6 +425,8 @@ ros2 run mrs_sim list_worlds                            # every world, and wheth
 | `gui` | `false` | also start the Gazebo GUI (a separate `gz sim -g` process, which macOS needs) |
 | `verbosity` | `2` | `gz sim -v` level |
 | `run_dir` | temp dir | where the generated robot SDFs and `bridge.yaml` are written (printed at start) |
+| `record_gz_log` | `false` | also write a Gazebo state log (`state.tlog`, poses + meshes) for replay (Module 7) |
+| `gz_log_dir` | `<run_dir>/gz_log` | where the state log goes |
 
 **What each robot publishes** (all names from `mrs_common.names`; `use_sim_time:=true` everywhere):
 
@@ -855,6 +857,138 @@ and sourced workspace: under `colcon test` on the Macs it skips (Troubleshooting
 
 ---
 
+### 4.5 Module 7 — recording (`mrs_telemetry`)
+
+Records each episode into one run folder, and checks the folder afterwards. Not yet run under ROS:
+the first live recording is the next step.
+
+```
+results/<experiment>/<run_id>/
+  run.json            what ran: git commit (and uncommitted files), host, world, robots, planner, recording settings
+  bag/                MCAP bag: every canonical topic + /clock, /tf, /tf_static, stamped in sim time
+  gz_log/             Gazebo state log (state.tlog + meshes) for visual replay
+  events.jsonl        one line per decision: mission, dialogue turns, plans, verdicts, task status, events
+  llm_log.sqlite      the planner's LLM calls and planning cycles (§4.4)
+  qos_overrides.yaml  how the recorder subscribed to latched topics
+  sim/                robot SDFs and bridge.yaml from sim.launch.py
+```
+
+`results/` is in `.gitignore`: run folders never go into Git.
+
+#### Recording an episode
+
+```bash
+colcon build --packages-up-to mrs_telemetry     # also builds the sim, gate and planner
+source install/setup.zsh
+
+# everything in one launch: sim + gate + planner + recorder; it sends the mission and stops after 240 s
+ros2 launch mrs_telemetry episode.launch.py \
+    mission:="robot_a: go to room_e. robot_b: go to room_w." duration:=240
+ros2 launch mrs_telemetry episode.launch.py fake_script:=narrow_aisle mission:="robot_a: go to room_e. robot_b: go to room_w." duration:=60   # no LLM
+ros2 launch mrs_telemetry episode.launch.py experiment:=s1 run_id:=seed03    # results/s1/seed03/; send the mission yourself, Ctrl-C to stop
+
+# afterwards
+ros2 run mrs_telemetry check_run results/s1/seed03
+ros2 bag info results/s1/seed03/bag
+gz sim -r --playback results/s1/seed03/gz_log            # replay the Gazebo log
+```
+
+Without `mission:=`, send it from a second terminal with the `ros2 topic pub` line of §4.4, after
+the robots have spawned. Without `duration:=`, the episode runs until Ctrl-C.
+
+**Always stop with Ctrl-C** (or `duration`). Every process gets SIGINT: the recorder closes the bag
+and writes its `metadata.yaml`, Gazebo closes the state log, and the telemetry node writes a last
+`telemetry_end` line. A recorder killed hard leaves a bag without `metadata.yaml`
+(`check_run` says so); `ros2 bag reindex <run_dir>/bag` rebuilds it.
+
+To record next to launches you start yourself, run only the recorder:
+`ros2 launch mrs_telemetry record.launch.py run_dir:=results/dev/try1` (same `robots` as the sim).
+
+| `episode.launch.py` argument | Default | Meaning |
+|---|---|---|
+| `run_dir` | empty | the run folder; empty: `<results_root>/<experiment>/<run_id>` |
+| `results_root`, `experiment`, `run_id` | `results`, `dev`, date-time | where the run folder goes |
+| `world`, `robots` | `narrow_aisle`, `2` | passed to the sim, gate and planner |
+| `camera`, `gui` | `false`, `false` | robot cameras (simulated and recorded: large), Gazebo window |
+| `record_gz_log` | `true` | the Gazebo state log |
+| `scan` | `true` | record the LiDAR scans |
+| `gate`, `planner` | `true`, `true` | start the gate, the planner |
+| `backend`, `model`, `fake_script` | empty | planner settings; empty: `planner.yaml`'s (ollama, phi3.5) |
+| `mission` | empty | mission to send (by `send_mission`, below); empty: send it yourself |
+| `mission_timeout_s` | `90` | how long `send_mission` waits for its listeners |
+| `duration` | `0` | stop after this many seconds (wall clock); 0: run until Ctrl-C |
+
+`record.launch.py` takes `run_dir`, `results_root`, `experiment`, `robots`, `camera`, `scan`,
+`sim_time` (`false` when no Gazebo runs: with sim time, nothing reaches the bag before the first
+`/clock`), `bag` and `events`.
+
+#### What is recorded
+
+- **The bag** records every topic in `mrs_common.names` for the fleet, plus `/clock`, `/tf` and
+  `/tf_static`, as MCAP (zstd). Topics are listed one by one, not matched by a pattern, so a topic
+  that nobody published shows up as empty instead of missing. The latched topics (`/tf_static`,
+  `/mrs/mission`, `/mrs/validated_plan`) are recorded transient-local, so the recorder gets them
+  even if they were published before it subscribed.
+- **events.jsonl** has one JSON line per message on a decision topic (`/mrs/mission`, `dialogue`,
+  `proposed_plan`, `verdict`, `validated_plan`, `task_status`, `episode_event`, `safety_override`).
+  Every line has `t` (sim time), `stamp`, `wall`, `type`, a one-line `summary` and the fields of
+  that type: ids, round, speaker, text, plan summary, verdict, rule ids, constraint kinds, and so on.
+  Safety overrides are written at most once per robot per second (the bag keeps all of them).
+  ```
+  {"t": 41.2, "type": "dialogue", "summary": "round 1: robot_b proposal: robot_a: a1 navigate room_e | robot_b: b1 navigate room_w (after a1)", ...}
+  {"t": 63.9, "type": "verdict", "summary": "APPROVE", "verdict": "APPROVE", "rule_ids": [], ...}
+  ```
+  Load it with `pandas.read_json(path, lines=True)`.
+- **run.json** is built up in sections, each written by whoever starts that part: `git` (commit,
+  branch, dirty, changed files, from the folder you launched in), `recording`, `episode`, `sim`,
+  `planner`. The experiment runner (Module 9) will add its own (scenario, seed, condition).
+- **The planner's log** goes into the run folder (`log_file`), with the run folder's name as
+  `run_id`: `ros2 run mrs_llm_planner summary --log <run_dir>/llm_log.sqlite`.
+
+#### Checking a run: `check_run`
+
+```
+$ ros2 run mrs_telemetry check_run results/s1/seed03
+run results/s1/seed03
+  ok   run.json  s1/seed03, 3f2a9c1e04
+  ok   bag       9518 messages on 32 topics, 61.5 s sim time, 4.21 MB
+ warn  bag       empty, published by executor (Module 6): /mrs/task_status, /robot_a/cmd_vel_nominal, ...
+ warn  bag       empty, published by world state (Module 3): /mrs/team_state, /robot_a/world_state, ...
+  ok   events    14 lines: dialogue 8, mission 1, proposed_plan 1, validated_plan 1, verdict 1
+  ok   gz_log    state.tlog 0.85 MB
+  ok   llm_log   6 LLM calls, 1 planning cycles
+...
+OK
+```
+(illustrative numbers)
+
+It reads the bag's `metadata.yaml`, not the bag, so it needs no ROS (`python -m mrs_telemetry.check_run`
+works too); `--json` prints the report for scripts. It fails (exit code 1) when the bag did not close
+cleanly, a required topic is empty (`/clock`, `/tf_static`, the mission, the dialogue, each robot's
+`scan`, `odom` and `ground_truth`), `events.jsonl` has a broken line, or `record_gz_log` was on but
+there is no `state.tlog`. It warns about topics of modules that do not exist yet, about a missing
+`telemetry_end`, and when the number of a decision in `events.jsonl` differs from the bag's count on
+that topic.
+
+#### send_mission
+
+`ros2 run mrs_telemetry send_mission --ros-args -p text:="..." -p wait_for:=3` publishes the mission
+once, but only after `wait_for` subscribers have connected (in an episode: the coordinator, the
+telemetry node and the recorder), and stays up 5 s for latecomers. `ros2 topic pub --once` can send
+before they are connected, and the mission is then lost for them.
+
+Tests: `cd src/mrs_telemetry && pytest -q` (24 run without ROS; the telemetry-node and launch tests
+need the built and sourced workspace).
+
+**Not done yet:**
+- Not yet run under ROS: the first live episode will tell whether the recorder picks up every topic,
+  how big a bag gets (the guide's 5-minute, 3-robot size check), and whether Foxglove shows the robots.
+- No scan throttle: if scans dominate the bag size, `scan:=false` is the only switch for now.
+- On Linux, Docker and HPC the Gazebo server will need `--headless-rendering` (Module 2, not added yet).
+- `results.json` (metrics) is Module 11.
+
+---
+
 ## 5. Adding your own package (Modules 2–8)
 
 1. Create it in `src/` as **ament_python** (only message packages are CMake):
@@ -943,5 +1077,10 @@ Change log:
 | `ros2 topic echo /mrs/verdict --once` waits forever | the verdict came before echo started (not latched) | start the echo before sending the mission |
 | `topic ... does not appear to be published yet` | the CLI cannot see the publisher or its type | give the type and skip the cached graph: `ros2 topic echo <topic> <type> --no-daemon`; same `ROS_DOMAIN_ID` in every terminal |
 | `ros2 topic echo /mrs/dialogue` shows cut-off text | echo truncates strings to 128 characters | add `--full-length` (and `--field text` for the words only) |
+| `ros2 bag record`: `Invalid choice 'mcap'` / storage plugin not found | `rosbag2_storage_mcap` missing from the env | `conda env update -f environment.yml --prune` (it is listed there) |
+| `check_run`: `no metadata.yaml` | the recorder was killed, not stopped with Ctrl-C | `ros2 bag reindex <run_dir>/bag`; next time stop with Ctrl-C or `duration:=` |
+| Recording: the bag is empty or starts late | sim time: nothing is written before Gazebo's first `/clock` | start Gazebo (or use `record.launch.py sim_time:=false` without it) |
+| `episode.launch.py`: `<run_dir>/bag already exists` | the run folder was used before | give a new `run_id` (or leave it empty for the date-time) |
+| `check_run`: `/mrs/mission: no messages` | no mission was sent, or it was sent before the recorder started | use `mission:=` on `episode.launch.py`, or send it after the recorder is up |
 
 Still stuck: run `ros2 run mrs_common check_interfaces` and `pytest -q -rs`, and paste both outputs.

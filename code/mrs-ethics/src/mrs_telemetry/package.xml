@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mrs_telemetry</name>
+  <version>0.1.0</version>
+  <description>Module 7: records each episode into one run folder (MCAP bag, Gazebo state log, decision events, run metadata) and checks it afterwards.</description>
+  <maintainer email="team@example.com">MRS Ethics Team</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>mrs_msgs</exec_depend>
+  <exec_depend>mrs_common</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2_storage_mcap</exec_depend>
+  <!-- episode.launch.py starts these -->
+  <exec_depend>mrs_sim</exec_depend>
+  <exec_depend>mrs_ethical_gate</exec_depend>
+  <exec_depend>mrs_llm_planner</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
