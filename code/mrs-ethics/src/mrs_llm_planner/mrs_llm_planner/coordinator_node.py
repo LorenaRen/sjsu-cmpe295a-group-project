@@ -39,8 +39,8 @@ from mrs_common.qos import qos_for
 
 from .agent_node import declare_parameters
 from .mission import MissionError, parse_mission, room_nodes
-from .protocol import (ATTEMPT, CycleDone, Coordinator, Fallback, PauseWorld, ProtocolConfig,
-                       ResumeWorld, SendPrompt, SubmitPlan, Turn, Verdict, fallback_plan)
+from .protocol import (CycleDone, Coordinator, Fallback, PauseWorld, ProtocolConfig,
+                       ResumeWorld, SendPrompt, StartReplan, SubmitPlan, Turn, Verdict, fallback_plan)
 from .response_log import ResponseLog
 from .settings import SettingsError, load_map, load_settings
 
@@ -58,7 +58,9 @@ class CoordinatorNode(Node):
         self.coord = Coordinator(ProtocolConfig(team=s.team, max_rounds=s.max_rounds,
                                                 turn_timeout_s=s.turn_timeout_s,
                                                 verdict_timeout_s=s.verdict_timeout_s, pause_world=s.pause_world,
-                                                cycle_timeout_s=s.cycle_timeout_s),
+                                                cycle_timeout_s=s.cycle_timeout_s,
+                                                max_replan_attempts=s.max_replan_attempts,
+                                                replan_timeout_s=s.replan_timeout_s),
                                  start_nodes=self.spawn_nodes)
         self.log = ResponseLog(s.log_file, s.run_id)   # one row per planning cycle (summary.py reads it)
         self.mission = ""
@@ -102,8 +104,14 @@ class CoordinatorNode(Node):
                                           msg.text, plan), time.monotonic()))
 
     def on_verdict(self, msg: EthicalVerdict) -> None:
-        self._run(self.coord.on_verdict(Verdict(msg.transaction_id, msg.verdict, tuple(msg.rule_ids), msg.rationale),
-                                        time.monotonic()))
+        self._run(self.coord.on_verdict(Verdict(
+            transaction_id=msg.transaction_id,
+            verdict=msg.verdict,
+            rule_ids=tuple(msg.rule_ids),
+            rationale=msg.rationale,
+            constraints_json=msg.constraints_json,
+            attempt=msg.attempt,
+        ), time.monotonic()))
 
     def on_team_state(self, msg: TeamState) -> None:
         self.coord.positions = {ws.robot_id: ws.at for ws in msg.robots}
@@ -116,19 +124,21 @@ class CoordinatorNode(Node):
         for a in actions:
             if isinstance(a, SendPrompt):
                 self.dialogue_pub.publish(make_turn_prompt(episode_id=self.episode_id, transaction_id=a.transaction_id,
-                                                           attempt=ATTEMPT, round=a.round,
+                                                           attempt=self.coord.attempt, round=a.round,
                                                            next_speaker=a.next_speaker, text=a.text, node=self))
             elif isinstance(a, SubmitPlan):
                 self.plan_pub.publish(make_proposed_plan(
-                    a.plan, episode_id=self.episode_id, attempt=ATTEMPT, transaction_id=a.transaction_id,
+                    a.plan, episode_id=self.episode_id, attempt=a.attempt, transaction_id=a.transaction_id,
                     model_name=self.settings.llm.model_name, latency_ms=a.latency_ms,
                     dialogue_digest=a.dialogue_digest, node=self))
-                self._log("submitted", transaction_id=a.transaction_id,
+                self._log("submitted", transaction_id=a.transaction_id, attempt=a.attempt,
                           latency_ms=round(a.latency_ms, 1), digest=a.dialogue_digest)
+            elif isinstance(a, StartReplan):
+                self._do_replan(a)
             elif isinstance(a, Fallback):
                 plan = fallback_plan(self.settings.team, self.coord.positions, self.spawn_nodes)
                 self.validated_pub.publish(make_validated_plan(plan, transaction_id=a.transaction_id,
-                                                               episode_id=self.episode_id, attempt=ATTEMPT,
+                                                               episode_id=self.episode_id, attempt=self.coord.attempt,
                                                                source_verdict="FALLBACK", node=self))
                 self.event_pub.publish(make_episode_event(
                     episode_id=self.episode_id, kind=EpisodeEvent.KIND_PLANNING_EXHAUSTED,
@@ -148,6 +158,54 @@ class CoordinatorNode(Node):
 
     def _log(self, what: str, **fields) -> None:
         self.get_logger().info(f"{what} " + json.dumps(fields))
+
+    def _do_replan(self, action: StartReplan) -> None:
+        """Call the LLM replanner and feed the result back to the coordinator."""
+        from mrs_common.plan_schema import constraints_from_json
+        from mrs_ethical_gate.llm_replanner import LLMReplanner
+        from mrs_ethical_gate.llm_replanner.ollama_client import OllamaClient
+
+        self._log("replan_start", transaction_id=action.transaction_id, attempt=action.attempt)
+
+        # Create replanner with same LLM settings
+        client = OllamaClient(
+            model=self.settings.llm.model_name,
+            host=self.settings.llm.base_url or "http://localhost:11434",
+            timeout=self.settings.llm.timeout_s,
+        )
+        replanner = LLMReplanner(
+            max_attempts=1,  # We handle attempt counting in protocol.py
+            start_nodes=self.spawn_nodes,
+            transaction_id=action.transaction_id,
+            episode_id=self.episode_id,
+            client=client,
+        )
+
+        # Build constraints and call replanner
+        constraints = constraints_from_json(action.constraints_json)
+        result = replanner._replan_with_llm(action.plan, constraints, action.rationale, action.attempt - 1)
+
+        if result.success:
+            self._log("replan_success", transaction_id=action.transaction_id, attempt=action.attempt,
+                      tokens_in=result.tokens_in, tokens_out=result.tokens_out,
+                      latency_ms=round(result.latency_ms, 1))
+            self._run(self.coord.on_replan_result(
+                success=True,
+                plan=result.plan,
+                error_reason="",
+                error_detail="",
+                now=time.monotonic(),
+            ))
+        else:
+            self._log("replan_failed", transaction_id=action.transaction_id, attempt=action.attempt,
+                      error_reason=result.error_reason, error_detail=result.error_detail)
+            self._run(self.coord.on_replan_result(
+                success=False,
+                plan=None,
+                error_reason=result.error_reason or "replan_error",
+                error_detail=result.error_detail or "unknown error",
+                now=time.monotonic(),
+            ))
 
     def _control_world(self, pause: bool) -> None:
         """Pause or resume Gazebo through ros_gz's ControlWorld service (needs a bridge entry for it)."""
