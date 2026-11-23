@@ -169,7 +169,7 @@ class CoordinatorNode(Node):
 
         # Create replanner with same LLM settings
         client = OllamaClient(
-            model=self.settings.llm.model_name,
+            model=self.settings.llm.model,
             host=self.settings.llm.base_url or "http://localhost:11434",
             timeout=self.settings.llm.timeout_s,
         )
