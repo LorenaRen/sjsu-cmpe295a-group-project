@@ -30,4 +30,3 @@ dependencies:
   - pip
   - pip:
       - mcap-ros2-support
-      - ollama           # Python client for the local Ollama server (LLM replanner, mrs_ethical_gate)

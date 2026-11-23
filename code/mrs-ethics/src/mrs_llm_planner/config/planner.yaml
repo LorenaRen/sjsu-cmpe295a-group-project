@@ -22,13 +22,14 @@
     # A turn is at most (1 + max_repairs) LLM calls; the coordinator checks turn_timeout_s against it.
     llm_timeout_s: 60.0
     max_repairs: 1                  # repair calls when a reply cannot be used
+    # Sampling temperature of the agents and of the coordinator's replanner: one value, fixed for an experiment.
+    temperature: 0.7
 
 /**/mrs_agent:
   ros__parameters:
     base_url: ""                    # empty: the backend's default (ollama: http://localhost:11434)
     api_key_env: ""
     secrets_file: ""                # empty: $MRS_SECRETS, else .env in the working directory
-    temperature: 0.7                # fixed for an experiment
     constrained_output: true        # the model must follow the reply schema while generating
     repair_temperature: 0.2         # repairs are careful, not creative
     # Tell the agents where two robots' routes cross a capacity-1 zone with no order between them.

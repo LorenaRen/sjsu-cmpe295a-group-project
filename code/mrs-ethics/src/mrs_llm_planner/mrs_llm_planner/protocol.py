@@ -305,6 +305,11 @@ class Coordinator:
         if not success:
             # Replan failed (LLM error, timeout, malformed output)
             return self._fallback(error_reason, error_detail)
+        # The same goal check an agreed plan gets: a replan can satisfy the gate by giving up on
+        # the mission (every robot holding where it is), and such a plan must not count as fixed.
+        missed = check_goals(plan, self.goals)
+        if missed:
+            return self._fallback(MISSION_MISMATCH, "replanned plan: " + "; ".join(missed))
         # Replan succeeded: submit the new plan
         self.attempt += 1
         self.last_submitted_plan = plan

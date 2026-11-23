@@ -39,9 +39,10 @@ from mrs_common.qos import qos_for
 
 from .agent_node import declare_parameters
 from .mission import MissionError, parse_mission, room_nodes
-from .protocol import (CycleDone, Coordinator, Fallback, PauseWorld, ProtocolConfig,
+from .protocol import (REPLAN, CycleDone, Coordinator, Fallback, PauseWorld, ProtocolConfig,
                        ResumeWorld, SendPrompt, StartReplan, SubmitPlan, Turn, Verdict, fallback_plan)
-from .response_log import ResponseLog
+from .replan_worker import ReplanWorker, is_current
+from .response_log import REPLANNER, CallContext, LoggingChat, ResponseLog
 from .settings import SettingsError, load_map, load_settings
 
 
@@ -75,6 +76,11 @@ class CoordinatorNode(Node):
         self.create_subscription(EthicalVerdict, N.VERDICT, self.on_verdict, qos_for(N.VERDICT))
         self.create_subscription(TeamState, N.TEAM_STATE, self.on_team_state, qos_for(N.TEAM_STATE))
         self.create_timer(0.5, self.on_tick)   # node clock; the deadlines themselves are wall clock
+        # Replan LLM calls run in a worker thread; the guard condition wakes this node when one is done,
+        # so the result is handled here, on the node's own thread (replan_worker.py).
+        self._replan_done = self.create_guard_condition(self._on_replan_done)
+        self.replans = ReplanWorker(self._replan_call, notify=self._replan_done.trigger,
+                                    on_error=self._replan_crashed)
         self.get_logger().info("settings " + json.dumps({**s.describe(), "episode_id": self.episode_id}))
 
     # ---- inputs -------------------------------------------------------------------------------
@@ -160,52 +166,59 @@ class CoordinatorNode(Node):
         self.get_logger().info(f"{what} " + json.dumps(fields))
 
     def _do_replan(self, action: StartReplan) -> None:
-        """Call the LLM replanner and feed the result back to the coordinator."""
+        """Start the LLM replanner in a worker thread and return at once: never block a ROS callback.
+        The protocol's replan deadline (replan_timeout_s) keeps running meanwhile (on_tick)."""
+        self._log("replan_start", transaction_id=action.transaction_id, attempt=action.attempt)
+        self.replans.start(action)
+
+    def _replan_call(self, action: StartReplan):
+        """Worker thread: one replan LLM call. Touches no protocol state."""
         from mrs_common.plan_schema import constraints_from_json
         from mrs_ethical_gate.llm_replanner import LLMReplanner
         from mrs_ethical_gate.llm_replanner.ollama_client import OllamaClient
 
-        self._log("replan_start", transaction_id=action.transaction_id, attempt=action.attempt)
-
-        # Create replanner with same LLM settings
-        client = OllamaClient(
-            model=self.settings.llm.model,
-            host=self.settings.llm.base_url or "http://localhost:11434",
-            timeout=self.settings.llm.timeout_s,
-        )
-        replanner = LLMReplanner(
-            max_attempts=1,  # We handle attempt counting in protocol.py
-            start_nodes=self.spawn_nodes,
-            transaction_id=action.transaction_id,
-            episode_id=self.episode_id,
-            client=client,
-        )
-
-        # Build constraints and call replanner
+        s = self.settings
+        # One request may take the whole replan_timeout_s and is not retried after a timeout; a
+        # connection error is retried once. The protocol's deadline ends the attempt in any case.
+        # The experiment's temperature, like the agents': a replan samples the model the same way.
+        client = OllamaClient(model=s.llm.model, host=s.llm.base_url or "http://localhost:11434",
+                              timeout=s.replan_timeout_s, max_retries=1, num_ctx=s.llm.num_ctx,
+                              temperature=s.temperature)
+        # Every replan prompt and answer goes into the response log (agent "replanner"), like the agents' calls.
+        logged = LoggingChat(client, self.log, agent=REPLANNER, model=s.llm.model_name, temperature=s.temperature,
+                             context=CallContext(self.episode_id, action.transaction_id, action.attempt, 0))
+        replanner = LLMReplanner(max_attempts=1,   # protocol.py counts the attempts
+                                 start_nodes=self.spawn_nodes, transaction_id=action.transaction_id,
+                                 episode_id=self.episode_id, client=logged)
         constraints = constraints_from_json(action.constraints_json)
-        result = replanner._replan_with_llm(action.plan, constraints, action.rationale, action.attempt - 1)
+        return replanner._replan_with_llm(action.plan, constraints, action.rationale, action.attempt - 1)
 
-        if result.success:
-            self._log("replan_success", transaction_id=action.transaction_id, attempt=action.attempt,
-                      tokens_in=result.tokens_in, tokens_out=result.tokens_out,
-                      latency_ms=round(result.latency_ms, 1))
+    def _replan_crashed(self, action: StartReplan, error: BaseException):
+        """Worker thread: an exception in the replanner becomes a failed result, so the cycle ends."""
+        from mrs_ethical_gate.llm_replanner.replanner import ReplanResult
+        return ReplanResult(success=False, error_reason="internal_error",
+                            error_detail=f"{type(error).__name__}: {error}")
+
+    def _on_replan_done(self) -> None:
+        """Node thread (guard condition): hand finished replans to the protocol, unless it has moved on."""
+        for action, result in self.replans.drain():
+            fields = dict(transaction_id=action.transaction_id, attempt=action.attempt,
+                          latency_ms=round(result.latency_ms, 1))
+            if not is_current(action, state=self.coord.state, replanning_state=REPLAN,
+                              transaction_id=self.coord.transaction_id, attempt=self.coord.attempt):
+                self._log("replan_ignored", **fields, success=result.success,
+                          detail="arrived after its deadline, or its planning cycle has ended")
+                continue
+            if result.success:
+                self._log("replan_success", **fields, tokens_in=result.tokens_in, tokens_out=result.tokens_out)
+            else:
+                self._log("replan_failed", **fields, error_reason=result.error_reason,
+                          error_detail=result.error_detail)
             self._run(self.coord.on_replan_result(
-                success=True,
-                plan=result.plan,
-                error_reason="",
-                error_detail="",
-                now=time.monotonic(),
-            ))
-        else:
-            self._log("replan_failed", transaction_id=action.transaction_id, attempt=action.attempt,
-                      error_reason=result.error_reason, error_detail=result.error_detail)
-            self._run(self.coord.on_replan_result(
-                success=False,
-                plan=None,
-                error_reason=result.error_reason or "replan_error",
-                error_detail=result.error_detail or "unknown error",
-                now=time.monotonic(),
-            ))
+                success=result.success, plan=result.plan if result.success else None,
+                error_reason="" if result.success else (result.error_reason or "replan_error"),
+                error_detail="" if result.success else (result.error_detail or "unknown error"),
+                now=time.monotonic()))
 
     def _control_world(self, pause: bool) -> None:
         """Pause or resume Gazebo through ros_gz's ControlWorld service (needs a bridge entry for it)."""

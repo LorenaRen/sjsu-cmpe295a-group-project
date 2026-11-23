@@ -1,17 +1,25 @@
 """Ollama API client for LLM-based replanning.
 
-Wraps the Ollama Python library with:
+Calls a local Ollama server's native chat API (POST {host}/api/chat) with the standard library
+(urllib), so it needs no Python package beyond the project's environment:
 - Configurable model selection (default: phi3.5)
+- num_ctx sent on every call: Ollama's own default context (2048 or 4096 tokens) is shorter than
+  a replan prompt, and Ollama cuts an over-long prompt silently; an answer that fills the window
+  is reported as an error instead of being used
 - Timeout handling -> LLM_TIMEOUT
-- Retry logic for transient errors
-- Structured output using Pydantic JSON schema
+- Retry logic for transient errors -> LLM_ERROR when retries do not help
+- Structured output using Pydantic JSON schema (Ollama's `format`)
 """
 
 from __future__ import annotations
 
+import json
+import socket
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from mrs_common import reasons as R
 
@@ -20,6 +28,35 @@ DEFAULT_MODEL = "phi3.5"
 DEFAULT_HOST = "http://localhost:11434"
 DEFAULT_TIMEOUT = 60.0  # seconds
 DEFAULT_MAX_RETRIES = 2
+DEFAULT_NUM_CTX = 8192   # tokens, prompt + answer (same as the planner's agents)
+KEEP_ALIVE = "30m"       # keep the model loaded between calls
+
+# transport(url, body, timeout_s) -> (http status, response bytes); swapped out in tests
+Transport = Callable[[str, bytes, float], "tuple[int, bytes]"]
+
+
+class OllamaHTTPError(Exception):
+    """Ollama answered with an HTTP error. 5xx is retried; 4xx (e.g. 404 model not found) is not:
+    asking again cannot fix it."""
+
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
+
+def urllib_transport(url: str, body: bytes, timeout_s: float) -> tuple[int, bytes]:
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, (socket.timeout, TimeoutError)):
+            raise TimeoutError(str(e.reason)) from e
+        raise ConnectionError(f"cannot reach Ollama at {url}: {e.reason}") from e
+    except socket.timeout as e:   # timed out while reading the answer
+        raise TimeoutError(str(e)) from e
 
 
 @dataclass(frozen=True)
@@ -45,25 +82,16 @@ class OllamaClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         temperature: float = 0.0,  # Deterministic by default for planning
+        num_ctx: int = DEFAULT_NUM_CTX,
+        transport: Transport = urllib_transport,
     ):
         self.model = model
-        self.host = host
+        self.host = host.rstrip("/").removesuffix("/v1")   # the native API, not the OpenAI-style /v1
         self.timeout = timeout
         self.max_retries = max_retries
         self.temperature = temperature
-        self._client = None
-
-    def _get_client(self):
-        """Lazy initialization of Ollama client."""
-        if self._client is None:
-            try:
-                from ollama import Client
-                self._client = Client(host=self.host, timeout=self.timeout)
-            except ImportError:
-                raise ImportError(
-                    "ollama package not installed. Run: pip install ollama"
-                )
-        return self._client
+        self.num_ctx = num_ctx
+        self._transport = transport
 
     def chat(
         self,
@@ -93,6 +121,19 @@ class OllamaClient:
                     latency_ms=(time.perf_counter() - start_time) * 1000,
                     model_name=self.model,
                 )
+            except OllamaHTTPError as e:
+                last_error = e
+                if e.status < 500:
+                    return LLMResponse(
+                        success=False,
+                        error_reason=R.LLM_ERROR,
+                        error_detail=f"Ollama refused the request: {e}",
+                        latency_ms=(time.perf_counter() - start_time) * 1000,
+                        model_name=self.model,
+                    )
+                if attempt < self.max_retries:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
             except Exception as e:
                 last_error = e
                 if attempt < self.max_retries:
@@ -114,44 +155,43 @@ class OllamaClient:
         json_schema: dict[str, Any] | None,
         start_time: float,
     ) -> LLMResponse:
-        """Execute a single chat request."""
-        client = self._get_client()
-
-        # Build request kwargs
-        kwargs: dict[str, Any] = {
+        """Execute a single chat request (POST /api/chat, no streaming)."""
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "options": {"temperature": self.temperature},
+            "stream": False,
+            "keep_alive": KEEP_ALIVE,
+            "options": {"temperature": self.temperature, "num_ctx": self.num_ctx},
         }
-
         # Add structured output format if schema provided
         if json_schema is not None:
-            kwargs["format"] = json_schema
+            payload["format"] = json_schema
 
-        try:
-            response = client.chat(**kwargs)
-        except Exception as e:
-            error_str = str(e).lower()
-            if "timeout" in error_str or "timed out" in error_str:
-                raise TimeoutError(str(e))
-            raise
+        status, raw = self._transport(f"{self.host}/api/chat", json.dumps(payload).encode(), self.timeout)
+        if status != 200:
+            try:
+                detail = json.loads(raw).get("error", "")
+            except (ValueError, AttributeError):
+                detail = raw[:300].decode(errors="replace")
+            raise OllamaHTTPError(f"{detail or 'HTTP error'} (status code: {status})", status)
 
         latency_ms = (time.perf_counter() - start_time) * 1000
-
-        # Extract token counts if available
-        tokens_in = 0
-        tokens_out = 0
-        if hasattr(response, "prompt_eval_count"):
-            tokens_in = response.prompt_eval_count or 0
-        if hasattr(response, "eval_count"):
-            tokens_out = response.eval_count or 0
-
-        # Extract content
-        content = ""
-        if hasattr(response, "message") and hasattr(response.message, "content"):
-            content = response.message.content
-        elif isinstance(response, dict):
-            content = response.get("message", {}).get("content", "")
+        data = json.loads(raw)
+        tokens_in = int(data.get("prompt_eval_count") or 0)
+        tokens_out = int(data.get("eval_count") or 0)
+        if tokens_in + tokens_out >= self.num_ctx:
+            # Ollama stopped at the window: the prompt may have been cut and the answer is incomplete
+            return LLMResponse(
+                success=False,
+                error_reason=R.LLM_ERROR,
+                error_detail=(f"context window full ({tokens_in} prompt + {tokens_out} answer tokens "
+                              f">= num_ctx {self.num_ctx}); raise num_ctx"),
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                latency_ms=latency_ms,
+                model_name=self.model,
+            )
+        content = (data.get("message") or {}).get("content", "")
 
         return LLMResponse(
             success=True,
@@ -165,13 +205,9 @@ class OllamaClient:
     def is_available(self) -> bool:
         """Check if Ollama server is reachable and model is available."""
         try:
-            client = self._get_client()
-            # Try a minimal request
-            client.chat(
-                model=self.model,
-                messages=[{"role": "user", "content": "hi"}],
-                options={"num_predict": 1},
-            )
-            return True
+            body = json.dumps({"model": self.model, "stream": False, "messages": [{"role": "user", "content": "hi"}],
+                               "options": {"num_predict": 1}}).encode()
+            status, _ = self._transport(f"{self.host}/api/chat", body, self.timeout)
+            return status == 200
         except Exception:
             return False

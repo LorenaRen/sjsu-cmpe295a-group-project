@@ -431,3 +431,26 @@ def test_cycle_timeout_during_replan():
     out = c.tick(50)
     assert kinds(out) == ["Fallback", "CycleDone"]
     assert out[0].cause == "cycle_timeout"
+
+
+def _rejected_with_goals(goals_mission):
+    c = make(max_replan_attempts=3)
+    c.start_cycle(goals_mission, "ep", 0)
+    agree_on_take_turns(c)
+    c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "robots meet in the aisle"), 2)
+    return c
+
+
+def test_replanned_plan_that_gives_up_the_mission_never_reaches_the_gate():
+    """A replan that holds every robot where it is passes the gate, but does not do the mission."""
+    c = _rejected_with_goals(goal_mission())
+    hold = fallback_plan(("robot_a", "robot_b"), {}, {"robot_a": "room_w_s", "robot_b": "room_e_n"})
+    out = c.on_replan_result(success=True, plan=hold, error_reason="", error_detail="", now=3)
+    assert kinds(out) == ["Fallback", "CycleDone"] and out[0].cause == "mission_mismatch"
+    assert out[0].detail.startswith("replanned plan: ") and "robot_a's last task ends at room_w_s" in out[0].detail
+
+
+def test_replanned_plan_that_keeps_the_goals_is_submitted():
+    c = _rejected_with_goals(goal_mission())
+    out = c.on_replan_result(success=True, plan=TAKE, error_reason="", error_detail="", now=3)
+    assert kinds(out) == ["SubmitPlan"] and out[0].attempt == 1

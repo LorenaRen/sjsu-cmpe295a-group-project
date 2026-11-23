@@ -28,3 +28,14 @@ def test_summary(tmp_path, capsys):
     assert main(["--log", str(path)]) == 0
     assert "approved 1 (50%), fallback 1 [rejected 1]" in capsys.readouterr().out
     assert main(["--log", str(tmp_path / "missing.sqlite")]) == 1
+
+
+def test_replan_calls_are_counted_on_their_own(tmp_path):
+    from mrs_llm_planner.response_log import REPLANNER
+
+    log = ResponseLog(tmp_path / "log.sqlite", "r1")
+    for attempt in (1, 2):   # two replans in one cycle: neither is a repair
+        log.record(agent=REPLANNER, context=CallContext("ep", "tx", attempt, 0), model="ollama/phi3.5",
+                   temperature=0.7, messages=[Message("user", "x")], error="llm_error: down")
+    [s] = summarize(tmp_path / "log.sqlite")
+    assert (s["llm_calls"], s["replan_calls"], s["repair_calls"]) == (2, 2, 0)
