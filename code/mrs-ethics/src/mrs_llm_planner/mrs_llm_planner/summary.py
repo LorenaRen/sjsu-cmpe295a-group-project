@@ -18,6 +18,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+from .response_log import REPLANNER
+
 
 def summarize(path, run_id: Optional[str] = None) -> list[dict]:
     db = sqlite3.connect(str(path))
@@ -30,7 +32,7 @@ def summarize(path, run_id: Optional[str] = None) -> list[dict]:
     for run in runs:
         cycles = [dict(r) for r in db.execute("SELECT * FROM cycles WHERE run_id = ?", (run,))] if "cycles" in tables else []
         calls = [dict(r) for r in db.execute("SELECT * FROM calls WHERE run_id = ?", (run,))]
-        per_turn = Counter((c["agent"], c["transaction_id"], c["round"]) for c in calls)
+        per_turn = Counter((c["agent"], c["transaction_id"], c["attempt"], c["round"]) for c in calls)
         n = len(cycles)
         mean = lambda key: round(sum(c[key] or 0 for c in cycles) / n, 2) if n else None
         out.append({
@@ -47,6 +49,7 @@ def summarize(path, run_id: Optional[str] = None) -> list[dict]:
             "mean_plan_versions": mean("plan_versions"),
             "llm_calls": len(calls),
             "repair_calls": sum(k - 1 for k in per_turn.values() if k > 1),
+            "replan_calls": sum(c["agent"] == REPLANNER for c in calls),
             "failed_calls": sum(c["error"] is not None for c in calls),
             "failed_by_reason": dict(Counter(c["error"].split(":", 1)[0] for c in calls if c["error"])),
             "tokens_in": sum(c["tokens_in"] or 0 for c in calls),
@@ -67,7 +70,8 @@ def _text(s: dict) -> str:
         f"  cycles {s['cycles']}: approved {s['approved']} ({rate}), fallback {s['fallback']} [{causes}]",
         f"  per cycle: {s['mean_duration_s']} s, {s['mean_rounds']} rounds, {s['mean_turns']} turns, "
         f"{s['mean_plan_versions']} plan versions; skipped turns {s['skipped_turns']} in total",
-        f"  LLM: {s['llm_calls']} calls ({s['repair_calls']} repairs, {s['failed_calls']} failed [{failed}]), "
+        f"  LLM: {s['llm_calls']} calls ({s['repair_calls']} repairs, {s.get('replan_calls', 0)} replans, "
+        f"{s['failed_calls']} failed [{failed}]), "
         f"{s['mean_call_s']} s per call, tokens {s['tokens_in']} in / {s['tokens_out']} out",
     ])
 

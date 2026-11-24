@@ -7,13 +7,13 @@ rejected (S-1), and every robot holds: there is one dialogue per mission, no rep
 """
 import pytest
 
-from mrs_common.plan_schema import plan_to_json
+from mrs_common.plan_schema import constraints_to_json, plan_to_json
 from mrs_llm_planner.agent import Agent, TranscriptTracker, failure_text
 from mrs_llm_planner.guidelines import BASIC_RULES, guidelines_for
 from mrs_llm_planner.llm_client import FakeClient
 from mrs_llm_planner.prompts import PlannerContext
-from mrs_llm_planner.protocol import (CycleDone, Coordinator, Fallback, ProtocolConfig, SendPrompt, SubmitPlan,
-                                      Turn, Verdict)
+from mrs_llm_planner.protocol import (CycleDone, Coordinator, Fallback, ProtocolConfig, SendPrompt, StartReplan,
+                                      SubmitPlan, Turn, Verdict)
 from plans import A_GOES, B_AFTER_A, B_NOW, HEAD_ON, TAKE_TURNS, agreement, discussion, part, proposal
 
 TEAM = ("robot_a", "robot_b")
@@ -33,8 +33,13 @@ def gate():
                        rules=basic, fairness_ledger=False)
 
 
-def run(world_map, gate, scripts, mission="robot_a: go to room_e. robot_b: go to room_w."):
-    """Drive the protocol the way the nodes do; returns (actions, verdicts, agents' fakes)."""
+def run(world_map, gate, scripts, mission="robot_a: go to room_e. robot_b: go to room_w.", max_replan_attempts=3,
+        replan_responses=None):
+    """Drive the protocol the way the nodes do; returns (actions, verdicts, agents' fakes).
+
+    replan_responses: optional list of (success, plan) tuples for mock replan results.
+                      If None and replan is triggered, falls back immediately.
+    """
     fakes = {r: FakeClient(script=scripts[r]) for r in TEAM}
     from mrs_llm_planner.routes import node_zones
     spawns = {r: s.node for r, s in zip(TEAM, world_map.spawns)}
@@ -42,10 +47,11 @@ def run(world_map, gate, scripts, mission="robot_a: go to room_e. robot_b: go to
                                       node_zones=node_zones(world_map), start_nodes=spawns),
                        fakes[r]) for r in TEAM}
     trackers = {r: TranscriptTracker() for r in TEAM}
-    coord = Coordinator(ProtocolConfig(team=TEAM), new_id=lambda: "tx-e2e",
+    coord = Coordinator(ProtocolConfig(team=TEAM, max_replan_attempts=max_replan_attempts), new_id=lambda: "tx-e2e",
                         start_nodes={r: s.node for r, s in zip(TEAM, world_map.spawns)})
 
     log, verdicts, now = [], [], 0.0
+    replan_idx = 0
     from mrs_llm_planner.mission import parse_mission, room_nodes
     pending = coord.start_cycle(parse_mission(mission, TEAM, world_map.nodes, room_nodes(world_map)), "ep-1", now)
     while pending:
@@ -68,10 +74,24 @@ def run(world_map, gate, scripts, mission="robot_a: go to room_e. robot_b: go to
             pending += coord.on_turn(Turn(action.transaction_id, action.round, kind, r, text, plan), now)
         elif isinstance(action, SubmitPlan):
             d = gate.decide(plan_to_json(action.plan), transaction_id=action.transaction_id, episode_id="ep-1",
-                            attempt=0, now=now)
+                            attempt=action.attempt, now=now)
             verdicts.append(d.verdict)
             pending += coord.on_verdict(Verdict(action.transaction_id, d.verdict.verdict, d.verdict.rule_ids,
-                                                d.verdict.rationale), now)
+                                                d.verdict.rationale, constraints_to_json(d.verdict.constraints),
+                                                action.attempt), now)
+        elif isinstance(action, StartReplan):
+            # Simulate replan result
+            if replan_responses and replan_idx < len(replan_responses):
+                success, plan = replan_responses[replan_idx]
+                replan_idx += 1
+                pending += coord.on_replan_result(success=success, plan=plan,
+                                                  error_reason="" if success else "replan_failed",
+                                                  error_detail="" if success else "mock failure", now=now)
+            else:
+                # No mock response: fail the replan
+                pending += coord.on_replan_result(success=False, plan=None,
+                                                  error_reason="replan_failed",
+                                                  error_detail="no mock response", now=now)
     return log, verdicts, fakes
 
 
@@ -89,7 +109,7 @@ def test_taking_turns_is_approved(world_map, gate):
 
 def test_head_on_is_rejected_and_robots_hold(world_map, gate):
     scripts = {"robot_a": [proposal(part(A_GOES))], "robot_b": [proposal(part(B_NOW), "I go now")]}
-    log, verdicts, _ = run(world_map, gate, scripts)
+    log, verdicts, _ = run(world_map, gate, scripts, max_replan_attempts=0)
     assert [v.verdict for v in verdicts] == ["REJECT"]
     assert verdicts[0].rule_ids == ("capacity_exceeded",)   # S-1; the gate reports reason codes
     assert isinstance(log[-2], Fallback) and log[-2].cause == "rejected" and log[-1].outcome == "fallback"
@@ -164,3 +184,76 @@ def test_every_call_carries_this_turns_schema(world_map, gate):
     dep = prop["properties"]["tasks"]["items"]["properties"]["depends_on"]["items"]
     assert {"enum": ["a1"]} in dep["anyOf"]                      # robot_a's current task ids
     assert fakes["robot_a"].schemas[0] is not None
+
+
+# ---- Replan end-to-end tests ----
+
+def test_reject_then_replan_succeeds(world_map, gate):
+    """REJECT triggers replan; successful replan with valid plan is APPROVED."""
+    from mrs_common.plan_schema import plan_from_json
+    import json
+
+    # First plan: head-on collision (both go at once) -> REJECT
+    scripts = {"robot_a": [proposal(part(A_GOES))], "robot_b": [proposal(part(B_NOW), "I go now")]}
+
+    # Replan returns a valid plan: robot_b waits for robot_a
+    fixed_plan = plan_from_json(json.dumps(TAKE_TURNS))
+
+    log, verdicts, _ = run(world_map, gate, scripts, max_replan_attempts=3,
+                           replan_responses=[(True, fixed_plan)])
+
+    assert [v.verdict for v in verdicts] == ["REJECT", "APPROVE"]
+    assert log[-1] == CycleDone("tx-e2e", "approved")
+    assert sum(isinstance(a, StartReplan) for a in log) == 1
+    assert sum(isinstance(a, SubmitPlan) for a in log) == 2  # original + replan
+
+
+def test_reject_replan_fails_then_fallback(world_map, gate):
+    """REJECT triggers replan; failed replan leads to fallback."""
+    scripts = {"robot_a": [proposal(part(A_GOES))], "robot_b": [proposal(part(B_NOW), "I go now")]}
+
+    # Replan fails
+    log, verdicts, _ = run(world_map, gate, scripts, max_replan_attempts=3,
+                           replan_responses=[(False, None)])
+
+    assert [v.verdict for v in verdicts] == ["REJECT"]
+    assert isinstance(log[-2], Fallback) and log[-2].cause == "replan_failed"
+    assert log[-1].outcome == "fallback"
+
+
+def test_multiple_replan_attempts_until_success(world_map, gate):
+    """Multiple replan attempts, eventually succeeds."""
+    from mrs_common.plan_schema import plan_from_json
+    import json
+
+    scripts = {"robot_a": [proposal(part(A_GOES))], "robot_b": [proposal(part(B_NOW))]}
+    fixed_plan = plan_from_json(json.dumps(TAKE_TURNS))
+
+    # First replan returns bad plan (still collision), second returns good plan
+    bad_plan = plan_from_json(json.dumps(HEAD_ON))  # still head-on
+
+    log, verdicts, _ = run(world_map, gate, scripts, max_replan_attempts=3,
+                           replan_responses=[(True, bad_plan), (True, fixed_plan)])
+
+    # First REJECT, replan1 -> REJECT, replan2 -> APPROVE
+    assert [v.verdict for v in verdicts] == ["REJECT", "REJECT", "APPROVE"]
+    assert log[-1].outcome == "approved"
+    assert sum(isinstance(a, StartReplan) for a in log) == 2
+
+
+def test_replan_exhausted_falls_back(world_map, gate):
+    """All replan attempts rejected, falls back."""
+    from mrs_common.plan_schema import plan_from_json
+    import json
+
+    scripts = {"robot_a": [proposal(part(A_GOES))], "robot_b": [proposal(part(B_NOW))]}
+    bad_plan = plan_from_json(json.dumps(HEAD_ON))
+
+    # All replans return bad plans
+    log, verdicts, _ = run(world_map, gate, scripts, max_replan_attempts=2,
+                           replan_responses=[(True, bad_plan), (True, bad_plan)])
+
+    # REJECT x3 (original + 2 replans), then fallback
+    assert [v.verdict for v in verdicts] == ["REJECT", "REJECT", "REJECT"]
+    assert isinstance(log[-2], Fallback)
+    assert log[-1].outcome == "fallback"
