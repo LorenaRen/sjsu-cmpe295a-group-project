@@ -76,6 +76,8 @@ class Verdict:
     verdict: str
     rule_ids: tuple[str, ...] = ()
     rationale: str = ""
+    constraints_json: str = "[]"   # JSON list of Constraint objects for REJECT/MODIFY
+    attempt: int = 0               # the attempt this verdict is for
 
 
 # --------------------------------------------------------------------------
@@ -106,6 +108,7 @@ class SubmitPlan:
     transaction_id: str
     dialogue_digest: str
     latency_ms: float           # from the first prompt to the agreement
+    attempt: int = 0            # attempt number (0 = first, +1 after each REJECT)
 
 
 @dataclass(frozen=True)
@@ -122,7 +125,17 @@ class CycleDone:
     outcome: str                # "approved" or "fallback"
 
 
-Action = Union[PauseWorld, ResumeWorld, SendPrompt, SubmitPlan, Fallback, CycleDone]
+@dataclass(frozen=True)
+class StartReplan:
+    """Trigger a replan cycle with the LLM after a REJECT."""
+    transaction_id: str
+    attempt: int                # the new attempt number
+    plan: TeamPlan              # the rejected plan
+    constraints_json: str       # constraints from the REJECT verdict
+    rationale: str              # rejection rationale
+
+
+Action = Union[PauseWorld, ResumeWorld, SendPrompt, SubmitPlan, Fallback, CycleDone, StartReplan]
 
 
 @dataclass(frozen=True)
@@ -133,6 +146,8 @@ class ProtocolConfig:
     verdict_timeout_s: float = 30.0
     pause_world: bool = False
     cycle_timeout_s: float = 300.0     # hard limit for a whole planning cycle
+    max_replan_attempts: int = 3       # max attempts after REJECT (0 = no replan, fallback immediately)
+    replan_timeout_s: float = 60.0     # timeout for each replan LLM call
 
     def __post_init__(self):
         if not self.team:
@@ -145,12 +160,14 @@ class ProtocolConfig:
             raise ValueError("max_rounds must be at least 1")
         if self.turn_timeout_s <= 0 or self.verdict_timeout_s <= 0 or self.cycle_timeout_s <= 0:
             raise ValueError("timeouts must be positive")
+        if self.max_replan_attempts < 0:
+            raise ValueError("max_replan_attempts must be non-negative")
 
 
 # --------------------------------------------------------------------------
 # The state machine
 # --------------------------------------------------------------------------
-IDLE, TURN, VERDICT, DONE = "idle", "waiting_for_turn", "waiting_for_verdict", "done"
+IDLE, TURN, VERDICT, REPLAN, DONE = "idle", "waiting_for_turn", "waiting_for_verdict", "replanning", "done"
 
 
 class Coordinator:
@@ -180,11 +197,13 @@ class Coordinator:
         self._transcript: list[TranscriptEntry] = []
         self.view = TeamView()
         self.cause = self.detail = ""
+        self.attempt = 0                                      # current attempt (0 = first, +1 after each REJECT)
+        self.last_submitted_plan: Optional[TeamPlan] = None   # the plan we last sent to the gate
 
     # ---- queries ---------------------------------------------------------------------------
     @property
     def busy(self) -> bool:
-        return self.state in (TURN, VERDICT)
+        return self.state in (TURN, VERDICT, REPLAN)
 
     @property
     def next_speaker(self) -> str:
@@ -247,9 +266,10 @@ class Coordinator:
             missed = check_goals(plan, self.goals)
             if missed:   # the agents check their own goals; a plan that slipped through never reaches the gate
                 return self._fallback(MISSION_MISMATCH, "; ".join(missed))
+            self.last_submitted_plan = plan
             self.state, self.deadline = VERDICT, now + self.config.verdict_timeout_s
             return [SubmitPlan(plan, self.transaction_id, transcript_digest(self._transcript),
-                               latency_ms=(now - self.started) * 1000.0)]
+                               latency_ms=(now - self.started) * 1000.0, attempt=self.attempt)]
         return self._advance(now)
 
     def on_turn_failed(self, speaker: str, reason: str, detail: str, now: float) -> list[Action]:
@@ -262,8 +282,40 @@ class Coordinator:
             return []
         if verdict.verdict in (APPROVE, MODIFY):     # the gate publishes the ValidatedPlan itself
             return self._finish("approved")
+        # REJECT: try to replan if attempts remain
         rules = ", ".join(verdict.rule_ids) or "no rule id"
+        if self.config.max_replan_attempts > 0 and self.attempt < self.config.max_replan_attempts:
+            # Trigger replan with the LLM
+            self.state = REPLAN
+            self.deadline = now + self.config.replan_timeout_s
+            return [StartReplan(
+                transaction_id=self.transaction_id,
+                attempt=self.attempt + 1,
+                plan=self.last_submitted_plan,
+                constraints_json=verdict.constraints_json,
+                rationale=verdict.rationale,
+            )]
         return self._fallback("rejected", f"{rules}: {verdict.rationale}".rstrip(": "))
+
+    def on_replan_result(self, success: bool, plan: Optional[TeamPlan], error_reason: str,
+                         error_detail: str, now: float) -> list[Action]:
+        """Handle the result of a replan attempt from the LLM."""
+        if self.state != REPLAN:
+            return []
+        if not success:
+            # Replan failed (LLM error, timeout, malformed output)
+            return self._fallback(error_reason, error_detail)
+        # The same goal check an agreed plan gets: a replan can satisfy the gate by giving up on
+        # the mission (every robot holding where it is), and such a plan must not count as fixed.
+        missed = check_goals(plan, self.goals)
+        if missed:
+            return self._fallback(MISSION_MISMATCH, "replanned plan: " + "; ".join(missed))
+        # Replan succeeded: submit the new plan
+        self.attempt += 1
+        self.last_submitted_plan = plan
+        self.state, self.deadline = VERDICT, now + self.config.verdict_timeout_s
+        return [SubmitPlan(plan, self.transaction_id, f"replan attempt {self.attempt}",
+                           latency_ms=(now - self.started) * 1000.0, attempt=self.attempt)]
 
     def tick(self, now: float) -> list[Action]:
         if self.busy and now >= self.started + self.config.cycle_timeout_s:
@@ -275,6 +327,8 @@ class Coordinator:
                                   f"{self.next_speaker} sent no turn within {self.config.turn_timeout_s:g} s")
         if self.state == VERDICT:
             return self._fallback("no_verdict", f"no verdict within {self.config.verdict_timeout_s:g} s")
+        if self.state == REPLAN:
+            return self._fallback(R.LLM_TIMEOUT, f"replan attempt {self.attempt + 1} timed out")
         return []
 
     # ---- internals ---------------------------------------------------------------------------

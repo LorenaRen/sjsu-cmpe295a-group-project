@@ -167,6 +167,41 @@ class LoggingClient:
         return completion
 
 
+REPLANNER = "replanner"   # the `agent` of the coordinator's replan calls in the calls table
+
+
+class LoggingChat:
+    """Wraps a chat-style client (the replanner's OllamaClient: chat(messages, json_schema) ->
+    response with success, content, error_reason, error_detail, tokens_in, tokens_out, latency_ms)
+    and records every call in the response log like an agent's, so the log holds every prompt and
+    answer of the run. ResponseLog is thread-safe, so this may run in a worker thread."""
+
+    def __init__(self, inner, log: ResponseLog, *, agent: str, model: str, temperature: float,
+                 context: Optional[CallContext] = None):
+        self.inner = inner
+        self.log = log
+        self.agent = agent
+        self.log_model = model   # the label in the log, e.g. ollama/phi3.5 (`model` stays the wrapped client's)
+        self.temperature = temperature
+        self.context = context or CallContext()
+
+    def chat(self, messages, json_schema=None):
+        response = self.inner.chat(messages, json_schema=json_schema)
+        msgs = [Message(m["role"], m["content"]) for m in messages]
+        if response.success:
+            self.log.record(agent=self.agent, context=self.context, model=self.log_model, temperature=self.temperature,
+                            messages=msgs, completion=Completion(response.content or "", self.log_model,
+                                                                 response.latency_ms, response.tokens_in,
+                                                                 response.tokens_out))
+        else:
+            self.log.record(agent=self.agent, context=self.context, model=self.log_model, temperature=self.temperature,
+                            messages=msgs, error=f"{response.error_reason}: {response.error_detail}")
+        return response
+
+    def __getattr__(self, name):   # model, timeout, ... of the wrapped client
+        return getattr(self.inner, name)
+
+
 class ReplayClient:
     """Answers an agent's calls from a recorded run, in call order; a recorded failure is raised
     again. Asking for more calls than were recorded is an LLMError: the replay has diverged."""
