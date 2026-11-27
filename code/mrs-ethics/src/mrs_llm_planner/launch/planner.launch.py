@@ -23,7 +23,8 @@ ARGS = {
     "backend": ("", "LLM backend (ollama, fake, openai, anthropic, openai_compatible); empty: params_file's"),
     "model": ("", "model name; empty: params_file's"),
     "run_id": ("", "run name in the response log; empty: params_file's"),
-    "log_file": ("", "response log (SQLite); empty: params_file's"),
+    "log_file": ("", "response log (SQLite) of the agents and the coordinator; empty: params_file's"),
+    "episode_id": ("", "episode id for every message; empty: the coordinator makes one up"),
     "fake_script": ("", "backend fake: a config/fake_<name>.json of this package, or a path to one"),
     "use_sim_time": ("true", "use /clock from Gazebo"),
 }
@@ -35,12 +36,10 @@ def _setup(context):
     params_file = get("params_file") or os.path.join(share, "config", "planner.yaml")
     n = int(get("robots"))
     overrides = {"world": get("world"), "robots": n, "use_sim_time": get("use_sim_time").lower() == "true"}
-    for name in ("backend", "model", "run_id"):
+    for name in ("backend", "model", "run_id", "log_file", "episode_id"):
         if get(name):
             overrides[name] = get(name)
     agent_overrides = {}
-    if get("log_file"):
-        agent_overrides["log_file"] = get("log_file")
     script = get("fake_script")
     if script:
         if not script.endswith(".json"):

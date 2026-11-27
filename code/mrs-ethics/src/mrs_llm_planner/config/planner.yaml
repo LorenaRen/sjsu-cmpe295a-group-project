@@ -21,7 +21,8 @@
     log_file: llm_log.sqlite        # LLM calls (agents) and one row per planning cycle (coordinator)
     # A turn is at most (1 + max_repairs) LLM calls; the coordinator checks turn_timeout_s against it.
     llm_timeout_s: 60.0
-    max_repairs: 1                  # repair calls when a reply cannot be used
+    max_repairs: 1                  # repair calls when a reply cannot be used (agents and the replanner)
+    repair_temperature: 0.2         # repairs are careful, not creative (agents and the replanner)
     # Sampling temperature of the agents and of the coordinator's replanner: one value, fixed for an experiment.
     temperature: 0.7
 
@@ -31,7 +32,6 @@
     api_key_env: ""
     secrets_file: ""                # empty: $MRS_SECRETS, else .env in the working directory
     constrained_output: true        # the model must follow the reply schema while generating
-    repair_temperature: 0.2         # repairs are careful, not creative
     # Tell the agents where two robots' routes cross a capacity-1 zone with no order between them.
     # This is rule S-1 checked for the agents in advance, so the gate catches less: record whether it
     # was on in every experiment, and turn it off to compare prompting alone with the gate.
@@ -50,4 +50,5 @@ mrs_coordinator:
     verdict_timeout_s: 30.0
     pause_world: false              # true needs the ros_gz ControlWorld service bridged (user guide)
     world_control_service: ""       # empty: /world/<world>/control
-    episode_id: ""                  # empty: a new one at start-up
+    # No episode_id here: a value in this section beats planner.launch.py's episode_id argument (which
+    # reaches the node merged into the "/**" section above). Empty (the code default): a new one at start-up.

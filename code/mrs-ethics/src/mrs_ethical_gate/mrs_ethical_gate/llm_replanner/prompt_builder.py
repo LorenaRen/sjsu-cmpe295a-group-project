@@ -2,6 +2,7 @@
 
 Builds prompts that include:
 - The original plan (as JSON)
+- The mission's goals, if any (where each robot's plan must end)
 - The rejection reason and constraints (human-readable text)
 - Instructions for generating a valid modified plan
 """
@@ -20,17 +21,20 @@ You will receive:
 2. A list of constraints explaining why the plan was rejected and what must change
 
 Your response must be a valid JSON object matching the TeamPlan schema. The plan must:
-- Keep the same robots (robot_ids)
+- Keep the same robots (robot_ids), each with at least one task
+- If mission goals are given: end every robot's last task at its goal. Never give up a goal to satisfy a constraint
 - Modify tasks to satisfy all constraints
 - Use only valid actions: "navigate", "wait", "hold_position"
 - Ensure no circular dependencies in depends_on
 - Keep task_ids unique
 
 Common constraint types:
-- order_before: Task A must complete before Task B starts. Add A to B's depends_on.
-- forbid_node: A robot cannot stop/wait at a specific node. Change the task's target.
+- order_before: Task A must complete before Task B starts. Add A to B's depends_on, and nothing else: do not make A depend on B.
+- forbid_node: A robot cannot stop/wait at a specific node. Change the task's target (to another node of its goal if it is the last task).
 - avoid_node: A robot should not go to a specific node. Retarget tasks going there.
 - custom: A text explanation of what needs to change.
+
+Apply each constraint exactly as stated and change nothing else. When two robots conflict over a narrow passage, only ONE of them waits for the other: two tasks that depend on each other are a deadlock and invalid.
 
 Output only the JSON plan, no explanation."""
 
@@ -40,6 +44,7 @@ def build_replan_prompt(
     constraints: Sequence[Constraint],
     rationale: str = "",
     attempt: int = 0,
+    goals: str = "",
 ) -> list[dict[str, str]]:
     """Build the messages for a replan request.
 
@@ -48,6 +53,8 @@ def build_replan_prompt(
         constraints: List of Constraint objects from the REJECT verdict
         rationale: The checker's human-readable explanation
         attempt: Current attempt number (for context)
+        goals: The mission's goals line, e.g. "Goals: robot_a -> room_e (end at room_e, room_e_n or
+            room_e_s); robot_b -> room_w_n." Empty: no goals section.
 
     Returns:
         List of message dicts for the LLM chat API
@@ -70,6 +77,13 @@ def build_replan_prompt(
 
     constraints_section = "\n".join(constraint_texts) if constraint_texts else "No specific constraints provided."
 
+    goals_section = f"""## Mission Goals
+
+{goals}
+Every robot's last task must end at one of the nodes listed for it.
+
+""" if goals else ""
+
     # Build the user message
     user_content = f"""## Rejected Plan (Attempt {attempt})
 
@@ -77,7 +91,7 @@ def build_replan_prompt(
 {plan_to_json(plan)}
 ```
 
-## Rejection Reason
+{goals_section}## Rejection Reason
 
 {rationale if rationale else "The plan violates safety or policy rules."}
 
@@ -87,7 +101,7 @@ def build_replan_prompt(
 
 ## Your Task
 
-Modify the plan above to satisfy ALL constraints. Output only the valid JSON plan."""
+Modify the plan above to satisfy ALL constraints{" while keeping every robot's goal" if goals else ""}. Output only the valid JSON plan."""
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},

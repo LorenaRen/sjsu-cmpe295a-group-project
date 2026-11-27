@@ -73,3 +73,20 @@ def test_logging_chat_records_replan_calls(tmp_path):
     assert rows[0]["temperature"] == 0.7 and rows[0]["model"] == "ollama/phi3.5"
     assert '"plan + constraints"' in rows[0]["request_json"]
     assert rows[1]["response_text"] is None and rows[1]["error"] == "llm_timeout: no answer in 60 s"
+
+
+def test_attempt_tokens_sum_one_attempt_of_one_cycle(tmp_path):
+    from mrs_llm_planner.llm_client import Completion
+
+    log = ResponseLog(tmp_path / "log.sqlite", run_id="r1")
+    msg = [Message("user", "x")]
+    for agent, attempt, tin, tout in [("robot_a", 0, 900, 70), ("robot_b", 0, 950, 80), ("replanner", 1, 568, 203)]:
+        log.record(agent=agent, context=CallContext("ep", "tx", attempt, 1), model="ollama/phi3.5", temperature=0.7,
+                   messages=msg, completion=Completion("{}", "ollama/phi3.5", 10.0, tin, tout))
+    log.record(agent="robot_a", context=CallContext("ep", "tx", 0, 2), model="m", temperature=0.7, messages=msg,
+               error="llm_timeout: no answer")                     # a failed call has no tokens
+    log.record(agent="robot_a", context=CallContext("ep", "other", 0, 1), model="m", temperature=0.7, messages=msg,
+               completion=Completion("{}", "m", 1.0, 5, 5))        # another cycle
+    assert log.attempt_tokens("tx", 0) == (1850, 150)
+    assert log.attempt_tokens("tx", 1) == (568, 203)
+    assert log.attempt_tokens("tx", 2) == (0, 0)

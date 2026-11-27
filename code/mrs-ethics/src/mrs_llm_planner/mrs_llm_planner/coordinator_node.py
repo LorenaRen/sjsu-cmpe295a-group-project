@@ -38,7 +38,7 @@ from mrs_common.ids import new_episode_id
 from mrs_common.qos import qos_for
 
 from .agent_node import declare_parameters
-from .mission import MissionError, parse_mission, room_nodes
+from .mission import MissionError, check_goals, parse_mission, room_nodes
 from .protocol import (REPLAN, CycleDone, Coordinator, Fallback, PauseWorld, ProtocolConfig,
                        ResumeWorld, SendPrompt, StartReplan, SubmitPlan, Turn, Verdict, fallback_plan)
 from .replan_worker import ReplanWorker, is_current
@@ -133,12 +133,14 @@ class CoordinatorNode(Node):
                                                            attempt=self.coord.attempt, round=a.round,
                                                            next_speaker=a.next_speaker, text=a.text, node=self))
             elif isinstance(a, SubmitPlan):
+                tokens_in, tokens_out = self._attempt_tokens(a.transaction_id, a.attempt)
                 self.plan_pub.publish(make_proposed_plan(
                     a.plan, episode_id=self.episode_id, attempt=a.attempt, transaction_id=a.transaction_id,
                     model_name=self.settings.llm.model_name, latency_ms=a.latency_ms,
-                    dialogue_digest=a.dialogue_digest, node=self))
+                    tokens_in=tokens_in, tokens_out=tokens_out, dialogue_digest=a.dialogue_digest, node=self))
                 self._log("submitted", transaction_id=a.transaction_id, attempt=a.attempt,
-                          latency_ms=round(a.latency_ms, 1), digest=a.dialogue_digest)
+                          latency_ms=round(a.latency_ms, 1), tokens_in=tokens_in, tokens_out=tokens_out,
+                          digest=a.dialogue_digest)
             elif isinstance(a, StartReplan):
                 self._do_replan(a)
             elif isinstance(a, Fallback):
@@ -162,6 +164,14 @@ class CoordinatorNode(Node):
             elif isinstance(a, (PauseWorld, ResumeWorld)):
                 self._control_world(pause=isinstance(a, PauseWorld))
 
+    def _attempt_tokens(self, transaction_id: str, attempt: int) -> tuple[int, int]:
+        """Tokens of this attempt's LLM calls, from the response log (agents' turns or the replan)."""
+        try:
+            return self.log.attempt_tokens(transaction_id, attempt)
+        except Exception as e:   # the counts are for analysis; the plan must go out regardless
+            self.get_logger().warn(f"could not read token counts from the response log: {e}")
+            return 0, 0
+
     def _log(self, what: str, **fields) -> None:
         self.get_logger().info(f"{what} " + json.dumps(fields))
 
@@ -178,18 +188,32 @@ class CoordinatorNode(Node):
         from mrs_ethical_gate.llm_replanner.ollama_client import OllamaClient
 
         s = self.settings
+        host = s.llm.base_url or "http://localhost:11434"
+        label = f"ollama/{s.llm.model}"   # the replanner always calls Ollama, whatever the agents' backend
+
+        def client(temperature: float, timeout_s: float, round_no: int):
+            # The experiment's temperature, like the agents'; repairs at repair_temperature, as theirs.
+            # Every prompt and answer goes into the response log (agent "replanner"): round 0 is the
+            # replan, round 1 its repair.
+            ollama = OllamaClient(model=s.llm.model, host=host, timeout=timeout_s, max_retries=1,
+                                  num_ctx=s.llm.num_ctx, temperature=temperature)
+            return LoggingChat(ollama, self.log, agent=REPLANNER, model=label, temperature=temperature,
+                               context=CallContext(self.episode_id, action.transaction_id, action.attempt, round_no))
+
         # One request may take the whole replan_timeout_s and is not retried after a timeout; a
-        # connection error is retried once. The protocol's deadline ends the attempt in any case.
-        # The experiment's temperature, like the agents': a replan samples the model the same way.
-        client = OllamaClient(model=s.llm.model, host=s.llm.base_url or "http://localhost:11434",
-                              timeout=s.replan_timeout_s, max_retries=1, num_ctx=s.llm.num_ctx,
-                              temperature=s.temperature)
-        # Every replan prompt and answer goes into the response log (agent "replanner"), like the agents' calls.
-        logged = LoggingChat(client, self.log, agent=REPLANNER, model=s.llm.model_name, temperature=s.temperature,
-                             context=CallContext(self.episode_id, action.transaction_id, action.attempt, 0))
+        # connection error is retried once. A repair gets the time left (min_repair_s at least), and
+        # the protocol's deadline ends the attempt in any case.
         replanner = LLMReplanner(max_attempts=1,   # protocol.py counts the attempts
                                  start_nodes=self.spawn_nodes, transaction_id=action.transaction_id,
-                                 episode_id=self.episode_id, client=logged)
+                                 episode_id=self.episode_id, client=client(s.temperature, s.replan_timeout_s, 0),
+                                 # only real robots and graph nodes in the output schema
+                                 robot_ids=list(s.team), graph_nodes=list(self.graph_nodes),
+                                 goals=action.goals,   # the mission's goals, so a fix keeps them
+                                 # and checked like an agent checks its own: a miss is repaired too
+                                 check_plan=lambda plan, goals=action.goal_map: check_goals(plan, goals),
+                                 max_repairs=s.max_repairs, time_budget_s=s.replan_timeout_s,
+                                 make_repair_client=lambda left: client(s.repair_temperature,
+                                                                        max(1.0, (left or s.replan_timeout_s) - 1.0), 1))
         constraints = constraints_from_json(action.constraints_json)
         return replanner._replan_with_llm(action.plan, constraints, action.rationale, action.attempt - 1)
 
@@ -210,10 +234,11 @@ class CoordinatorNode(Node):
                           detail="arrived after its deadline, or its planning cycle has ended")
                 continue
             if result.success:
-                self._log("replan_success", **fields, tokens_in=result.tokens_in, tokens_out=result.tokens_out)
+                self._log("replan_success", **fields, tokens_in=result.tokens_in, tokens_out=result.tokens_out,
+                          repairs=result.repairs)
             else:
                 self._log("replan_failed", **fields, error_reason=result.error_reason,
-                          error_detail=result.error_detail)
+                          error_detail=result.error_detail, repairs=getattr(result, "repairs", 0))
             self._run(self.coord.on_replan_result(
                 success=result.success, plan=result.plan if result.success else None,
                 error_reason="" if result.success else (result.error_reason or "replan_error"),

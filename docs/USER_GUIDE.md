@@ -16,10 +16,10 @@ plan is the team's *End-to-End Implementation Guide*.
 | 1 Workspace and interfaces | `mrs_msgs`, `mrs_common` | **done** — 122 tests (optional camera topics Oct 28; DialogueTurn agreement protocol Nov 4) | Message types, plan format, topic names, edge ids, reason codes, message builders, dev nodes |
 | 2 Simulation world | `mrs_sim` | **first version** — 23 tests; `narrow_aisle` world, 1–4 robots (Oct 28) | Launch a world with N namespaced robots (lidar, optional camera, odom, ground truth), check it with `sim_check` (§4.2) |
 | 3 World state | `mrs_world_state` | — | — |
-| 4 LLM planner | `mrs_llm_planner` | **first version** — 134 tests (Nov 17); one LLM agent per robot (default: phi3.5 on a local Ollama; OpenAI, Anthropic and vLLM also supported) and a coordinator without an LLM; one dialogue per mission, no replanning; tested live with phi3.5 and the gate | Send a mission, watch the robots' agents agree on a team plan on `/mrs/dialogue`, hand it to the gate; every robot holds when no plan is approved; summarize runs (§4.4) |
+| 4 LLM planner | `mrs_llm_planner` | **first version** — 156 tests (Nov 23); one LLM agent per robot (default: phi3.5 on a local Ollama; OpenAI, Anthropic and vLLM also supported) and a coordinator without an LLM; one dialogue per mission, then, after a REJECT, up to 3 replans by a single LLM call (merged Nov 23); tested live with phi3.5 and the gate | Send a mission, watch the robots' agents agree on a team plan on `/mrs/dialogue`, hand it to the gate; a rejected plan is replanned; every robot holds when no plan is approved; summarize runs (§4.4) |
 | 5 Ethical gatekeeper | `mrs_ethical_gate`, `fleet_checker` | **first version** — 211 gate + 342 checker tests (Nov 4); APPROVE / REJECT; robots start at the spawn slots, or where `/mrs/team_state` says, with its blocked edges and the people the robots see (tested with a stand-in for Module 3); people (S-2) also from a file; a fake planner (no LLM) to test the replan loop | Check every `ProposedPlan`, publish the `EthicalVerdict` and, on APPROVE, the `ValidatedPlan`; run the REJECT → replan loop with a scripted planner (§4.3) |
 | 6 Controller + CBF | `mrs_control_cbf` | — | — |
-| 7 Recording | `mrs_telemetry` | — | — |
+| 7 Recording | `mrs_telemetry` | **first version** — 26 tests (Nov 17); MCAP bag of every canonical topic in sim time, Gazebo state log, `events.jsonl` of every decision, `run.json`, the planner's LLM log, all in one run folder; not yet run under ROS | Record one episode (`episode.launch.py`: sim, gate, planner, recorder, optional scripted mission and duration), check the run folder with `check_run` (§4.5) |
 
 ### How the modules fit together
 
@@ -425,6 +425,8 @@ ros2 run mrs_sim list_worlds                            # every world, and wheth
 | `gui` | `false` | also start the Gazebo GUI (a separate `gz sim -g` process, which macOS needs) |
 | `verbosity` | `2` | `gz sim -v` level |
 | `run_dir` | temp dir | where the generated robot SDFs and `bridge.yaml` are written (printed at start) |
+| `record_gz_log` | `false` | also write a Gazebo state log (`state.tlog`, poses + meshes) for replay (Module 7) |
+| `gz_log_dir` | `<run_dir>/gz_log` | where the state log goes |
 
 **What each robot publishes** (all names from `mrs_common.names`; `use_sim_time:=true` everywhere):
 
@@ -557,8 +559,8 @@ it, so driving over a node takes `robot_length / speed`; no default in the code 
 `start_source` and `team_state_max_age` (below), and S-2's `crowding_radius` (R) and
 `crowding_max_robots` (N): at most N robots within R metres of one person at once. Like `speed`, R and N
 have no default in the code, and the file's values (1.5 m, 1) are placeholders, neither measured nor
-taken from a standard. `starvation_threshold` is 2, so that F-2 can act within one planning cycle once
-Module 4 replans; for now Module 4 makes one plan per mission (§4.4), so F-2 does not come into play.
+taken from a standard. `starvation_threshold` is 2, so that F-2 can act within one planning cycle: Module 4
+now replans after a REJECT (§4.4), so with `fairness_ledger` on, F-2 can act from the second attempt.
 
 **Which rules run**: `rule_s1`, `rule_s2`, `rule_s4`, `rule_p1`, `rule_p2`, `rule_p3` and
 `fairness_ledger`, one boolean each. The defaults are the implementation guide's: S-1, P-1 and P-2 on;
@@ -728,9 +730,10 @@ and how long each takes, cell by cell, in turns. See `benchmarks/README.md`.
 
 One LLM agent per robot and a coordinator with no LLM. Each agent proposes only its own robot's part;
 the parts together form one `TeamPlan`. When every agent has accepted it, the coordinator sends it to
-the gate on `/mrs/proposed_plan`. There is one dialogue per mission and no replanning: if no plan is
-approved, the coordinator publishes `hold_all_plan` as a `FALLBACK` ValidatedPlan (every robot holds)
-and a `planning_exhausted` EpisodeEvent. No interface changed for this module.
+the gate on `/mrs/proposed_plan`. If the gate rejects it, a replanner (one LLM call made by the
+coordinator, not a dialogue) fixes the plan and sends it again, up to 3 times (§ Replanning, below). If
+no plan is approved, the coordinator publishes `hold_all_plan` as a `FALLBACK` ValidatedPlan (every robot
+holds) and a `planning_exhausted` EpisodeEvent. No interface changed for this module.
 
 #### Running it
 
@@ -764,7 +767,8 @@ ros2 topic pub --once /mrs/mission std_msgs/msg/String \
   config file), or `backend:=openai_compatible` with `base_url` in a params file (e.g. vLLM on the HPC
   cluster). Ollama on another machine: set `base_url`, e.g. `http://gpu-node:11434`.
 - No LLM at all: `backend:=fake` (agents only discuss), `fake_script:=narrow_aisle` (scripted, APPROVE)
-  or `fake_script:=narrow_aisle_reject` (scripted, the gate rejects, every robot holds).
+  or `fake_script:=narrow_aisle_reject` (scripted, the gate rejects; then the replanner calls the real
+  model on Ollama, so keep Ollama running).
 
 #### Missions and goals
 
@@ -800,11 +804,50 @@ A reply that fails gets `max_repairs` (1) repair calls with the exact problem. I
 LLM times out or errors, the agent says so instead of going silent ("I skip this turn: ...") and the
 next robot speaks.
 
-**Planning ends** approved, or with every robot holding when: the gate rejects (`rejected`), no
-agreement after 3 rounds (`no_agreement`), no verdict within 30 s (`no_verdict`), an agent node crashed
+**Planning ends** approved, or with every robot holding when: the gate still rejects after
+`max_replan_attempts` replans (`rejected`), a replan fails or times out (its reason, e.g. `llm_timeout`),
+no agreement after 3 rounds (`no_agreement`), no verdict within 30 s (`no_verdict`), an agent node crashed
 (nothing within `turn_timeout_s`, `llm_timeout`), or the cycle took longer than `cycle_timeout_s`
-(`cycle_timeout`). As a safety net, an agreed plan that misses a goal never reaches the gate
+(`cycle_timeout`). As a safety net, an agreed or replanned plan that misses a goal never reaches the gate
 (`mission_mismatch`).
+
+#### Replanning after a REJECT
+
+The dialogue runs once per mission. When the gate rejects its plan, the coordinator replans instead of
+giving up:
+
+1. It sends the rejected team plan, the mission's `Goals:` line, the verdict's rationale and its constraints to the replanner
+   (`mrs_ethical_gate/llm_replanner`): one LLM call, on Ollama, with the planner's `model`, `num_ctx`
+   and `temperature`. The agents are not involved and nothing appears on `/mrs/dialogue`.
+2. The call runs in a worker thread, so the coordinator keeps running and `replan_timeout_s` (60 s)
+   is enforced. An answer that arrives later is dropped (`replan_ignored` in the log).
+3. The new plan must still end every robot at its goal; then it goes to the gate as attempt 1, 2, 3
+   (the `attempt` field of `ProposedPlan` and `EthicalVerdict`).
+4. A reply that fails the checks (invalid plan, a `depends_on` cycle, an unknown robot or place, a
+   robot that does not end at its goal) gets one repair, like an agent's; every problem goes into one
+   message: the model sees its reply and the exact problem, at
+   `repair_temperature` (`max_repairs`, both shared with the agents). The repair gets the time left of
+   `replan_timeout_s`, and is skipped with less than 10 s left.
+5. Another REJECT replans again, up to `max_replan_attempts` (3). A failed replan (LLM error, timeout,
+   unusable answer after the repair, missed goal) ends the cycle at once with every robot holding.
+
+The coordinator logs `replan_start`, then `replan_success` (the LLM gave a valid plan),
+`replan_failed` (with the reason) or `replan_ignored`, each with `repairs` (0 or 1). `replan_success` comes before the goal check: a
+plan that then misses a goal ends with `fallback ... mission_mismatch "replanned plan: ..."` (`check_run`
+counts that replan as failed, "by the goal check"). The replan's output schema allows only the team's
+robot ids and the map's node names, so the model cannot invent a robot or a place; a backend that ignores
+the schema and does so anyway gets `replan_failed` with `llm_malformed`.
+
+To test it without waiting for a real rejection, script the agents and let only the replanner use the
+model:
+
+```bash
+ros2 launch mrs_llm_planner planner.launch.py use_sim_time:=false fake_script:=narrow_aisle_reject
+```
+
+`max_replan_attempts: 0` restores the old behaviour (every robot holds after the first REJECT). Neither
+setting is in `planner.yaml`; add them under `mrs_coordinator:` → `ros__parameters:` in a copy and pass
+it with `params_file:=...`.
 
 #### Settings (`config/planner.yaml`)
 
@@ -812,15 +855,16 @@ agreement after 3 rounds (`no_agreement`), no verdict within 30 s (`no_verdict`)
 |---|---|---|
 | `backend`, `model` | `ollama`, `phi3.5` | LLM; also `openai`, `anthropic`, `openai_compatible`, `fake` |
 | `rules` | `S-1,P-1,P-2` | rules the agents are told; keep them the rules the gate runs |
-| `temperature`, `repair_temperature` | 0.7, 0.2 | sampling; repairs are careful, not creative |
+| `temperature`, `repair_temperature` | 0.7, 0.2 | sampling; repairs are careful, not creative. Both are in the section every node reads, so the replanner and its repair sample like the agents |
 | `constrained_output` | true | the LLM must follow this turn's reply schema while generating (Ollama, OpenAI, vLLM); a backend that refuses it is used in plain JSON mode, with a warning in the log |
 | `conflict_hints` | true | tell the agents where routes collide (see below) |
-| `max_rounds`, `max_repairs` | 3, 1 | dialogue length; repair calls per turn |
+| `max_rounds`, `max_repairs` | 3, 1 | dialogue length; repair calls per agent turn and per replan |
 | `llm_timeout_s`, `turn_timeout_s`, `cycle_timeout_s`, `verdict_timeout_s` | 60, 150, 300, 30 | wall-clock limits [s]; checked against each other at start-up |
 | `num_ctx` | 8192 | Ollama context window (its own default is shorter than the prompts) |
 | `log_file`, `run_id` | `llm_log.sqlite`, `dev` | where every LLM call and every planning cycle is recorded |
+| `max_replan_attempts`, `replan_timeout_s` | 3, 60 | coordinator: replans after a REJECT (0 = none), limit per replan call [s]; code defaults, not in the file |
 
-Launch arguments override the file: `world`, `robots`, `backend`, `model`, `run_id`, `log_file`,
+Launch arguments override the file: `world`, `robots`, `backend`, `model`, `run_id`, `log_file`, `episode_id`,
 `fake_script`, `use_sim_time`, `params_file`.
 
 **`conflict_hints` and experiments.** A `CONFLICT:` line is rule S-1 checked for the agents in advance,
@@ -829,8 +873,11 @@ set it to `false` to compare prompting alone with the gate. The routes are shown
 
 #### What is recorded
 
-`llm_log.sqlite` holds every LLM request and reply (agent, transaction, round, latency, tokens, error)
-and one row per planning cycle (outcome, cause, rounds, turns, skipped turns, plan versions, duration).
+`llm_log.sqlite` holds every LLM request and reply (agent, transaction, attempt, round, latency, tokens,
+error), the replanner's included (agent `replanner`), and one row per planning cycle (outcome, cause,
+rounds, turns, skipped turns, plan versions, duration). Each `ProposedPlan` carries the summed tokens of
+its attempt (`tokens_in`, `tokens_out`), read back from this log: the agents' turns for attempt 0, the
+replanner's call for a replan.
 After a batch of missions:
 
 ```bash
@@ -839,19 +886,191 @@ ros2 run mrs_llm_planner summary --run exp1_s01 --json
 ```
 
 It prints, per run, the cycles approved and the fallback causes, time and turns per cycle, and LLM
-calls, repairs, failures and tokens: the numbers for comparing models.
+calls, repairs, replans, failures and tokens: the numbers for comparing models.
 
-Tests: `cd src/mrs_llm_planner && pytest -q` (134 tests; no ROS or LLM needed, they use a scripted LLM
-and the real gate code). `test_nodes.py` runs the nodes and the gate node together and needs the built
+Tests: `cd src/mrs_llm_planner && pytest -q` (155 tests, plus 1 that needs ROS; no LLM needed, they use
+a scripted LLM and the real gate code). The replanner's own tests: `cd src/mrs_ethical_gate && pytest -q
+test/test_llm_replanner.py test/test_ollama_client.py` (no Ollama needed). `test_nodes.py` runs the nodes and the gate node together and needs the built
 and sourced workspace: under `colcon test` on the Macs it skips (Troubleshooting).
 
 **Not done yet / known limits:**
-- No replanning: no new dialogue after a REJECT, none on blocked edges or failed tasks.
+- Replanning is a single central LLM call, not a new round of the agents' dialogue. Replanning through
+  the dialogue (the implementation guide's and RoCo's design) is an open team decision; the current
+  replanner could stay as a baseline condition.
+- The replan prompt has the rejected plan, the goals and the constraints, but no map, routes or rules.
+  It asks the model to keep every goal and to fix a passage conflict by making one robot wait. Small
+  models may still move a target off its goal; the goal check then ends the cycle (`mission_mismatch`).
+  Robot ids and targets are limited by the schema, so they cannot be misspelt.
+- The replanner calls Ollama only, whatever `backend` says.
+- No replanning on blocked edges or failed tasks (needs Modules 3 and 6).
 - Robot positions are the spawn positions until Module 3 publishes `/mrs/team_state`.
 - `pause_world` needs a ros_gz bridge entry for the world's ControlWorld service.
 - phi3.5 is small: its words often do not match its tasks, and it rarely coordinates without the
   conflict hints. Agreement rates are a property of the model; the process stays bounded either way.
 - Anthropic does not enforce the reply schema here (prompt and checks only).
+
+---
+
+### 4.5 Module 7 — recording (`mrs_telemetry`)
+
+Records each episode into one run folder, and checks the folder afterwards. First live recording on
+Nov 26: a scripted episode (fake agents, real sim, gate and recorder) passed `check_run`; 35 s of sim time
+made a 1.6 MB bag and an 8 MB Gazebo log.
+
+```
+results/<experiment>/<run_id>/
+  run.json            what ran: git commit (and uncommitted files), host, world, robots, planner, recording settings
+  bag/                MCAP bag: every canonical topic + /clock, /tf, /tf_static, /rosout, stamped in sim time
+  gz_log/             Gazebo state log (state.tlog + meshes) for visual replay
+  events.jsonl        one line per decision: mission, dialogue turns, plans, verdicts, task status, events
+  llm_log.sqlite      the planner's LLM calls and planning cycles (§4.4)
+  qos_overrides.yaml  how the recorder subscribed to latched topics
+  ros_log/            every node's ROS log files (episode.launch.py sets ROS_LOG_DIR)
+  sim/                robot SDFs and bridge.yaml from sim.launch.py
+  check.json          check_run's report and the run's outcome (written by check_run)
+```
+
+`results/` is in `.gitignore`: run folders never go into Git.
+
+#### Recording an episode
+
+```bash
+colcon build --packages-up-to mrs_telemetry     # also builds the sim, gate and planner
+source install/setup.zsh
+
+# everything in one launch: sim + gate + planner + recorder; it sends the mission and stops once the
+# robots get a plan (replans included), 600 s at most
+ros2 launch mrs_telemetry episode.launch.py \
+    mission:="robot_a: go to room_e. robot_b: go to room_w." duration:=600
+ros2 launch mrs_telemetry episode.launch.py fake_script:=narrow_aisle mission:="robot_a: go to room_e. robot_b: go to room_w."   # no LLM
+ros2 launch mrs_telemetry episode.launch.py experiment:=s1 run_id:=seed03    # results/s1/seed03/; send the mission yourself, Ctrl-C to stop
+
+# afterwards
+ros2 run mrs_telemetry check_run results/s1/seed03
+ros2 bag info results/s1/seed03/bag
+gz sim -s -r --playback results/s1/seed03/gz_log         # replay the Gazebo log: the server...
+gz sim -g                                                # ...and, in a second terminal, the GUI (macOS needs both;
+                                                         #    on Linux `gz sim -r --playback <dir>` alone works)
+```
+
+Without `mission:=`, send it from a second terminal with the `ros2 topic pub` line of §4.4, after
+the robots have spawned.
+
+**When it ends.** With `mission:=`, the episode ends by itself once the planning cycle is over: the
+robots got a plan on `/mrs/validated_plan` (APPROVE, or FALLBACK when no plan was approved; a REJECT
+that is replanned sends none, so replans are waited for), plus `end_grace_s` (5 s) for the last
+messages. `end_on_plan:=false` keeps it running. `duration` is a hard limit counted from the launch,
+Gazebo's start-up (about 20–25 s on a Mac) included; without a mission and without `duration`, the
+episode runs until Ctrl-C. Once robots drive (Module 6), the end will have to wait for them.
+
+**Always stop with Ctrl-C** (or `duration`). Every process gets SIGINT: the recorder closes the bag
+and writes its `metadata.yaml`, Gazebo closes the state log, and the telemetry node writes a last
+`telemetry_end` line. A recorder killed hard leaves a bag without `metadata.yaml`
+(`check_run` says so); `ros2 bag reindex <run_dir>/bag` rebuilds it.
+
+To record next to launches you start yourself, run only the recorder:
+`ros2 launch mrs_telemetry record.launch.py run_dir:=results/dev/try1` (same `robots` as the sim).
+
+| `episode.launch.py` argument | Default | Meaning |
+|---|---|---|
+| `run_dir` | empty | the run folder; empty: `<results_root>/<experiment>/<run_id>` |
+| `results_root`, `experiment`, `run_id` | `results`, `dev`, date-time + 4 random hex digits | where the run folder goes; parallel runs never share a default name |
+| `world`, `robots` | `narrow_aisle`, `2` | passed to the sim, gate and planner |
+| `camera`, `gui` | `false`, `false` | robot cameras (simulated and recorded: large), Gazebo window |
+| `record_gz_log` | `true` | the Gazebo state log |
+| `scan` | `true` | record the LiDAR scans |
+| `gate`, `planner` | `true`, `true` | start the gate, the planner |
+| `backend`, `model`, `fake_script` | empty | planner settings; empty: `planner.yaml`'s (ollama, phi3.5) |
+| `mission` | empty | mission to send (by `send_mission`, below); empty: send it yourself |
+| `mission_timeout_s` | `90` | how long `send_mission` waits for its listeners |
+| `end_on_plan`, `end_grace_s` | `true`, `5` | with a mission: end once the robots get a plan, this many seconds later |
+| `duration` | `0` | hard limit [s, wall clock, start-up included]; 0: none |
+
+`record.launch.py` takes `run_dir`, `results_root`, `experiment`, `robots`, `camera`, `scan`,
+`sim_time` (`false` when no Gazebo runs: with sim time, nothing reaches the bag before the first
+`/clock`), `bag` and `events`.
+
+#### What is recorded
+
+- **The bag** records every topic in `mrs_common.names` for the fleet, plus `/clock`, `/tf`,
+  `/tf_static` and `/rosout` (every node's log lines: the coordinator's `cycle_done` and `replan_*`,
+  the gate's decisions), as MCAP (zstd). Topics are listed one by one, not matched by a pattern;
+  rosbag2 adds a listed topic to the bag once a node publishes it, so the topics of modules that do
+  not exist yet are absent, and `check_run` lists them. The latched topics (`/tf_static`,
+  `/mrs/mission`, `/mrs/validated_plan`) are recorded transient-local, so the recorder gets them
+  even if they were published before it subscribed.
+- **events.jsonl** has one JSON line per message on a decision topic (`/mrs/mission`, `dialogue`,
+  `proposed_plan`, `verdict`, `validated_plan`, `task_status`, `episode_event`, `safety_override`),
+  and one per coordinator log line that is a decision no message carries: each replan step (`replan`,
+  with `phase` start, success, failed or ignored, the attempt, latency and error) and `cycle_done`
+  with the cycle's statistics. A replan that fails sends nothing to the gate; this is its record.
+  Every line has `t` (sim time), `stamp`, `wall`, `type`, a one-line `summary` and the fields of
+  that type: ids, round, speaker, text, plan summary, verdict, rule ids, constraint kinds, and so on.
+  Safety overrides are written at most once per robot per second (the bag keeps all of them).
+  ```
+  {"t": 41.2, "type": "dialogue", "summary": "round 1: robot_b proposal: robot_a: a1 navigate room_e | robot_b: b1 navigate room_w (after a1)", ...}
+  {"t": 63.9, "type": "verdict", "summary": "APPROVE", "verdict": "APPROVE", "rule_ids": [], ...}
+  ```
+  Load it with `pandas.read_json(path, lines=True)`.
+- **run.json** is built up in sections, each written by whoever starts that part: `git` (commit,
+  branch, dirty, changed files, from the folder you launched in), `recording`, `episode`, `sim`,
+  `planner`. The experiment runner (Module 9) will add its own (scenario, seed, condition).
+- **The planner's log** goes into the run folder (`log_file`, for the agents and the coordinator),
+  with the run folder's name as `run_id`: `ros2 run mrs_llm_planner summary --log <run_dir>/llm_log.sqlite`.
+- **One episode id** for the run: `episode.launch.py` passes `<experiment>_<run_id>` to the planner as
+  `episode_id`, so every message, the events and the LLM log carry it, and `run.json` records it.
+- **ROS log files** of every node go to `ros_log/` (`ROS_LOG_DIR`): the same lines as `/rosout`, also
+  from before the recorder subscribed.
+
+#### Checking a run: `check_run`
+
+```
+$ ros2 run mrs_telemetry check_run results/s1/seed03
+run results/s1/seed03
+  ok   run.json  s1/seed03, 3f2a9c1e04
+  ok   bag       9518 messages on 32 topics, 61.5 s sim time, 4.21 MB
+ warn  bag       empty, published by executor (Module 6): /mrs/task_status, /robot_a/cmd_vel_nominal, ...
+ warn  bag       empty, published by world state (Module 3): /mrs/team_state, /robot_a/world_state, ...
+  ok   events    12 lines: dialogue 6, mission 1, proposed_plan 1, validated_plan 1, verdict 1
+  ok   outcome   approved; 1 plan to the gate (APPROVE), 0.21 s sim time
+  ok   gz_log    state.tlog 0.85 MB
+  ok   llm_log   6 LLM calls, 1 planning cycles
+...
+OK
+```
+(illustrative numbers)
+
+It reads the bag's `metadata.yaml`, not the bag, so it needs no ROS (`python -m mrs_telemetry.check_run`
+works too); `--json` prints the report for scripts. It saves the report, with the run's **outcome**, as
+`<run_dir>/check.json` (`--no-write` to skip): approved or fallback and its cause (`rejected`,
+`no_agreement`, `mission_mismatch`, ...), the plans sent to the gate and their verdicts, how many
+replans started, failed, came too late or were repaired, their mean time, and the sim time from the mission to the
+robots' plan (a replan whose plan the goal check refused counts as failed, "(1 by the goal check)"), e.g. `fallback: mission_mismatch; 2 plans to the gate (REJECT, REJECT), 2 replans, 1 failed,
+10.0 s each, 23.0 s sim time`. It fails (exit code 1) when the bag did not close
+cleanly, a required topic is empty (`/clock`, `/tf_static`, the mission, the dialogue, each robot's
+`scan`, `odom` and `ground_truth`), `events.jsonl` has a broken line, or `record_gz_log` was on but
+there is no `state.tlog`. It warns about topics of modules that do not exist yet, about a missing
+`telemetry_end`, and when the number of a decision in `events.jsonl` differs from the bag's count on
+that topic.
+
+#### send_mission
+
+`ros2 run mrs_telemetry send_mission --ros-args -p text:="..." -p wait_for:=3` publishes the mission
+once, but only after `wait_for` subscribers have connected (in an episode: the coordinator, the
+telemetry node and the recorder), and stays up 5 s for latecomers. With `-p wait_for_plan:=true` it
+then waits for the robots' plan (plus `grace_s`) and exits, which is how `episode.launch.py` ends. `ros2 topic pub --once` can send
+before they are connected, and the mission is then lost for them.
+
+Tests: `cd src/mrs_telemetry && pytest -q` (24 run without ROS; the telemetry-node and launch tests
+need the built and sourced workspace).
+
+**Not done yet:**
+- The guide's size check (5 minutes, 3 robots) has not been run; the first run suggests about 15 MB of
+  bag and 70 MB of Gazebo log per 5 minutes with 2 robots, so no scan throttle is planned.
+- Foxglove cannot show the robots yet: nothing publishes robot models or `/mrs/markers` (Module 8).
+- `/clock` is recorded at Gazebo's full rate (1000 messages per sim second): most messages, little size.
+- On Linux, Docker and HPC the Gazebo server will need `--headless-rendering` (Module 2, not added yet).
+- `results.json` (metrics) is Module 11.
 
 ---
 
@@ -943,5 +1162,14 @@ Change log:
 | `ros2 topic echo /mrs/verdict --once` waits forever | the verdict came before echo started (not latched) | start the echo before sending the mission |
 | `topic ... does not appear to be published yet` | the CLI cannot see the publisher or its type | give the type and skip the cached graph: `ros2 topic echo <topic> <type> --no-daemon`; same `ROS_DOMAIN_ID` in every terminal |
 | `ros2 topic echo /mrs/dialogue` shows cut-off text | echo truncates strings to 128 characters | add `--full-length` (and `--field text` for the words only) |
+| `conda env update` crashes: `cannot import name 'ArgsKwargs' from 'pydantic_core'` | `PYTHONPATH` from a sourced ROS workspace points conda (base Python) at the project env's packages | run it in a fresh terminal, or `env -u PYTHONPATH conda env update -f environment.yml --prune` |
+| Planner: `replan_failed` with `model '...' not found (status code: 404)` | the model is not pulled in Ollama, or a typo in `model` | `ollama pull <model>`; the replanner uses the planner's `model` setting |
+| Planner: `fallback ... mission_mismatch "replanned plan: ..."` | the replanner's plan dropped a robot or moved its goal | expected with small models; see §4.4 known limits |
+| `ros2 bag record`: `Invalid choice 'mcap'` / storage plugin not found | `rosbag2_storage_mcap` missing from the env | `conda env update -f environment.yml --prune` (it is listed there) |
+| `check_run`: `no metadata.yaml` | the recorder was killed, not stopped with Ctrl-C | `ros2 bag reindex <run_dir>/bag`; next time stop with Ctrl-C or `duration:=` |
+| Recording: the bag is empty or starts late | sim time: nothing is written before Gazebo's first `/clock` | start Gazebo (or use `record.launch.py sim_time:=false` without it) |
+| `episode.launch.py`: `<run_dir>/bag already exists` | the run folder was used before | give a new `run_id` (or leave it empty for the date-time) |
+| `check_run`: `/mrs/mission: no messages` | no mission was sent, or it was sent before the recorder started | use `mission:=` on `episode.launch.py`, or send it after the recorder is up |
+| `check_run`: `llm_log: N LLM calls, 0 planning cycles` | run before Nov 26: the coordinator wrote its cycle row to `./llm_log.sqlite` | fixed in `planner.launch.py` (`log_file` reaches the coordinator too); rerun |
 
 Still stuck: run `ros2 run mrs_common check_interfaces` and `pytest -q -rs`, and paste both outputs.

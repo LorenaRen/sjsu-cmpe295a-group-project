@@ -268,6 +268,17 @@ def test_agreed_plan_missing_a_goal_never_reaches_the_gate():
     assert kinds(agree_on_take_turns(c)) == ["SubmitPlan"]
 
 
+def test_replan_carries_the_mission_goals():
+    """The replanner is told the goals, so that its fix keeps them."""
+    c = make(max_replan_attempts=3)
+    c.start_cycle(goal_mission(), "ep", 0)
+    agree_on_take_turns(c)
+    out = c.on_verdict(Verdict("tx-1", "REJECT", ("capacity_exceeded",), "robots meet in the aisle"), 2)
+    assert kinds(out) == ["StartReplan"]
+    assert out[0].goals == "Goals: robot_a -> room_e; robot_b -> room_w."
+    assert set(out[0].goal_map) == {"robot_a", "robot_b"} and out[0].goal_map["robot_b"].place == "room_w"
+
+
 def test_three_robots():
     import copy
     c = Coordinator(ProtocolConfig(team=("robot_a", "robot_b", "robot_c")), new_id=lambda: "tx-3")

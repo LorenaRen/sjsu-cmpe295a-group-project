@@ -3,11 +3,14 @@
   ros2 launch mrs_sim sim.launch.py                                  # narrow_aisle, 2 robots, camera on, headless
   ros2 launch mrs_sim sim.launch.py world:=aisle_bypass robots:=3 camera:=false gui:=true
   ros2 launch mrs_sim sim.launch.py world:=/path/to/my_world.sdf    # a .yaml map must sit next to it
+  ros2 launch mrs_sim sim.launch.py record_gz_log:=true gz_log_dir:=results/dev/run1/gz_log   # Module 7
 
 Starts: the Gazebo server (and optionally the GUI as a separate process, which macOS requires),
 one robot per spawn slot, one ros_gz_bridge for all robots, and the static transforms
 map -> <robot>/odom (spawn pose) and <robot>/base_link -> <robot>/lidar, <robot>/camera.
 The generated robot SDFs and bridge config are written to a run folder that is printed at start.
+With record_gz_log:=true the server also writes a Gazebo state log (state.tlog, poses only, with
+the meshes it needs) for visual replay (Module 7, 8): gz_log_dir, or <run_dir>/gz_log.
 """
 import tempfile
 from pathlib import Path
@@ -38,11 +41,20 @@ def _setup(context):
     bridge_file = run_dir / "bridge.yaml"
     bridge_file.write_text(bridge_yaml(robots, camera))
 
+    server = ["gz", "sim", "-s", "-r", "-v", arg("verbosity")]
+    gz_log = ""
+    if arg("record_gz_log").lower() in _TRUE:
+        gz_log = str(Path(arg("gz_log_dir") or run_dir / "gz_log").expanduser().resolve())
+        # --record-path turns recording on; --record-resources copies the meshes, so the log replays
+        # on another machine (a laptop for an HPC run)
+        server += ["--record-path", gz_log, "--record-resources", "--log-overwrite"]
+
     sim_time = {"use_sim_time": True}
     actions = [
-        LogInfo(msg=f"[mrs_sim] world={wm.world} robots={robots} camera={camera} gui={gui} run_dir={run_dir}"),
-        ExecuteProcess(cmd=["gz", "sim", "-s", "-r", "-v", arg("verbosity"), str(sdf_path)],
-                       output="screen", name="gz_server"),
+        LogInfo(msg=f"[mrs_sim] world={wm.world} robots={robots} camera={camera} gui={gui} run_dir={run_dir}"
+                    + (f" gz_log={gz_log}" if gz_log else "")),
+        ExecuteProcess(cmd=server + [str(sdf_path)], output="screen", name="gz_server",
+                       sigterm_timeout="15"),   # SIGINT first: the server closes the state log
         Node(package="ros_gz_bridge", executable="parameter_bridge", name="mrs_bridge", output="screen",
              parameters=[{"config_file": str(bridge_file), **sim_time}]),
     ]
@@ -84,5 +96,9 @@ def generate_launch_description():
         DeclareLaunchArgument("verbosity", default_value="2", description="gz sim -v level (0-4)"),
         DeclareLaunchArgument("run_dir", default_value="",
                               description="where to write generated robot SDFs + bridge.yaml (default: a temp dir)"),
+        DeclareLaunchArgument("record_gz_log", default_value="false",
+                              description="write a Gazebo state log for replay (Module 7)"),
+        DeclareLaunchArgument("gz_log_dir", default_value="",
+                              description="where the state log goes; empty: <run_dir>/gz_log"),
         OpaqueFunction(function=_setup),
     ])

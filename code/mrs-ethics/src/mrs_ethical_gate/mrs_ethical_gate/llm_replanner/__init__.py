@@ -9,8 +9,8 @@ Components:
     - replanner: Main replanning logic (replaces scripted_repair)
 """
 
-from .replanner import LLMReplanner
+from .replanner import LLMReplanner, grounded_plan_schema
 from .ollama_client import OllamaClient
 from .prompt_builder import build_replan_prompt
 
-__all__ = ["LLMReplanner", "OllamaClient", "build_replan_prompt"]
+__all__ = ["LLMReplanner", "grounded_plan_schema", "OllamaClient", "build_replan_prompt"]

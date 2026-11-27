@@ -134,6 +134,15 @@ class ResponseLog:
             db.row_factory = sqlite3.Row
             return [dict(r) for r in db.execute(q, args)]
 
+    def attempt_tokens(self, transaction_id: str, attempt: int) -> tuple[int, int]:
+        """(tokens_in, tokens_out) of every LLM call made for one attempt of one planning cycle: the
+        agents' turns for attempt 0, the replanner's call for a replan. Read by the coordinator for
+        ProposedPlan, which has token fields that DialogueTurn lacks. Every process writes this file."""
+        with self._connect() as db:
+            row = db.execute("SELECT COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) FROM calls"
+                             " WHERE transaction_id = ? AND attempt = ?", (transaction_id, attempt)).fetchone()
+        return int(row[0]), int(row[1])
+
     def totals(self) -> dict:
         """Calls, failures and tokens of this run, for results.json."""
         with self._connect() as db:
