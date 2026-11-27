@@ -8,18 +8,25 @@ mission is then lost for them. This node publishes with the mission's own QoS (r
 transient-local: mrs_common.qos), waits until `wait_for` subscribers have matched (or `timeout_s`
 has passed, then it publishes anyway and warns), and stays up `keep_alive_s` afterwards so a late
 subscriber still receives it.
+
+With wait_for_plan:=true it then waits for the planning cycle to end (episode_end.EndWatcher): the first
+ValidatedPlan after the mission, APPROVE or FALLBACK, plus `grace_s`. Then it exits with code 0, which
+episode.launch.py turns into the end of the episode. `plan_timeout_s` (0 = none) gives up waiting.
 """
 from __future__ import annotations
 
 import time
 
 import rclpy
+from mrs_msgs.msg import ValidatedPlan
 from rclpy.logging import get_logger
 from rclpy.node import Node
 from std_msgs.msg import String
 
 from mrs_common import names as N
 from mrs_common.qos import qos_for
+
+from .episode_end import EndWatcher
 
 
 class MissionSender(Node):
@@ -29,9 +36,20 @@ class MissionSender(Node):
         self.wait_for = int(self.declare_parameter("wait_for", 1).value)
         self.timeout_s = float(self.declare_parameter("timeout_s", 60.0).value)
         self.keep_alive_s = float(self.declare_parameter("keep_alive_s", 5.0).value)
+        self.wait_for_plan = bool(self.declare_parameter("wait_for_plan", False).value)
+        self.plan_timeout_s = float(self.declare_parameter("plan_timeout_s", 0.0).value)
         if not self.text.strip():
             raise ValueError("text (the mission) must not be empty")
+        self.watch = EndWatcher(float(self.declare_parameter("grace_s", 5.0).value))
         self.pub = self.create_publisher(String, N.MISSION, qos_for(N.MISSION))
+        if self.wait_for_plan:
+            # subscribed before the mission is sent; plans that arrive before it do not count (EndWatcher)
+            self.create_subscription(ValidatedPlan, N.VALIDATED_PLAN, self.on_plan, qos_for(N.VALIDATED_PLAN))
+
+    def on_plan(self, msg: ValidatedPlan) -> None:
+        if self.watch.on_plan(time.monotonic(), msg.source_verdict):
+            self.get_logger().info(f"the robots got a plan ({msg.source_verdict}): the episode ends in "
+                                   f"{self.watch.grace_s:g} s")
 
 
 def main(args=None) -> int:
@@ -51,10 +69,19 @@ def main(args=None) -> int:
         if n < node.wait_for:
             log.warn(f"only {n} of {node.wait_for} subscribers after {node.timeout_s:.0f} s; sending anyway")
         node.pub.publish(String(data=node.text))
+        sent = time.monotonic()
+        node.watch.arm(sent)
         log.info(f"mission sent to {n} subscribers: {node.text}")
-        end = time.monotonic() + node.keep_alive_s
-        while time.monotonic() < end:
+        while True:
             rclpy.spin_once(node, timeout_sec=0.2)
+            now = time.monotonic()
+            if now - sent < node.keep_alive_s:
+                continue
+            if not node.wait_for_plan or node.watch.due(now):
+                break
+            if node.plan_timeout_s > 0 and now - sent > node.plan_timeout_s:
+                log.warn(f"no plan reached the robots within {node.plan_timeout_s:g} s of the mission")
+                break
     except KeyboardInterrupt:
         pass
     finally:

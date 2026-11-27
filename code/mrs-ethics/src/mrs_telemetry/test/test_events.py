@@ -60,6 +60,8 @@ def test_status_event_and_override_events():
             detail_json=json.dumps({"reason": "no_agreement"}))
     e = make_event(N.EPISODE_EVENT, ev, t=1.0)
     assert e["summary"] == "planning_exhausted: no_agreement" and e["detail"] == {"reason": "no_agreement"}
+    ev.detail_json = json.dumps({"transaction_id": "tx", "cause": "rejected", "detail": "S-1"})   # the coordinator's
+    assert make_event(N.EPISODE_EVENT, ev, t=1.0)["summary"] == "planning_exhausted: rejected"
     ev.detail_json = "not json"
     assert make_event(N.EPISODE_EVENT, ev, t=1.0)["detail"] == "not json"
     so = NS(robot_id="robot_b", episode_id="ep1", u_nominal=NS(x=0.5, y=0.0, z=0), u_safe=NS(x=0.1, y=0.02, z=0),
@@ -96,3 +98,24 @@ def test_event_log_writes_lines_at_once(tmp_path):
         f.write("{broken\n")
     events, problems = read_events(path)
     assert len(events) == 4 and len(problems) == 1
+
+
+def test_coordinator_log_lines_become_events(tmp_path):
+    from mrs_telemetry.events import coordinator_line, log_event
+
+    line = 'replan_failed {"transaction_id": "tx", "attempt": 2, "latency_ms": 60012.5, "error_reason": "llm_timeout", "error_detail": "no answer"}'
+    what, fields = coordinator_line("mrs_coordinator", line)
+    e = log_event(what, fields, t=12.0)
+    assert e["type"] == "replan" and e["phase"] == "failed" and e["attempt"] == 2
+    assert e["summary"] == "replan attempt 2 failed: llm_timeout"
+    done = log_event(*coordinator_line("mrs_coordinator", 'cycle_done {"outcome": "fallback", "cause": "rejected", "rounds": 2}'), t=13.0)
+    assert done["type"] == "cycle_done" and done["summary"] == "cycle done: fallback (rejected)" and done["rounds"] == 2
+    assert coordinator_line("mrs_coordinator", 'submitted {"attempt": 0}') is None           # a message carries it
+    assert coordinator_line("mrs_ethical_gate", 'replan_start {"attempt": 1}') is None       # not the coordinator
+    assert coordinator_line("mrs_coordinator", "replan_start not json") is None
+    assert coordinator_line("robot_a.mrs_agent", "turn {}") is None
+
+    log = EventLog(tmp_path / "events.jsonl")
+    assert log.record_log("mrs_coordinator", 'replan_start {"transaction_id": "tx", "attempt": 1}', t=5.0)["phase"] == "start"
+    assert log.record_log("mrs_coordinator", "settings {}", t=5.0) is None
+    assert log.counts == {"replan": 1}

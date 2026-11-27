@@ -1,5 +1,8 @@
 """What goes into the bag, and how the recorder subscribes (Module 7). Pure Python.
 
+rosbag2 records a listed topic only once some node publishes it, so the topics of modules that do not
+exist yet are simply absent from the bag; check_run lists them by who would publish them.
+
 The topic list comes from mrs_common.names, so a renamed topic is recorded without touching this
 package. Topics are listed explicitly (not by regex): the recorder subscribes to each as soon as it
 appears, and check_run can tell a topic nobody published from one the recorder missed.
@@ -17,10 +20,11 @@ from mrs_common.qos import LATCHED_TOPICS
 
 TF = "/tf"
 TF_STATIC = "/tf_static"
+ROSOUT = "/rosout"   # every node's log messages: the coordinator's cycle_done and replan lines, the gate's decisions
 
 # Who publishes each topic, so check_run can say why one is empty. Robot topics by leaf name.
 PUBLISHER = {
-    N.CLOCK: "Gazebo (Module 2)", TF: "Gazebo (Module 2)", TF_STATIC: "sim.launch.py (Module 2)",
+    N.CLOCK: "Gazebo (Module 2)", TF: "Gazebo (Module 2)", ROSOUT: "every node (log messages)", TF_STATIC: "sim.launch.py (Module 2)",
     N.SCAN: "Gazebo (Module 2)", N.ODOM: "Gazebo (Module 2)", N.GROUND_TRUTH: "Gazebo (Module 2)",
     N.CAMERA_IMAGE: "Gazebo (Module 2, camera:=true)", N.CAMERA_INFO: "Gazebo (Module 2, camera:=true)",
     N.WORLD_STATE: "world state (Module 3)", N.TEAM_STATE: "world state (Module 3)",
@@ -48,7 +52,7 @@ def publisher_of(topic: str) -> str:
 def record_topics(robots: Sequence[str], *, camera: bool = False, scan: bool = True,
                   extra: Iterable[str] = ()) -> list[str]:
     """Every topic to record, sorted. camera: the camera images (large); scan: the LiDAR scans."""
-    topics = set(N.all_topics(robots, camera=camera)) | {N.CLOCK, TF, TF_STATIC} | set(extra)
+    topics = set(N.all_topics(robots, camera=camera)) | {N.CLOCK, TF, TF_STATIC, ROSOUT} | set(extra)
     if not scan:
         topics -= {N.robot_topic(r, N.SCAN) for r in robots}
     return sorted(topics)

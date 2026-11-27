@@ -6,6 +6,8 @@
     gz_log/           Gazebo state log (state.tlog + resources), for visual replay
     llm_log.sqlite    every LLM request and response, and one row per planning cycle (Module 4)
     events.jsonl      one line per decision event (telemetry_node)
+    ros_log/          every node's ROS log files (episode.launch.py sets ROS_LOG_DIR)
+    check.json        check_run's report and the run's outcome
     results.json      episode metrics, written at the end (Module 11)
     sim/              the robot SDFs and bridge.yaml sim.launch.py generated
 
@@ -19,6 +21,7 @@ import json
 import os
 import platform
 import re
+import secrets
 import socket
 import subprocess
 from datetime import datetime, timezone
@@ -31,6 +34,8 @@ BAG = "bag"
 GZ_LOG = "gz_log"
 LLM_LOG = "llm_log.sqlite"
 SIM = "sim"
+ROS_LOG = "ros_log"
+CHECK = "check.json"
 SCHEMA = 1
 
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -48,8 +53,11 @@ def safe_name(text: str) -> str:
     return out
 
 
-def new_run_id(when: Optional[datetime] = None) -> str:
-    return (when or datetime.now()).strftime("%Y%m%d-%H%M%S")
+def new_run_id(when: Optional[datetime] = None, *, suffix: bool = True) -> str:
+    """'20261126-110535-3f2a': the date and time, and 4 random hex digits, so that runs started in the
+    same second (parallel HPC jobs) never share a folder. Module 9 should pass its own run id anyway."""
+    stamp = (when or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    return f"{stamp}-{secrets.token_hex(2)}" if suffix else stamp
 
 
 def run_dir_for(root: str | Path = "results", experiment: str = "dev", run_id: str = "") -> Path:

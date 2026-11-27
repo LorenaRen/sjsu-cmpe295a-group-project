@@ -9,7 +9,7 @@ ROBOTS = ["robot_a", "robot_b"]
 def test_record_topics_cover_every_canonical_topic():
     topics = record_topics(ROBOTS)
     assert set(N.all_topics(ROBOTS)) <= set(topics)
-    assert {N.CLOCK, TF, TF_STATIC} <= set(topics)
+    assert {N.CLOCK, TF, TF_STATIC, "/rosout"} <= set(topics)
     assert topics == sorted(set(topics))
     assert not any("camera" in t for t in topics)
 

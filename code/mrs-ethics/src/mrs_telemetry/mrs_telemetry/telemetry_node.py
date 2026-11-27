@@ -6,6 +6,8 @@
 It subscribes to the decision topics (events.EVENT_TOPICS) with the same QoS as their publishers
 (mrs_common.qos), so it sees exactly what the planner, gate and executor see. `t` in every line is
 the node clock: simulation time with use_sim_time, so it lines up with the bag and the Gazebo log.
+It also reads /rosout for the coordinator's replan steps and its cycle_done line (events.coordinator_line):
+a replan that fails sends no message, so its log line is the only trace of it.
 It writes telemetry_start when it starts and telemetry_end (with counts) when it stops; check_run
 uses telemetry_end to tell a clean stop from a killed one.
 """
@@ -16,16 +18,22 @@ import signal
 import rclpy
 from mrs_msgs.msg import (DialogueTurn, EpisodeEvent, EthicalVerdict, ProposedPlan, SafetyOverride, TaskStatus,
                           ValidatedPlan)
-from rcl_interfaces.msg import ParameterDescriptor
+from rcl_interfaces.msg import Log, ParameterDescriptor
 from rclpy.executors import ExternalShutdownException
 from rclpy.logging import get_logger
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from mrs_common import names as N
 from mrs_common.qos import qos_for
 
-from .events import EVENT_TOPICS, EventLog
+from .events import EVENT_TOPICS, EventLog, stamp_s
+
+ROSOUT = "/rosout"
+# what rcl's /rosout publishers offer (reliable, transient local, deep): lines from before we subscribed arrive too
+ROSOUT_QOS = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1000, reliability=ReliabilityPolicy.RELIABLE,
+                        durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 MSG_TYPES = {N.MISSION: String, N.DIALOGUE: DialogueTurn, N.PROPOSED_PLAN: ProposedPlan,
              N.VERDICT: EthicalVerdict, N.VALIDATED_PLAN: ValidatedPlan, N.TASK_STATUS: TaskStatus,
@@ -47,6 +55,7 @@ class TelemetryNode(Node):
         for topic in EVENT_TOPICS:
             self.create_subscription(MSG_TYPES[topic], topic, lambda msg, t=topic: self.on_msg(t, msg),
                                      qos_for(topic))
+        self.create_subscription(Log, ROSOUT, self.on_log, ROSOUT_QOS)
         self.log.note("telemetry_start", self.t(), f"recording decisions to {path}", topics=list(EVENT_TOPICS))
         self.get_logger().info(f"writing {path}")
 
@@ -59,6 +68,12 @@ class TelemetryNode(Node):
             self.log.record(topic, msg, t=self.t())
         except Exception as e:   # a strange message must not stop the recording
             self.get_logger().error(f"could not record a message on {topic}: {type(e).__name__}: {e}")
+
+    def on_log(self, msg: Log) -> None:
+        try:
+            self.log.record_log(msg.name, msg.msg, t=self.t(), stamp=stamp_s(msg.stamp))
+        except Exception as e:
+            self.get_logger().error(f"could not record a log line: {type(e).__name__}: {e}")
 
     def close(self) -> None:
         if not self.log._f.closed:

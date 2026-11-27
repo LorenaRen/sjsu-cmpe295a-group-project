@@ -6,11 +6,13 @@ not the bag, so it runs anywhere (no ROS needed).
   python -m mrs_telemetry.check_run <run_dir>               # same, without ROS
 
 Exit code 0 when nothing is wrong (warnings allowed), 1 when something is, 2 for a folder that
-is not a run folder. What it checks:
+is not a run folder. The CLI also writes the report, with the run's outcome, to <run_dir>/check.json
+(--no-write: don't). What it checks:
 
   run.json        exists and is JSON
   bag             finished cleanly (metadata.yaml written), its files exist, every required topic
-                  has messages; topics of modules that do not exist yet may be empty (listed)
+                  has messages; topics nobody published (modules that do not exist yet) are listed
+  outcome         from events.jsonl: approved or fallback, the fallback's cause, attempts, replans
   events.jsonl    every line is JSON, telemetry ended cleanly, decisions match the bag's counts
   gz_log          state.tlog exists and is not empty, if the run recorded one
   llm_log.sqlite  readable; how many LLM calls and planning cycles, if the planner wrote one
@@ -56,6 +58,7 @@ class Report:
     events: dict[str, int] = field(default_factory=dict)       # event type -> count
     duration_s: Optional[float] = None
     bag_mb: Optional[float] = None
+    outcome: dict = field(default_factory=dict)
 
     def add(self, level: str, part: str, text: str) -> None:
         self.checks.append(Check(level, part, text))
@@ -73,7 +76,7 @@ def read_bag_metadata(bag_dir: Path) -> dict:
     return data.get("rosbag2_bagfile_information", data) if isinstance(data, dict) else {}
 
 
-def _check_bag(rep: Report, run_dir: Path, robots: list[str], scan: bool) -> None:
+def _check_bag(rep: Report, run_dir: Path, robots: list[str], scan: bool, listed: list[str]) -> None:
     bag = run_dir / RF.BAG
     if not bag.is_dir():
         rep.add(ERROR, "bag", f"no {RF.BAG}/ folder: the recorder did not run (record.launch.py)")
@@ -112,23 +115,24 @@ def _check_bag(rep: Report, run_dir: Path, robots: list[str], scan: bool) -> Non
         if rep.topics.get(t, 0) == 0:
             hint = " (was the mission sent?)" if t == N.MISSION else ""
             rep.add(ERROR, "bag", f"{t}: no messages; published by {publisher_of(t)}{hint}")
-    empty = sorted(t for t, n in rep.topics.items() if n == 0 and t not in required)
+    # rosbag2 records a listed topic only once a node publishes it: absent topics are as empty as empty ones
+    empty = sorted({t for t, n in rep.topics.items() if n == 0} | (set(listed) - set(rep.topics)) - set(required))
     if empty:
         by = {}
         for t in empty:
             by.setdefault(publisher_of(t), []).append(t)
         for who, ts in sorted(by.items()):
-            rep.add(WARN, "bag", f"empty, published by {who}: {', '.join(ts)}")
+            rep.add(WARN, "bag", f"no messages, published by {who}: {', '.join(ts)}")
     absent = sorted(set(required) - set(rep.topics))
     if absent:
         rep.add(ERROR, "bag", f"not recorded at all (not in the topic list?): {', '.join(absent)}")
 
 
-def _check_events(rep: Report, run_dir: Path) -> None:
+def _check_events(rep: Report, run_dir: Path) -> list[dict]:
     path = run_dir / RF.EVENTS
     if not path.is_file():
         rep.add(ERROR, "events", f"no {RF.EVENTS}: telemetry_node did not run")
-        return
+        return []
     events, problems = read_events(path)
     for p in problems:
         rep.add(ERROR, "events", p)
@@ -147,6 +151,69 @@ def _check_events(rep: Report, run_dir: Path) -> None:
             if in_bag is not None and in_bag != in_events:
                 rep.add(WARN, "events", f"{kind}: {in_events} events but {in_bag} messages on {topic} in the bag "
                                         "(one of them started late or stopped early)")
+    return events
+
+
+def outcome_from(events: list[dict]) -> dict:
+    """What the run decided, from events.jsonl: the last plan the robots got and how it came about."""
+    of = lambda kind: [e for e in events if e.get("type") == kind]  # noqa: E731
+    missions, plans, verdicts, sent = of("mission"), of("proposed_plan"), of("verdict"), of("validated_plan")
+    exhausted = [e for e in of("episode_event") if e.get("kind") == "planning_exhausted"]
+    final = sent[-1].get("source_verdict") if sent else None
+    result = {"APPROVE": "approved", "MODIFY": "approved", "FALLBACK": "fallback"}.get(final, "no plan")
+    out = {"result": result, "missions": len(missions), "attempts": len(plans),
+           "replans": sum(1 for p in plans if (p.get("attempt") or 0) > 0),
+           "verdicts": [v.get("verdict") for v in verdicts], "final_plan": sent[-1].get("plan") if sent else None}
+    # the coordinator's replan steps (from /rosout): also the replans that never reached the gate
+    steps = of("replan")
+    if steps:
+        out["replans_started"] = sum(1 for e in steps if e.get("phase") == "start")
+        out["replans_failed"] = sum(1 for e in steps if e.get("phase") == "failed")
+        out["replans_ignored"] = sum(1 for e in steps if e.get("phase") == "ignored")
+        # replans whose first reply failed the checks and went back to the model (the repairs field)
+        repaired = sum(1 for e in steps if e.get("phase") in ("success", "failed") and (e.get("repairs") or 0) > 0)
+        if repaired:
+            out["replans_repaired"] = repaired
+        replies = [e["latency_ms"] for e in steps if e.get("phase") in ("success", "failed")
+                   and isinstance(e.get("latency_ms"), (int, float))]
+        if replies:
+            out["replan_s"] = round(sum(replies) / len(replies) / 1000.0, 1)   # mean, wall clock
+    if exhausted:
+        d = exhausted[-1].get("detail") if isinstance(exhausted[-1].get("detail"), dict) else {}
+        out["cause"] = d.get("cause") or d.get("reason")
+        out["cause_detail"] = d.get("detail")
+        # The coordinator's goal check refused a replanned plan (it never reached the gate): the
+        # replan logged replan_success, but it failed all the same.
+        if steps and out["cause"] == "mission_mismatch" and str(out["cause_detail"] or "").startswith("replanned plan:"):
+            out["replans_refused"] = 1
+    if missions and sent and missions[0].get("t") is not None and sent[-1].get("t") is not None:
+        out["planning_s"] = round(sent[-1]["t"] - missions[0]["t"], 2)   # sim time, mission to the robots' plan
+    return out
+
+
+def _check_outcome(rep: Report) -> None:
+    o = rep.outcome
+    if not o.get("missions"):
+        rep.add(WARN, "outcome", "no mission in events.jsonl: nothing was planned")
+        return
+    if o["result"] == "no plan":
+        rep.add(WARN, "outcome", "a mission was sent, but no plan reached the robots (no validated_plan)")
+        return
+    attempts = f"{o['attempts']} plan{'s' if o['attempts'] != 1 else ''} to the gate"
+    verdicts = f" ({', '.join(o['verdicts'])})" if o["verdicts"] else ""
+    if o.get("replans_started"):
+        n_failed = (o.get("replans_failed") or 0) + (o.get("replans_refused") or 0)
+        refused = f" ({o['replans_refused']} by the goal check)" if o.get("replans_refused") else ""
+        failed = f", {n_failed} failed{refused}" if n_failed else ""
+        late = f", {o['replans_ignored']} too late" if o.get("replans_ignored") else ""
+        late += f", {o['replans_repaired']} repaired" if o.get("replans_repaired") else ""
+        mean = f", {o['replan_s']} s each" if "replan_s" in o else ""
+        replans = f", {o['replans_started']} replan{'s' if o['replans_started'] != 1 else ''}{failed}{late}{mean}"
+    else:
+        replans = f", {o['replans']} replanned" if o["replans"] else ""
+    why = f": {o.get('cause')}" if o["result"] == "fallback" and o.get("cause") else ""
+    took = f", {o['planning_s']} s sim time" if "planning_s" in o else ""
+    rep.add(OK, "outcome", f"{o['result']}{why}; {attempts}{verdicts}{replans}{took}")
 
 
 def _check_gz_log(rep: Report, run_dir: Path, info: dict) -> None:
@@ -201,8 +268,10 @@ def check_run(run_dir: str | Path, *, robots: Optional[list[str]] = None, scan: 
         robots = rec.get("robots") or []
     if scan is None:
         scan = rec.get("scan", True)
-    _check_bag(rep, run_dir, list(robots), bool(scan))
-    _check_events(rep, run_dir)
+    _check_bag(rep, run_dir, list(robots), bool(scan), list(rec.get("topics") or []))
+    events = _check_events(rep, run_dir)
+    rep.outcome = outcome_from(events)
+    _check_outcome(rep)
     _check_gz_log(rep, run_dir, info)
     _check_llm_log(rep, run_dir, info)
     return rep
@@ -224,12 +293,15 @@ def main(argv=None) -> int:
     p.add_argument("run_dir")
     p.add_argument("--robots", type=int, default=None, help="fleet size; default: from run.json")
     p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.add_argument("--no-write", action="store_true", help=f"do not write <run_dir>/{RF.CHECK}")
     args = p.parse_args(argv)
     run_dir = Path(args.run_dir)
     if not run_dir.is_dir():
         print(f"{run_dir} is not a folder", file=sys.stderr)
         return 2
     rep = check_run(run_dir, robots=N.robot_ids(args.robots) if args.robots else None)
+    if not args.no_write:
+        (run_dir / RF.CHECK).write_text(json.dumps({**rep.to_dict(), "checked": RF.now_utc()}, indent=2) + "\n")
     print(json.dumps(rep.to_dict(), indent=2) if args.json else format_report(rep))
     return 0 if rep.ok else 1
 

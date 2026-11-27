@@ -12,7 +12,12 @@ from mrs_common.plan_schema import Constraint, TeamPlan, plan_to_json
 
 from mrs_ethical_gate.llm_replanner.ollama_client import LLMResponse, OllamaClient
 from mrs_ethical_gate.llm_replanner.prompt_builder import build_replan_prompt
-from mrs_ethical_gate.llm_replanner.replanner import LLMReplanner, ReplanFinished, ReplanProposal
+from mrs_ethical_gate.llm_replanner.replanner import (
+    LLMReplanner,
+    ReplanFinished,
+    ReplanProposal,
+    grounded_plan_schema,
+)
 
 
 # ---- Test fixtures ----
@@ -63,6 +68,167 @@ class MockOllamaClient:
         )
 
 
+# ---- Grounded schema tests ----
+
+class TestGroundedSchema:
+    def test_enums_for_robots_and_targets(self):
+        schema = grounded_plan_schema(["robot_b", "robot_a"], ["room_2", "room_1", "room_1"])
+        assert schema["$defs"]["Assignment"]["properties"]["robot_id"]["enum"] == ["robot_a", "robot_b"]
+        assert schema["$defs"]["Task"]["properties"]["target"]["enum"] == ["room_1", "room_2"]
+
+    def test_no_names_keeps_the_plain_schema(self):
+        schema = grounded_plan_schema()
+        assert "enum" not in schema["$defs"]["Assignment"]["properties"]["robot_id"]
+        assert "enum" not in schema["$defs"]["Task"]["properties"]["target"]
+
+    def test_does_not_change_the_shared_schema(self):
+        grounded_plan_schema(["robot_a"], ["room_1"])
+        assert "enum" not in grounded_plan_schema()["$defs"]["Assignment"]["properties"]["robot_id"]
+
+    def test_replanner_sends_the_grounded_schema(self):
+        modified = team(("robot_a", [task("a1", "navigate", "room_2")]))
+        client = MockOllamaClient([LLMResponse(success=True, content=plan_to_json(modified))])
+        replanner = LLMReplanner(transaction_id="t", client=client,
+                                 robot_ids=["robot_a"], graph_nodes=["room_1", "room_2"])
+        replanner.first(team(("robot_a", [task("a1", "navigate", "room_1")])))
+        result = replanner.on_verdict("t", 0, "REJECT", rationale="no")
+        assert isinstance(result, ReplanProposal)
+        defs = client.last_schema["$defs"]
+        assert defs["Assignment"]["properties"]["robot_id"]["enum"] == ["robot_a"]
+        assert defs["Task"]["properties"]["target"]["enum"] == ["room_1", "room_2"]
+
+    def test_unknown_robot_in_reply_is_malformed(self):
+        # A backend that ignores the schema can still return a made-up robot.
+        garbled = team(("robotdonotstop", [task("a1", "navigate", "room_2")]))
+        client = MockOllamaClient([LLMResponse(success=True, content=plan_to_json(garbled))])
+        replanner = LLMReplanner(transaction_id="t", client=client,
+                                 robot_ids=["robot_a"], graph_nodes=["room_1", "room_2"])
+        result = replanner._replan_with_llm(team(("robot_a", [task("a1", "navigate", "room_1")])),
+                                            [], "no", 0)
+        assert not result.success
+        assert result.error_reason == R.LLM_MALFORMED
+        assert "robotdonotstop" in result.error_detail
+
+    def test_unknown_target_in_reply_is_malformed(self):
+        bad = team(("robot_a", [task("a1", "navigate", "the_moon")]))
+        client = MockOllamaClient([LLMResponse(success=True, content=plan_to_json(bad))])
+        replanner = LLMReplanner(transaction_id="t", client=client,
+                                 robot_ids=["robot_a"], graph_nodes=["room_1"])
+        result = replanner._replan_with_llm(team(("robot_a", [task("a1", "navigate", "room_1")])),
+                                            [], "no", 0)
+        assert not result.success and "the_moon" in result.error_detail
+
+
+# ---- Repair tests ----
+
+def cyclic_plan():
+    return json.dumps({"assignments": [
+        {"robot_id": "robot_a", "tasks": [task("a1", "navigate", "room_e", depends_on=["b1"])]},
+        {"robot_id": "robot_b", "tasks": [task("b1", "navigate", "room_w", depends_on=["a1"])]}]})
+
+
+ORDERED = team(("robot_a", [task("a1", "navigate", "room_e", depends_on=["b1"])]),
+               ("robot_b", [task("b1", "navigate", "room_w")]))
+REJECTED = team(("robot_a", [task("a1", "navigate", "room_e")]), ("robot_b", [task("b1", "navigate", "room_w")]))
+
+
+class TestRepair:
+    def test_no_repair_by_default(self):
+        client = MockOllamaClient([LLMResponse(success=True, content=cyclic_plan())])
+        result = LLMReplanner(transaction_id="t", client=client)._replan_with_llm(REJECTED, [], "no", 0)
+        assert not result.success and result.error_reason == R.LLM_MALFORMED and "circular" in result.error_detail
+        assert client.call_count == 1 and result.repairs == 0
+
+    def test_a_cycle_is_repaired(self):
+        client = MockOllamaClient([
+            LLMResponse(success=True, content=cyclic_plan(), tokens_in=700, tokens_out=200, latency_ms=4000),
+            LLMResponse(success=True, content=plan_to_json(ORDERED), tokens_in=950, tokens_out=180, latency_ms=3000)])
+        result = LLMReplanner(transaction_id="t", client=client, max_repairs=1)._replan_with_llm(REJECTED, [], "no", 0)
+        assert result.success and result.repairs == 1
+        assert result.plan.tasks_of("robot_b")[0].depends_on == []
+        assert (result.tokens_in, result.tokens_out, result.latency_ms) == (1650, 380, 7000)
+        # the repair sees its own reply and the exact problem
+        assert client.last_messages[-2] == {"role": "assistant", "content": cyclic_plan()}
+        assert "circular depends_on: a1 -> b1 -> a1" in client.last_messages[-1]["content"]
+
+    def test_repair_uses_the_repair_client_with_the_time_left(self):
+        first = MockOllamaClient([LLMResponse(success=True, content=cyclic_plan())])
+        second = MockOllamaClient([LLMResponse(success=True, content=plan_to_json(ORDERED))])
+        asked = []
+        replanner = LLMReplanner(transaction_id="t", client=first, max_repairs=1, time_budget_s=60.0,
+                                 make_repair_client=lambda left: asked.append(left) or second)
+        assert replanner._replan_with_llm(REJECTED, [], "no", 0).success
+        assert first.call_count == 1 and second.call_count == 1
+        assert len(asked) == 1 and 50.0 < asked[0] <= 60.0
+
+    def test_no_repair_without_enough_time(self):
+        client = MockOllamaClient([LLMResponse(success=True, content=cyclic_plan()),
+                                   LLMResponse(success=True, content=plan_to_json(ORDERED))])
+        replanner = LLMReplanner(transaction_id="t", client=client, max_repairs=1, time_budget_s=5.0)
+        result = replanner._replan_with_llm(REJECTED, [], "no", 0)
+        assert not result.success and "no repair" in result.error_detail and client.call_count == 1
+
+    def test_a_failed_repair_is_malformed(self):
+        client = MockOllamaClient([LLMResponse(success=True, content=cyclic_plan()),
+                                   LLMResponse(success=True, content=cyclic_plan())])
+        result = LLMReplanner(transaction_id="t", client=client, max_repairs=1)._replan_with_llm(REJECTED, [], "no", 0)
+        assert not result.success and result.error_reason == R.LLM_MALFORMED and result.repairs == 1
+
+    def test_an_unknown_robot_is_repaired_too(self):
+        garbled = team(("robotdonotstop", [task("a1", "navigate", "room_e")]))
+        client = MockOllamaClient([LLMResponse(success=True, content=plan_to_json(garbled)),
+                                   LLMResponse(success=True, content=plan_to_json(ORDERED))])
+        replanner = LLMReplanner(transaction_id="t", client=client, max_repairs=1, robot_ids=["robot_a", "robot_b"])
+        assert replanner._replan_with_llm(REJECTED, [], "no", 0).success
+        assert "unknown robot 'robotdonotstop'" in client.last_messages[-1]["content"]
+
+    def test_the_callers_check_fails_a_reply_and_every_problem_is_repaired_at_once(self):
+        # run 20261127-092814: a cycle plus robot_b parked at aisle_mid; the repair only heard of the cycle
+        parked = json.dumps({"assignments": [
+            {"robot_id": "robot_a", "tasks": [task("a1", "navigate", "room_e", depends_on=["b1"])]},
+            {"robot_id": "robot_b", "tasks": [task("b1", "navigate", "room_w"),
+                                              task("b2", "wait", "aisle_mid", depends_on=["b1"])]}]})
+        def goal_check(plan):
+            last = plan.tasks_of("robot_b")[-1].target
+            return [] if last == "room_w" else [f"robot_b's last task ends at {last}, but its mission goal is room_w"]
+        client = MockOllamaClient([LLMResponse(success=True, content=parked),
+                                   LLMResponse(success=True, content=plan_to_json(ORDERED))])
+        replanner = LLMReplanner(transaction_id="t", client=client, max_repairs=1, check_plan=goal_check)
+        result = replanner._replan_with_llm(REJECTED, [], "no", 0)
+        assert result.success and result.repairs == 1
+        assert "but its mission goal is room_w" in client.last_messages[-1]["content"]
+
+    def test_a_cycle_and_a_missed_goal_are_reported_together(self):
+        # the real case: the plan does not validate (cycle), and robot_b ends off its goal
+        both = json.dumps({"assignments": [
+            {"robot_id": "robot_a", "tasks": [task("a1", "navigate", "room_e", depends_on=["b1"])]},
+            {"robot_id": "robot_b", "tasks": [task("b1", "navigate", "room_w", depends_on=["a1"]),
+                                              task("b2", "wait", "aisle_mid", depends_on=["b1"])]}]})
+        def goal_check(plan):
+            last = plan.tasks_of("robot_b")[-1].target
+            return [] if last == "room_w" else [f"robot_b's last task ends at {last}, but its mission goal is room_w"]
+        client = MockOllamaClient([LLMResponse(success=True, content=both),
+                                   LLMResponse(success=True, content=plan_to_json(ORDERED))])
+        replanner = LLMReplanner(transaction_id="t", client=client, max_repairs=1, check_plan=goal_check)
+        assert replanner._replan_with_llm(REJECTED, [], "no", 0).success
+        repair = client.last_messages[-1]["content"]
+        assert "circular depends_on: a1 -> b1 -> a1" in repair and "ends at aisle_mid" in repair
+
+    def test_the_callers_check_reports_with_the_name_check(self):
+        garbled = team(("robotdonotstop", [task("a1", "navigate", "room_e")]))
+        client = MockOllamaClient([LLMResponse(success=True, content=plan_to_json(garbled))])
+        replanner = LLMReplanner(transaction_id="t", client=client, robot_ids=["robot_a", "robot_b"],
+                                 check_plan=lambda plan: ["robot_b has no task"])
+        result = replanner._replan_with_llm(REJECTED, [], "no", 0)
+        assert not result.success and "robotdonotstop" in result.error_detail
+        assert "robot_b has no task" in result.error_detail
+
+    def test_a_timeout_during_repair_ends_it(self):
+        client = MockOllamaClient([LLMResponse(success=True, content=cyclic_plan())])   # then: timeout
+        result = LLMReplanner(transaction_id="t", client=client, max_repairs=1)._replan_with_llm(REJECTED, [], "no", 0)
+        assert not result.success and result.error_reason == R.LLM_TIMEOUT and result.repairs == 1
+
+
 # ---- Prompt builder tests ----
 
 class TestPromptBuilder:
@@ -77,6 +243,26 @@ class TestPromptBuilder:
         assert messages[1]["role"] == "user"
         assert "room_1" in messages[1]["content"]
         assert "robot_a" in messages[1]["content"]
+
+    def test_build_replan_prompt_includes_goals(self):
+        plan = team(("robot_a", [task("a1", "navigate", "room_1")]))
+        goals = "Goals: robot_a -> room_e (end at room_e, room_e_n or room_e_s)."
+        messages = build_replan_prompt(plan, [], "x", attempt=0, goals=goals)
+        assert "## Mission Goals" in messages[1]["content"]
+        assert goals in messages[1]["content"]
+        assert "keeping every robot's goal" in messages[1]["content"]
+
+    def test_build_replan_prompt_without_goals_has_no_goals_section(self):
+        plan = team(("robot_a", [task("a1", "navigate", "room_1")]))
+        messages = build_replan_prompt(plan, [], "x", attempt=0)
+        assert "## Mission Goals" not in messages[1]["content"]
+
+    def test_replanner_sends_its_goals(self):
+        modified = team(("robot_a", [task("a1", "navigate", "room_2")]))
+        client = MockOllamaClient([LLMResponse(success=True, content=plan_to_json(modified))])
+        replanner = LLMReplanner(transaction_id="t", client=client, goals="Goals: robot_a -> room_2.")
+        replanner._replan_with_llm(team(("robot_a", [task("a1", "navigate", "room_1")])), [], "no", 0)
+        assert "Goals: robot_a -> room_2." in client.last_messages[1]["content"]
 
     def test_build_replan_prompt_includes_constraint_text(self):
         plan = team(("robot_a", [task("a1", "navigate", "room_1")]))

@@ -3,7 +3,8 @@
 One LLM agent per robot. Each agent proposes only its own robot's part; the parts together form
 one `TeamPlan`, which the agents agree on by taking turns on `/mrs/dialogue`.
 A coordinator with no LLM runs the turns and sends the agreed plan to the gate (`/mrs/proposed_plan`).
-For now there is no replanning: one dialogue per mission, one plan to the gate.
+One dialogue per mission. If the gate rejects the plan, a replanner (one LLM call by the
+coordinator, not a new dialogue) fixes it and sends it again, up to 3 times (see Replanning below).
 
 ## Run
 
@@ -14,7 +15,7 @@ ollama pull phi3.5                                                    # once; ke
 ros2 launch mrs_llm_planner planner.launch.py                                    # ollama, phi3.5 (planner.yaml)
 ros2 launch mrs_llm_planner planner.launch.py backend:=fake                      # no LLM: agents only discuss
 ros2 launch mrs_llm_planner planner.launch.py fake_script:=narrow_aisle          # scripted: APPROVE
-ros2 launch mrs_llm_planner planner.launch.py fake_script:=narrow_aisle_reject   # scripted: REJECT, all hold
+ros2 launch mrs_llm_planner planner.launch.py fake_script:=narrow_aisle_reject   # scripted: REJECT, then a real replan on Ollama
 ros2 launch mrs_llm_planner planner.launch.py backend:=anthropic model:=<model> run_id:=exp1_s01
 ros2 topic pub --once /mrs/mission std_msgs/msg/String \
   "{data: 'robot_a: go to room_e. robot_b: go to room_w.'}" \
@@ -54,9 +55,9 @@ The goals are enforced in two places:
   skips its turn with a message saying why (see Skipped turns below). A goal that names a room
   accepts any node in it; a goal that names another node means exactly that node. The opening
   prompt lists the goals as `Goals: robot_a -> room_e (end at room_e, room_e_n or room_e_s); ...`.
-- **Coordinator.** It runs the same check before sending an agreed plan to the gate. A miss makes
-  every robot hold, with cause `mission_mismatch`. A plan that ignores the mission never reaches the
-  gate or the robots.
+- **Coordinator.** It runs the same check before sending an agreed or replanned plan to the gate.
+  A miss makes every robot hold, with cause `mission_mismatch` (detail `replanned plan: ...` for a
+  replan). A plan that ignores the mission never reaches the gate or the robots.
 
 Robots without a goal are not constrained. This is a validity check like grounding, not a gate rule.
 
@@ -93,13 +94,52 @@ Robots without a goal are not constrained. This is a validity check like groundi
 - **The dialogue fails** when there is no agreement after `max_rounds` (3; nothing goes to the gate),
   when an agent node has crashed (nothing within `turn_timeout_s`), or when the whole cycle takes
   longer than `cycle_timeout_s` (300 s). Every cycle ends, approved or with every robot holding.
-- **Fallback.** There is one dialogue per mission. A REJECT, no agreement, a failed turn or no
-  verdict within `verdict_timeout_s` makes the coordinator publish a FALLBACK ValidatedPlan in which
-  every robot holds where it is, plus a `planning_exhausted` EpisodeEvent (its detail says why).
-- **Not in this version.** No replanning of any kind: no new dialogue after a REJECT, and none while
-  robots move (blocked edges, failed tasks; the executor's own reroute-or-hold handles those). The
-  messages keep their `attempt` field, always 0.
+- **Fallback.** No agreement, a failed turn, no verdict within `verdict_timeout_s`, a failed replan,
+  or a REJECT with no replan left (`rejected`) makes the coordinator publish a FALLBACK ValidatedPlan
+  in which every robot holds where it is, plus a `planning_exhausted` EpisodeEvent (its detail says
+  why: `{"transaction_id", "cause", "detail"}`).
+- **Not in this version.** No new dialogue after a REJECT (the replanner is a single central call),
+  and no replanning while robots move (blocked edges, failed tasks; the executor's own
+  reroute-or-hold handles those).
 - **One transaction per mission.** The coordinator mints the `transaction_id` when the mission arrives.
+
+## Replanning
+
+After a REJECT the coordinator replans instead of giving up (`protocol.py` decides, `coordinator_node.py`
+makes the call):
+
+1. It sends the rejected team plan, the mission's `Goals:` line, the verdict's rationale and its constraints to the replanner
+   (`mrs_ethical_gate.llm_replanner`): one LLM call on Ollama, with the planner's `model`, `num_ctx`
+   and `temperature`. The agents are not involved; nothing appears on `/mrs/dialogue`.
+2. The call runs in a worker thread (`replan_worker.py`), so the node keeps spinning and
+   `replan_timeout_s` (60 s) is enforced by the protocol's tick. An answer that arrives later is
+   dropped (`replan_ignored`).
+3. The reply's JSON schema allows only the team's robot ids and the map's node names, so the model
+   cannot invent a robot or a place; a reply that does anyway (a backend that ignores the schema) is
+   `llm_malformed`.
+4. The new plan must still end every robot at its goal (the coordinator's goal check); then it goes to
+   the gate with the same `transaction_id` and `attempt` 1, 2, 3.
+5. A reply that fails the checks (invalid plan, a `depends_on` cycle, an unknown robot or place, or a
+   missed goal: the coordinator passes `check_goals` in, as the agents check theirs) gets
+   `max_repairs` (1) repair, like an agent's: its reply and the exact problem go back to the model at
+   `repair_temperature`, with the time left of `replan_timeout_s` (none with less than 10 s left).
+   The repair is logged as round 1 of the same attempt; its tokens count in the `ProposedPlan`.
+6. Another REJECT replans again, up to `max_replan_attempts` (3). A failed replan (LLM error, timeout,
+   malformed answer after the repair, missed goal) ends the cycle at once with every robot holding.
+
+The coordinator logs `replan_start`, then `replan_success`, `replan_failed` (with the reason) or
+`replan_ignored` (each with `repairs`), as `<what> <json>` lines; Module 7 records them as `replan` events.
+`replan_success` comes before the goal check. Every replan call goes into `log_file` as agent
+`replanner`.
+
+`max_replan_attempts` (0 = hold after the first REJECT, the old behaviour) and `replan_timeout_s` are
+code defaults, not in `planner.yaml`: add them under `mrs_coordinator:` -> `ros__parameters:` in a copy
+and pass it with `params_file:=...`.
+
+Known limits: the replan prompt has the rejected plan, the goals and the constraints, but no map,
+routes or rules, so small models may still move a target off its goal (`mission_mismatch`); the replanner calls Ollama
+whatever `backend` says. Replanning through the agents' dialogue (RoCo's design) is an open team
+decision; this central replanner could stay as a baseline condition.
 
 ## Robust with any model
 
@@ -140,8 +180,9 @@ gate's `rule_*` switches. A test checks the defaults agree.
 ## What is recorded
 
 `log_file` is an SQLite file that records every LLM request and response with its run, agent,
-episode, transaction, round, latency and tokens. Token counts live only there, because
-DialogueTurn has no token fields. `response_log.ReplayClient` can replay a run's answers for
+episode, transaction, attempt, round, latency and tokens. DialogueTurn has no token fields, so the
+coordinator reads each attempt's tokens back from this file and puts their sum into
+`ProposedPlan.tokens_in` / `tokens_out` (the agents' turns for attempt 0, the replan for later ones). `response_log.ReplayClient` can replay a run's answers for
 debugging. Do not reuse one run's answers in another run of an experiment.
 
 ## Code
@@ -157,7 +198,8 @@ debugging. Do not reuse one run's answers in another run of an experiment.
 | `mission.py` | Parses missions into goals; checks that a plan ends each robot at its goal. |
 | `turns.py` | Parses a reply, takes the robot's own part, merges and validates it, grounds it, checks its goal. |
 | `agent.py` | One turn: LLM call, validation, one repair. `TranscriptTracker` for the node. |
-| `protocol.py` | The coordinator's state machine and the fallback plan. |
+| `protocol.py` | The coordinator's state machine: dialogue, gate, replans, goal checks and the fallback plan. |
+| `replan_worker.py` | Runs one replan LLM call in a worker thread and hands the result back to the node. |
 | `settings.py` | Parameters, checked. |
 | `summary.py` | `ros2 run mrs_llm_planner summary`: cycles and LLM calls of a run, from the log. |
 | `agent_node.py`, `coordinator_node.py` | Thin ROS shells around the modules above. |

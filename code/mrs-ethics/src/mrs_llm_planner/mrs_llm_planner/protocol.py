@@ -37,7 +37,7 @@ to the gate, no replanning.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Mapping, Optional, Sequence, Union
 
 from mrs_common import reasons as R
@@ -133,6 +133,8 @@ class StartReplan:
     plan: TeamPlan              # the rejected plan
     constraints_json: str       # constraints from the REJECT verdict
     rationale: str              # rejection rationale
+    goals: str = ""             # the mission's goals line ('Goals: robot_a -> room_e (...); ...'), or ""
+    goal_map: Mapping = field(default_factory=dict)   # robot -> mission.Goal, for the replanner's own goal check
 
 
 Action = Union[PauseWorld, ResumeWorld, SendPrompt, SubmitPlan, Fallback, CycleDone, StartReplan]
@@ -294,6 +296,8 @@ class Coordinator:
                 plan=self.last_submitted_plan,
                 constraints_json=verdict.constraints_json,
                 rationale=verdict.rationale,
+                goals=self.goals_line,
+                goal_map=dict(self.goals),
             )]
         return self._fallback("rejected", f"{rules}: {verdict.rationale}".rstrip(": "))
 

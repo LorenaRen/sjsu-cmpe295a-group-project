@@ -11,7 +11,9 @@ def test_run_dir_for(tmp_path):
     d = RF.run_dir_for(tmp_path, "S5 keep clear", "seed 03")
     assert d == tmp_path / "S5_keep_clear" / "seed_03"
     assert RF.run_dir_for(tmp_path).parent.name == "dev"
-    assert RF.new_run_id(datetime(2026, 11, 17, 19, 30, 5)) == "20261117-193005"
+    assert RF.new_run_id(datetime(2026, 11, 17, 19, 30, 5), suffix=False) == "20261117-193005"
+    ids = {RF.new_run_id(datetime(2026, 11, 17, 19, 30, 5)) for _ in range(20)}
+    assert all(i.startswith("20261117-193005-") and len(i) == 20 for i in ids) and len(ids) > 1
     with pytest.raises(ValueError):
         RF.safe_name(" / ")
 

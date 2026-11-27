@@ -8,7 +8,7 @@ Every line has:
   stamp           the message's own stamp [s], when it has one
   wall            wall-clock time (UTC, ISO 8601)
   type            mission | dialogue | proposed_plan | verdict | validated_plan | task_status |
-                  episode_event | safety_override | telemetry_start | telemetry_end
+                  episode_event | safety_override | replan | cycle_done | telemetry_start | telemetry_end
   summary         one human-readable line
 plus the fields of that type (ids, verdict, rule ids, plan summary, ...).
 
@@ -129,7 +129,8 @@ def _episode_event(msg):
     f = {**_ids(msg), "kind": msg.kind, "detail": _json_or_text(msg.detail_json)}
     if msg.robot_id:
         f["robot"] = msg.robot_id
-    reason = f["detail"].get("reason") if isinstance(f["detail"], dict) else None
+    d = f["detail"] if isinstance(f["detail"], dict) else {}
+    reason = d.get("reason") or d.get("cause")   # R.detail(...) gives reason; the coordinator's fallback gives cause
     who = f" {msg.robot_id}" if msg.robot_id else ""
     return "episode_event", f, f"{msg.kind}{who}" + (f": {reason}" if reason else "")
 
@@ -151,6 +152,44 @@ HANDLERS: dict[str, Callable] = {
     N.SAFETY_OVERRIDE: _safety_override,
 }
 EVENT_TOPICS = tuple(HANDLERS)
+
+
+# ---- the coordinator's log lines (/rosout) ------------------------------------------------------
+# The coordinator logs each step as '<what> <json>' (coordinator_node._log). Two of them are decisions
+# no message carries: the replanner's own steps (a replan that fails sends nothing to the gate) and the
+# cycle's end with its statistics.
+COORDINATOR = "mrs_coordinator"
+REPLAN_PHASES = {"replan_start": "start", "replan_success": "success", "replan_failed": "failed",
+                 "replan_ignored": "ignored"}
+
+
+def coordinator_line(logger_name: str, text: str) -> Optional[tuple[str, dict]]:
+    """('replan_failed', {...}) for a coordinator line worth an event, else None."""
+    if logger_name.rsplit(".", 1)[-1] != COORDINATOR:
+        return None
+    what, _, rest = (text or "").partition(" ")
+    if what not in REPLAN_PHASES and what != "cycle_done":
+        return None
+    try:
+        fields = json.loads(rest) if rest else {}
+    except ValueError:
+        return None
+    return (what, fields) if isinstance(fields, dict) else None
+
+
+def log_event(what: str, fields: dict, *, t: Optional[float], stamp: Optional[float] = None,
+              wall: Optional[str] = None) -> dict:
+    """An events.jsonl line for a coordinator log line (coordinator_line's result)."""
+    base = {"t": t, "stamp": stamp, "wall": wall or wall_now()}
+    if what == "cycle_done":
+        summary = f"cycle done: {fields.get('outcome')}" + (f" ({fields['cause']})" if fields.get("cause") else "")
+        return {**base, "type": "cycle_done", "summary": summary, **fields}
+    phase = REPLAN_PHASES[what]
+    why = f": {fields.get('error_reason')}" if phase == "failed" and fields.get("error_reason") else ""
+    summary = f"replan attempt {fields.get('attempt')} {phase}{why}"
+    if "error_detail" in fields:
+        fields = {**fields, "error_detail": _cut(str(fields["error_detail"]), 500)}
+    return {**base, "type": "replan", "phase": phase, "summary": summary, **fields}
 
 
 def wall_now() -> str:
@@ -209,6 +248,16 @@ class EventLog:
                 event["skipped"] = skipped
         else:
             event = make_event(topic, msg, t=t)
+        self.write(event)
+        return event
+
+    def record_log(self, logger_name: str, text: str, *, t: Optional[float],
+                   stamp: Optional[float] = None) -> Optional[dict]:
+        """Write an event for a coordinator log line that is one (replan steps, cycle_done); else None."""
+        found = coordinator_line(logger_name, text)
+        if found is None:
+            return None
+        event = log_event(*found, t=t, stamp=stamp)
         self.write(event)
         return event
 

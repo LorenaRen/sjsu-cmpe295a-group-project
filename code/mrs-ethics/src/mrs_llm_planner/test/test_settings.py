@@ -61,3 +61,16 @@ def test_config_file_names_only_known_parameters():
         assert set(params) <= set(PARAMETERS)
         s = load_settings({**params, "robot_id": "robot_a"}, agent=True)
         assert s.llm.model_name == "ollama/phi3.5" and s.llm.num_ctx == 8192
+
+
+
+def test_launch_overrides_are_not_set_per_node_in_the_config_file():
+    # planner.launch.py's overrides arrive in the "/**" section; a node section of planner.yaml that
+    # sets the same parameter wins over them (episode_id once never reached the coordinator).
+    import yaml
+    from pathlib import Path
+    data = yaml.safe_load((Path(__file__).resolve().parents[1] / "config" / "planner.yaml").read_text())
+    overridden = {"world", "robots", "use_sim_time", "backend", "model", "run_id", "log_file", "episode_id"}
+    for section, body in data.items():
+        if section != "/**":
+            assert not overridden & set(body["ros__parameters"]), section

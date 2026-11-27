@@ -15,15 +15,17 @@ This module is pure Python (no ROS) for testability.
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from mrs_common import reasons as R
 from mrs_common.plan_schema import (
     Constraint,
     TeamPlan,
+    check_references,
     constraints_from_json,
     hold_all_plan,
     plan_from_json,
@@ -33,6 +35,27 @@ from pydantic import ValidationError
 
 from .ollama_client import LLMResponse, OllamaClient
 from .prompt_builder import build_replan_prompt
+
+
+def grounded_plan_schema(
+    robot_ids: Sequence[str] | None = None,
+    graph_nodes: Sequence[str] | None = None,
+) -> dict:
+    """The TeamPlan JSON schema, with robot_id and target limited to the scenario's names.
+
+    Ollama's structured output then cannot produce a robot or a place that does not exist
+    (a small model once wrote robot_id "robotdonotstop"). None or empty keeps that field free.
+    """
+    schema = copy.deepcopy(team_plan_json_schema())
+    defs = schema["$defs"]
+    if robot_ids:
+        defs["Assignment"]["properties"]["robot_id"] = {
+            "title": "Robot Id", "type": "string", "enum": sorted(set(robot_ids))}
+    if graph_nodes:
+        defs["Task"]["properties"]["target"] = {
+            "title": "Target", "description": "a node name on the waypoint graph",
+            "type": "string", "enum": sorted(set(graph_nodes))}
+    return schema
 
 
 @dataclass(frozen=True)
@@ -47,6 +70,7 @@ class ReplanResult:
     tokens_out: int = 0
     latency_ms: float = 0.0
     model_name: str = ""
+    repairs: int = 0                      # repair calls made (each after a reply that failed the checks)
 
 
 @dataclass(frozen=True)
@@ -75,6 +99,18 @@ class ReplanFinished:
     event_detail: dict[str, Any] | None = None
 
 
+def _without_dependencies(content: str | None) -> TeamPlan | None:
+    """The reply's plan with every depends_on emptied, or None if even that is not a valid plan."""
+    try:
+        data = json.loads(content or "")
+        for a in data.get("assignments", []):
+            for t in a.get("tasks", []):
+                t["depends_on"] = []
+        return plan_from_json(json.dumps(data))
+    except (ValueError, TypeError, AttributeError, ValidationError):
+        return None
+
+
 class LLMReplanner:
     """LLM-based replanner that handles REJECT -> replan cycles.
 
@@ -101,6 +137,14 @@ class LLMReplanner:
         transaction_id: str = "",
         episode_id: str = "",
         client: OllamaClient | None = None,
+        robot_ids: Sequence[str] | None = None,
+        graph_nodes: Sequence[str] | None = None,
+        goals: str = "",
+        max_repairs: int = 0,
+        make_repair_client: Callable[[float | None], Any] | None = None,
+        time_budget_s: float | None = None,
+        min_repair_s: float = 10.0,
+        check_plan: Callable[[TeamPlan], Sequence[str]] | None = None,
     ):
         if max_attempts < 1:
             raise ValueError(f"max_attempts must be at least 1, got {max_attempts}")
@@ -110,6 +154,24 @@ class LLMReplanner:
         self.episode_id = episode_id
         self._start_nodes = dict(start_nodes or {})
         self._client = client or OllamaClient()
+        # The scenario's names: they narrow the output schema and are checked on the reply.
+        self._robot_ids = tuple(robot_ids or ())
+        self._graph_nodes = tuple(graph_nodes or ())
+        # The mission's goals as one line of text (the planner's Mission.goals_line()), or "".
+        self._goals = goals
+        # Repairs, like the planner's agents: a reply that fails the checks goes back to the model with
+        # the exact problem, up to max_repairs times. make_repair_client(seconds left or None) gives the
+        # client for a repair (e.g. at the lower repair temperature); None: the same client. A repair
+        # is only tried while at least min_repair_s of time_budget_s (None: no limit) is left.
+        if max_repairs < 0:
+            raise ValueError(f"max_repairs must be at least 0, got {max_repairs}")
+        self.max_repairs = max_repairs
+        self._make_repair_client = make_repair_client
+        self.time_budget_s = time_budget_s
+        self.min_repair_s = min_repair_s
+        # More checks from the caller (the planner passes its goal check: this package cannot import
+        # it): problems it returns fail the reply like the checks here, and are repaired the same way.
+        self._check_plan = check_plan
 
         # State
         self._sent: ReplanProposal | None = None
@@ -244,53 +306,94 @@ class LLMReplanner:
         rationale: str,
         attempt: int,
     ) -> ReplanResult:
-        """Call the LLM to generate a modified plan."""
-        # Build the prompt
-        messages = build_replan_prompt(plan, constraints, rationale, attempt)
+        """Call the LLM to generate a modified plan; repair a reply that fails the checks."""
+        started = time.monotonic()
+        messages = build_replan_prompt(plan, constraints, rationale, attempt, goals=self._goals)
+        # The TeamPlan JSON schema for structured output, limited to this scenario's names
+        schema = grounded_plan_schema(self._robot_ids, self._graph_nodes)
+        tokens_in = tokens_out = 0
+        latency_ms = 0.0
+        model_name = ""
+        repairs = 0
+        client = self._client
+        detail = ""
 
-        # Get the TeamPlan JSON schema for structured output
-        schema = team_plan_json_schema()
+        def failed(reason: str, why: str) -> ReplanResult:
+            return ReplanResult(success=False, error_reason=reason, error_detail=why, tokens_in=tokens_in,
+                                tokens_out=tokens_out, latency_ms=latency_ms, model_name=model_name,
+                                repairs=repairs)
 
-        # Call the LLM
-        response = self._client.chat(messages, json_schema=schema)
+        for try_no in range(1 + self.max_repairs):
+            if try_no > 0:
+                left = None if self.time_budget_s is None else self.time_budget_s - (time.monotonic() - started)
+                if left is not None and left < self.min_repair_s:
+                    return failed(R.LLM_MALFORMED, f"{detail} (no repair: {left:.1f} s left)")
+                client = self._make_repair_client(left) if self._make_repair_client else self._client
+                repairs += 1
 
-        if not response.success:
-            return ReplanResult(
-                success=False,
-                error_reason=response.error_reason,
-                error_detail=response.error_detail,
-                tokens_in=response.tokens_in,
-                tokens_out=response.tokens_out,
-                latency_ms=response.latency_ms,
-                model_name=response.model_name,
-            )
+            response = client.chat(messages, json_schema=schema)
+            tokens_in += response.tokens_in
+            tokens_out += response.tokens_out
+            latency_ms += response.latency_ms
+            model_name = response.model_name or model_name
+            if not response.success:
+                return failed(response.error_reason, response.error_detail)
 
-        # Parse the response as TeamPlan
+            new_plan, detail, problem = self._check_reply(response.content)
+            if new_plan is not None:
+                return ReplanResult(success=True, plan=new_plan, changes=self._describe_changes(plan, new_plan),
+                                    tokens_in=tokens_in, tokens_out=tokens_out, latency_ms=latency_ms,
+                                    model_name=model_name, repairs=repairs)
+            # The same repair message as the planner's agents: the model's own reply, then the problem.
+            messages = messages + [
+                {"role": "assistant", "content": response.content or ""},
+                {"role": "user", "content": f"Your plan cannot be used: {problem}. Fix only that and send "
+                                            "the whole corrected plan: exactly one JSON object in the "
+                                            "TeamPlan format."},
+            ]
+        return failed(R.LLM_MALFORMED, detail)
+
+    def _check_reply(self, content: str | None) -> tuple[TeamPlan | None, str, str]:
+        """(plan, "", "") for a usable reply, else (None, detail for the log, problem for the model)."""
         try:
-            new_plan = plan_from_json(response.content)
-        except (json.JSONDecodeError, ValidationError) as e:
-            return ReplanResult(
-                success=False,
-                error_reason=R.LLM_MALFORMED,
-                error_detail=f"Invalid plan JSON: {e}",
-                tokens_in=response.tokens_in,
-                tokens_out=response.tokens_out,
-                latency_ms=response.latency_ms,
-                model_name=response.model_name,
-            )
+            new_plan = plan_from_json(content or "")
+        except json.JSONDecodeError as e:
+            return None, f"Invalid plan JSON: {e}", f"it is not valid JSON ({e})"
+        except ValidationError as e:
+            first = e.errors()[0]
+            where = ".".join(str(p) for p in first.get("loc", ()))
+            problem = f"{where}: {first['msg']}" if where else first["msg"]
+            # A dependency error (a cycle, an unknown task) leaves no plan to check further. Check the
+            # same plan without its dependencies, so the repair hears of a missed goal too (run
+            # 20261127-092814: told only of the cycle, the repair kept robot_b parked off its goal).
+            more = self._problems(_without_dependencies(content))
+            return None, f"Invalid plan JSON: {e}", "; ".join([problem, *more])
+        problems = self._problems(new_plan)
+        if problems:
+            text = "; ".join(problems)
+            return None, "Plan does not pass the checks: " + text, text
+        return new_plan, "", ""
 
-        # Describe what changed
-        changes = self._describe_changes(plan, new_plan)
+    def _problems(self, plan: TeamPlan | None) -> list[str]:
+        """The names (not every backend enforces the schema), then the caller's checks (goals). Every
+        problem goes into one repair message, so a fix of one does not leave another in place."""
+        if plan is None:
+            return []
+        problems = self._grounding_problems(plan)
+        if problems:
+            problems[-1] += " (use only the team's robots and the map's nodes)"
+        if self._check_plan is not None:
+            problems += list(self._check_plan(plan))
+        return problems
 
-        return ReplanResult(
-            success=True,
-            plan=new_plan,
-            changes=changes,
-            tokens_in=response.tokens_in,
-            tokens_out=response.tokens_out,
-            latency_ms=response.latency_ms,
-            model_name=response.model_name,
-        )
+    def _grounding_problems(self, plan: TeamPlan) -> list[str]:
+        """Unknown robots or targets, for the names this replanner was given."""
+        problems = []
+        if self._robot_ids:
+            problems += [p for p in check_references(plan, self._robot_ids, ()) if p.startswith("unknown robot")]
+        if self._graph_nodes:
+            problems += [p for p in check_references(plan, (), self._graph_nodes) if "unknown target" in p]
+        return problems
 
     def _describe_changes(self, old: TeamPlan, new: TeamPlan) -> tuple[str, ...]:
         """Describe what changed between two plans."""
